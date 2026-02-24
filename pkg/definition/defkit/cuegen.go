@@ -18,6 +18,7 @@ package defkit
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -1600,22 +1601,14 @@ func (g *CUEGenerator) arrayElementToCUEWithDepth(elem *ArrayElement, depth int)
 	innerIndent := strings.Repeat(g.indent, depth+1)
 
 	sb.WriteString("{\n")
-	for key, val := range elem.Fields() {
+	for _, key := range g.arrayElementFieldKeys(elem) {
+		val := elem.Fields()[key]
 		valStr := g.valueToCUE(val)
 		sb.WriteString(fmt.Sprintf("%s%s: %s\n", innerIndent, key, valStr))
 	}
-	// Write conditional operations
-	for _, op := range elem.Ops() {
-		if setIf, ok := op.(*SetIfOp); ok {
-			condStr := g.conditionToCUE(setIf.Cond())
-			valStr := g.valueToCUE(setIf.Value())
-			// Convert dot-separated path to CUE shorthand syntax: "a.b.c" -> "a: b: c"
-			cuePath := strings.ReplaceAll(setIf.Path(), ".", ": ")
-			sb.WriteString(fmt.Sprintf("%sif %s {\n", innerIndent, condStr))
-			sb.WriteString(fmt.Sprintf("%s\t%s: %s\n", innerIndent, cuePath, valStr))
-			sb.WriteString(fmt.Sprintf("%s}\n", innerIndent))
-		}
-	}
+	// Write conditional operations, merging consecutive SetIf with the same condition
+	// so dependent fields (e.g. read + value using read.$returns) stay in one if block.
+	g.writeGroupedSetIfOps(&sb, elem.Ops(), depth+1)
 	// Write patchKey-annotated fields (nested patchKey inside array elements)
 	for _, pkf := range elem.PatchKeyFields() {
 		sb.WriteString(fmt.Sprintf("%s// +patchKey=%s\n", innerIndent, pkf.key))
@@ -1660,21 +1653,13 @@ func (g *CUEGenerator) arrayBuilderToCUE(ab *ArrayBuilder, depth int) string {
 				sb.WriteString(fmt.Sprintf("%sfor m in %s {\n", innerIndent, sourceStr))
 			}
 			// Write each field from the element template
-			for key, val := range entry.element.Fields() {
+			for _, key := range g.arrayElementFieldKeys(entry.element) {
+				val := entry.element.Fields()[key]
 				valStr := g.valueToCUE(val)
 				sb.WriteString(fmt.Sprintf("%s%s: %s\n", deepIndent, key, valStr))
 			}
 			// Write conditional operations
-			for _, op := range entry.element.Ops() {
-				if setIf, ok := op.(*SetIfOp); ok {
-					condStr := g.conditionToCUE(setIf.Cond())
-					valStr := g.valueToCUE(setIf.Value())
-					cuePath := strings.ReplaceAll(setIf.Path(), ".", ": ")
-					sb.WriteString(fmt.Sprintf("%sif %s {\n", deepIndent, condStr))
-					sb.WriteString(fmt.Sprintf("%s\t%s: %s\n", deepIndent, cuePath, valStr))
-					sb.WriteString(fmt.Sprintf("%s}\n", deepIndent))
-				}
-			}
+			g.writeGroupedSetIfOps(&sb, entry.element.Ops(), depth+2)
 			sb.WriteString(fmt.Sprintf("%s},\n", innerIndent))
 
 		case entryForEachWith:
@@ -1687,6 +1672,47 @@ func (g *CUEGenerator) arrayBuilderToCUE(ab *ArrayBuilder, depth int) string {
 
 	sb.WriteString(fmt.Sprintf("%s]", indent))
 	return sb.String()
+}
+
+func (g *CUEGenerator) arrayElementFieldKeys(elem *ArrayElement) []string {
+	if keys := elem.FieldOrder(); len(keys) > 0 {
+		return keys
+	}
+	keys := make([]string, 0, len(elem.Fields()))
+	for k := range elem.Fields() {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// writeGroupedSetIfOps writes SetIf operations and merges consecutive operations
+// that share the same condition into a single if block.
+func (g *CUEGenerator) writeGroupedSetIfOps(sb *strings.Builder, ops []ResourceOp, depth int) {
+	indent := strings.Repeat(g.indent, depth)
+	for i := 0; i < len(ops); {
+		setIf, ok := ops[i].(*SetIfOp)
+		if !ok {
+			i++
+			continue
+		}
+		condStr := g.conditionToCUE(setIf.Cond())
+		sb.WriteString(fmt.Sprintf("%sif %s {\n", indent, condStr))
+		for ; i < len(ops); i++ {
+			nextSetIf, ok := ops[i].(*SetIfOp)
+			if !ok {
+				break
+			}
+			if g.conditionToCUE(nextSetIf.Cond()) != condStr {
+				break
+			}
+			valStr := g.valueToCUE(nextSetIf.Value())
+			// Convert dot-separated path to CUE shorthand syntax: "a.b.c" -> "a: b: c"
+			cuePath := strings.ReplaceAll(nextSetIf.Path(), ".", ": ")
+			sb.WriteString(fmt.Sprintf("%s\t%s: %s\n", indent, cuePath, valStr))
+		}
+		sb.WriteString(fmt.Sprintf("%s}\n", indent))
+	}
 }
 
 // writeItemBuilderOps writes the CUE for ItemBuilder operations.
@@ -1736,60 +1762,95 @@ func (g *CUEGenerator) collectionOpToCUE(col *CollectionOp) string {
 		}
 	}
 
-	// Check if there's a Map operation
+	// Check if there's a Map operation and dedupe operation.
 	hasMap := false
+	dedupeKey := ""
 	for _, op := range ops {
 		if _, ok := op.(*mapOp); ok {
 			hasMap = true
-			break
+		}
+		if dOp, ok := op.(*dedupeOp); ok {
+			dedupeKey = dOp.keyField
 		}
 	}
 
-	// Build the list comprehension
-	var sb strings.Builder
-	sb.WriteString("[")
+	// Build the base list comprehension.
+	baseComprehension := func() string {
+		var sb strings.Builder
+		sb.WriteString("[")
 
-	// Add guard condition if present (wraps entire comprehension)
-	if guard := col.GetGuard(); guard != nil {
-		guardStr := g.conditionToCUE(guard)
-		sb.WriteString("if ")
-		sb.WriteString(guardStr)
-		sb.WriteString(" ")
-	}
+		// Add guard condition if present (wraps entire comprehension)
+		if guard := col.GetGuard(); guard != nil {
+			guardStr := g.conditionToCUE(guard)
+			sb.WriteString("if ")
+			sb.WriteString(guardStr)
+			sb.WriteString(" ")
+		}
 
-	sb.WriteString("for v in ")
-	sb.WriteString(sourceStr)
-	if filterCondition != "" {
-		sb.WriteString(" if ")
-		sb.WriteString(filterCondition)
-	}
+		sb.WriteString("for v in ")
+		sb.WriteString(sourceStr)
+		if filterCondition != "" {
+			sb.WriteString(" if ")
+			sb.WriteString(filterCondition)
+		}
 
-	if hasMap {
-		// Map operations: render mapped fields in a struct
-		sb.WriteString(" {\n")
-		sb.WriteString("\t\t\t\t{\n")
-		for _, op := range ops {
-			if mOp, ok := op.(*mapOp); ok {
-				for fieldName, fieldVal := range mOp.mappings {
-					if optField, isOptional := fieldVal.(*OptionalField); isOptional {
-						sb.WriteString(fmt.Sprintf("\t\t\t\t\tif v.%s != _|_ {\n", optField.field))
-						sb.WriteString(fmt.Sprintf("\t\t\t\t\t\t%s: v.%s\n", fieldName, optField.field))
-						sb.WriteString("\t\t\t\t\t}\n")
-					} else {
-						valStr := g.fieldValueToCUE(fieldVal)
-						sb.WriteString(fmt.Sprintf("\t\t\t\t\t%s: %s\n", fieldName, valStr))
+		if hasMap {
+			// Map operations: render mapped fields in a struct
+			sb.WriteString(" {\n")
+			sb.WriteString("\t\t\t\t{\n")
+			for _, op := range ops {
+				if mOp, ok := op.(*mapOp); ok {
+					for fieldName, fieldVal := range mOp.mappings {
+						if optField, isOptional := fieldVal.(*OptionalField); isOptional {
+							sb.WriteString(fmt.Sprintf("\t\t\t\t\tif v.%s != _|_ {\n", optField.field))
+							sb.WriteString(fmt.Sprintf("\t\t\t\t\t\t%s: v.%s\n", fieldName, optField.field))
+							sb.WriteString("\t\t\t\t\t}\n")
+						} else {
+							valStr := g.fieldValueToCUE(fieldVal)
+							sb.WriteString(fmt.Sprintf("\t\t\t\t\t%s: %s\n", fieldName, valStr))
+						}
 					}
 				}
 			}
+			sb.WriteString("\t\t\t\t}\n")
+			sb.WriteString("\t\t\t}]")
+		} else {
+			// Filter-only: pass through the iteration variable
+			sb.WriteString(" {v}]")
 		}
-		sb.WriteString("\t\t\t\t}\n")
-		sb.WriteString("\t\t\t}]")
-	} else {
-		// Filter-only: pass through the iteration variable
-		sb.WriteString(" {v}]")
+		return sb.String()
 	}
 
-	return sb.String()
+	base := baseComprehension()
+	hasPreDedupeTransforms := col.GetGuard() != nil || filterCondition != "" || hasMap
+	for _, op := range ops {
+		if _, ok := op.(*dedupeOp); ok {
+			continue
+		}
+		hasPreDedupeTransforms = true
+		break
+	}
+
+	if dedupeKey == "" {
+		return base
+	}
+	if !hasPreDedupeTransforms {
+		base = sourceStr
+	}
+
+	// Apply stable dedupe by key while preserving first-seen order.
+	return fmt.Sprintf(`[
+		for val in [
+			for i, vi in %s {
+				for j, vj in %s if j < i && vi.%s == vj.%s {
+					_ignore: true
+				}
+				vi
+			},
+		] if val._ignore == _|_ {
+			val
+		},
+	]`, base, base, dedupeKey, dedupeKey)
 }
 
 // predicateToCUE converts a Predicate to CUE filter condition.
@@ -2299,6 +2360,8 @@ func (g *CUEGenerator) writeParam(sb *strings.Builder, param Param, depth int) {
 		g.writeStructParam(sb, p, indent, name, optional, depth)
 	case *EnumParam:
 		g.writeEnumParam(sb, p, indent, name, optional)
+	case *OneOfParam:
+		g.writeOneOfParam(sb, p, indent, name, optional, depth)
 	default:
 		// Generic fallback
 		sb.WriteString(fmt.Sprintf("%s%s%s: _\n", indent, name, optional))
@@ -2403,7 +2466,7 @@ func (g *CUEGenerator) writeIntParam(sb *strings.Builder, p *IntParam, indent, n
 // writeBoolParam writes a boolean parameter.
 func (g *CUEGenerator) writeBoolParam(sb *strings.Builder, p *BoolParam, indent, name, optional string) {
 	if p.HasDefault() {
-		sb.WriteString(fmt.Sprintf("%s%s: *%v | bool\n", indent, name, p.GetDefault()))
+		sb.WriteString(fmt.Sprintf("%s%s%s: *%v | bool\n", indent, name, optional, p.GetDefault()))
 	} else {
 		sb.WriteString(fmt.Sprintf("%s%s%s: bool\n", indent, name, optional))
 	}
@@ -2633,6 +2696,40 @@ func (g *CUEGenerator) writeEnumParam(sb *strings.Builder, p *EnumParam, indent,
 		}
 		sb.WriteString(fmt.Sprintf("%s%s%s: %s\n", indent, name, optional, strings.Join(enumParts, " | ")))
 	}
+}
+
+// writeOneOfParam writes a discriminated union parameter as a series of close({...}) variants.
+// Example output:
+//
+//	url: close({
+//		value: string
+//	}) | close({
+//		secretRef: {
+//			name: string
+//			key:  string
+//		}
+//	})
+func (g *CUEGenerator) writeOneOfParam(sb *strings.Builder, p *OneOfParam, indent, name, optional string, depth int) {
+	variants := p.GetVariants()
+	if len(variants) == 0 {
+		sb.WriteString(fmt.Sprintf("%s%s%s: _\n", indent, name, optional))
+		return
+	}
+
+	// Build each variant as close({...})
+	var parts []string
+	for _, variant := range variants {
+		var vSB strings.Builder
+		vSB.WriteString("close({\n")
+		for _, field := range variant.GetFields() {
+			g.writeStructField(&vSB, field, depth+1)
+		}
+		vSB.WriteString(fmt.Sprintf("%s})", indent))
+		parts = append(parts, vSB.String())
+	}
+
+	// Write: name: close({...}) | close({...})
+	sb.WriteString(fmt.Sprintf("%s%s%s: %s\n", indent, name, optional, strings.Join(parts, " | ")))
 }
 
 // cueTypeForParamType converts a ParamType to its CUE type string.
