@@ -22,10 +22,7 @@ spec:
         )
         components: oam.#LoadComponets
 
-        // Computed directly from the loaded component set (via iteration, not an
-        // indexed lookup -- x[computedKey] against this field was empirically found
-        // to evaluate before the "components" load task resolves, causing false
-        // positives) so validation never depends on "deploy" and can gate it.
+        // Iterating (not an indexed lookup) avoids evaluating before "components" resolves.
         _loadedNames: [for name, _ in components.$returns.value {name}]
 
         _missingComponents: [for entry in parameter.components if !list.Contains(_loadedNames, entry.name) {entry.name}]
@@ -36,15 +33,10 @@ spec:
         	}
         }
 
-        // Gated on validation so no component is applied to any cluster unless
-        // every referenced name resolved -- avoids a partial rollout where valid
-        // components deploy before an invalid name is caught.
+        // Gated so nothing is applied unless every component name is valid.
         if len(_missingComponents) == 0 {
         	deploy: {
-        		// Note: the loop variable must not be named "value" -- that would collide
-        		// with the "value:" field label inside $params below, and CUE would
-        		// resolve it as a self-reference (an unconstrained value) instead of
-        		// this binding, silently passing an empty component to ApplyComponent.
+        		// "comp", not "value" -- shadows the $params.value field below otherwise.
         		for name, comp in components.$returns.value {
         			for entry in parameter.components if entry.name == name {
         				"\(name)": {
@@ -68,9 +60,7 @@ spec:
         	}
         }
 
-        // Declared locally (instead of reusing multicluster.#GetPlacementsFromTmulticlusterologyPolicies,
-        // whose #do string is mistyped and does not match the registered provider handler) with the
-        // correct #provider/#do values for the already-registered topology-placement resolver.
+        // Local copy: multicluster.#GetPlacementsFromTmulticlusterologyPolicies's #do string is mistyped upstream.
         #GetPlacements: {
         	#provider: "multicluster"
         	#do:       "get-placements-from-topology-policies"
