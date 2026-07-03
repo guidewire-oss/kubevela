@@ -18,44 +18,49 @@ import (
 template: {
 	components: oam.#LoadComponets
 
-	deploy: {
-		// Note: the loop variable must not be named "value" -- that would collide
-		// with the "value:" field label inside $params below, and CUE would
-		// resolve it as a self-reference (an unconstrained value) instead of
-		// this binding, silently passing an empty component to ApplyComponent.
-		for name, comp in components.$returns.value {
-			for entry in parameter.components if entry.name == name {
-				"\(name)": {
-					placements: #GetPlacements & {
-						$params: policies: entry.policies
-					}
-					apply: {
-						for p in placements.$returns.placements {
-							"\(p.cluster)-\(p.namespace)": oam.#ApplyComponent & {
-								$params: {
-									value:     comp
-									cluster:   p.cluster
-									namespace: p.namespace
+	// Computed directly from the loaded component set (via iteration, not an
+	// indexed lookup -- x[computedKey] against this field was empirically found
+	// to evaluate before the "components" load task resolves, causing false
+	// positives) so validation never depends on "deploy" and can gate it.
+	_loadedNames: [for name, _ in components.$returns.value {name}]
+
+	_missingComponents: [for entry in parameter.components if !list.Contains(_loadedNames, entry.name) {entry.name}]
+
+	if len(_missingComponents) > 0 {
+		validateComponents: builtin.#Fail & {
+			$params: message: "component(s) not found in application: \(strings.Join(_missingComponents, ", "))"
+		}
+	}
+
+	// Gated on validation so no component is applied to any cluster unless
+	// every referenced name resolved -- avoids a partial rollout where valid
+	// components deploy before an invalid name is caught.
+	if len(_missingComponents) == 0 {
+		deploy: {
+			// Note: the loop variable must not be named "value" -- that would collide
+			// with the "value:" field label inside $params below, and CUE would
+			// resolve it as a self-reference (an unconstrained value) instead of
+			// this binding, silently passing an empty component to ApplyComponent.
+			for name, comp in components.$returns.value {
+				for entry in parameter.components if entry.name == name {
+					"\(name)": {
+						placements: #GetPlacements & {
+							$params: policies: entry.policies
+						}
+						apply: {
+							for p in placements.$returns.placements {
+								"\(p.cluster)-\(p.namespace)": oam.#ApplyComponent & {
+									$params: {
+										value:     comp
+										cluster:   p.cluster
+										namespace: p.namespace
+									}
 								}
 							}
 						}
 					}
 				}
 			}
-		}
-	}
-
-	// Derived from "deploy"'s own realized keys (rather than independently
-	// re-iterating components.$returns.value) so this check is a data
-	// dependent of the same computation already proven to correctly wait
-	// for the "components" load task to finish.
-	_deployedNames: [for name, _ in deploy {name}]
-
-	_missingComponents: [for entry in parameter.components if !list.Contains(_deployedNames, entry.name) {entry.name}]
-
-	if len(_missingComponents) > 0 {
-		validateComponents: builtin.#Fail & {
-			$params: message: "component(s) not found in application: \(strings.Join(_missingComponents, ", "))"
 		}
 	}
 
