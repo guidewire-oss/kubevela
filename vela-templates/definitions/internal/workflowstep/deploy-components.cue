@@ -2,6 +2,7 @@ import (
 	"list"
 	"strings"
 	"vela/builtin"
+	"vela/multicluster"
 	"vela/oam"
 )
 
@@ -36,7 +37,7 @@ template: {
 			for name, comp in components.$returns.value {
 				for entry in parameter.components if entry.name == name {
 					"\(name)": {
-						placements: #GetPlacements & {
+						placements: multicluster.#GetPlacementsFromTopologyPolicies & {
 							$params: policies: entry.policies
 						}
 						apply: {
@@ -54,17 +55,6 @@ template: {
 				}
 			}
 		}
-	}
-
-	// Local copy of multicluster.#GetPlacementsFromTopologyPolicies (kept self-contained for backport safety).
-	#GetPlacements: {
-		#provider: "multicluster"
-		#do:       "get-placements-from-topology-policies"
-		$params: policies: [...string]
-		$returns?: placements: [...{
-			cluster:   string
-			namespace: string
-		}]
 	}
 
 	parameter: {
