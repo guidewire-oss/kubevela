@@ -14,11 +14,12 @@ spec:
   schematic:
     cue:
       template: |
-        import "list"
-        import "strings"
-        import "vela/builtin"
-        import "vela/oam"
-
+        import (
+        	"list"
+        	"strings"
+        	"vela/builtin"
+        	"vela/oam"
+        )
         components: oam.#LoadComponets
 
         deploy: {
