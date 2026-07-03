@@ -56,7 +56,7 @@ template: {
 		}
 	}
 
-	// Local copy: multicluster.#GetPlacementsFromTmulticlusterologyPolicies's #do string is mistyped upstream.
+	// Local copy of multicluster.#GetPlacementsFromTopologyPolicies (kept self-contained for backport safety).
 	#GetPlacements: {
 		#provider: "multicluster"
 		#do:       "get-placements-from-topology-policies"
