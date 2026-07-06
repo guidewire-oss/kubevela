@@ -42,6 +42,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+	oamprovidertypes "github.com/oam-dev/kubevela/pkg/workflow/providers/types"
 )
 
 const workloadDefinition = `
@@ -285,6 +286,69 @@ func TestDeleteAppliedResourceFunc(t *testing.T) {
 	h.addAppliedResource(true, preDelResc)
 	if len(h.appliedResources) != 2 {
 		t.Errorf("applied length error acctually %d", len(h.appliedResources))
+	}
+}
+
+func TestMergeMappedStatusIntoTemplateContext(t *testing.T) {
+	templateContext := map[string]interface{}{
+		"output": map[string]interface{}{
+			"apiVersion": "apps/v1",
+			"kind":       "Deployment",
+			"status": map[string]interface{}{
+				"replicas": 1,
+			},
+		},
+		"outputs": map[string]interface{}{
+			"webserviceExpose": map[string]interface{}{
+				"kind": "Service",
+				"metadata": map[string]interface{}{
+					"name": "web",
+				},
+				"status": map[string]interface{}{
+					"loadBalancer": map[string]interface{}{},
+				},
+			},
+		},
+	}
+	mapped := &oamprovidertypes.DispatchMappedHealth{
+		Output: map[string]interface{}{
+			"status": map[string]interface{}{
+				"readyReplicas": 3,
+				"replicas":      3,
+			},
+		},
+		Outputs: map[string]map[string]interface{}{
+			"services-default-web": {
+				"status": map[string]interface{}{
+					"clusterIP": "10.0.0.1",
+					"resourceMeta": map[string]interface{}{
+						"kind":      "Service",
+						"name":      "web",
+					},
+				},
+			},
+		},
+	}
+
+	mergeMappedStatusIntoTemplateContext(templateContext, mapped)
+
+	output := templateContext["output"].(map[string]interface{})
+	outputStatus := output["status"].(map[string]interface{})
+	if outputStatus["readyReplicas"] != 3 || outputStatus["replicas"] != 3 {
+		t.Fatalf("expected output.status to be replaced by mapped status, got %#v", outputStatus)
+	}
+	if output["kind"] != "Deployment" {
+		t.Fatalf("expected non-status output fields to be preserved, got %#v", output)
+	}
+
+	outputs := templateContext["outputs"].(map[string]interface{})
+	trait := outputs["webserviceExpose"].(map[string]interface{})
+	traitStatus := trait["status"].(map[string]interface{})
+	if traitStatus["clusterIP"] != "10.0.0.1" {
+		t.Fatalf("expected outputs.<name>.status to be replaced by mapped status, got %#v", traitStatus)
+	}
+	if trait["kind"] != "Service" {
+		t.Fatalf("expected non-status outputs fields to be preserved, got %#v", trait)
 	}
 }
 

@@ -163,7 +163,7 @@ func TestRenderComponent(t *testing.T) {
 
 	outputs, err := res.LookupPath(cue.ParsePath("$returns.outputs.mytrait.metadata.name")).String()
 	r.NoError(err)
-	r.Equal("test-workload", outputs)
+	r.Equal("test-trait", outputs)
 }
 
 func TestLoadComponent(t *testing.T) {

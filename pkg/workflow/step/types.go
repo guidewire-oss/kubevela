@@ -27,8 +27,12 @@ type DeployWorkflowStepSpec struct {
 	Auto *bool `json:"auto,omitempty"`
 	// Policies specifies the policies to use in the step
 	Policies []string `json:"policies,omitempty"`
+	// Components optionally limits deploy to the named components only.
+	Components []string `json:"components,omitempty"`
 	// Parallelism allows setting parallelism for the component deploy process
 	Parallelism *int `json:"parallelism,omitempty"`
 	// IgnoreTerraformComponent default is true, true means this step will apply the components without the terraform workload.
 	IgnoreTerraformComponent *bool `json:"ignoreTerraformComponent,omitempty"`
+	// Dispatcher selects dispatcher execution for this deploy step.
+	Dispatcher *string `json:"dispatcher,omitempty"`
 }

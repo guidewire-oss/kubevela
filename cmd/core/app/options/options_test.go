@@ -758,7 +758,7 @@ func TestCoreOptions_AllConfigModulesHaveFlags(t *testing.T) {
 		"cue":           {"enable-external-package-for-default-compiler"},
 		"application":   {"application-re-sync-period"},
 		"oam":           {"system-definition-namespace"},
-		"controller":    {"revision-limit", "application-revision-limit", "definition-revision-limit"},
+		"controller":    {"revision-limit", "application-revision-limit", "definition-revision-limit", "default-dispatcher"},
 		"performance":   {"perf-enabled"},
 		"workflow":      {"max-workflow-wait-backoff-time"},
 		"resource":      {"max-dispatch-concurrent"},

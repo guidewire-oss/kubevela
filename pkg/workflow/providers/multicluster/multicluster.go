@@ -89,6 +89,32 @@ func ListClusters(ctx context.Context, params *oamprovidertypes.Params[any]) (*C
 	return &ClusterReturns{Returns: Outputs[ClusterParams]{Outputs: ClusterParams{Clusters: clusters}}}, nil
 }
 
+// ClusterLabelsParams is the parameter for get cluster labels
+type ClusterLabelsParams struct {
+	Cluster string `json:"cluster"`
+}
+
+// ClusterLabelsResult is the result for get cluster labels
+type ClusterLabelsResult struct {
+	Labels map[string]string `json:"labels"`
+}
+
+// ClusterLabelsReturns is the return value for get cluster labels
+type ClusterLabelsReturns = oamprovidertypes.Returns[ClusterLabelsResult]
+
+// GetClusterLabels gets labels from the given cluster registration.
+func GetClusterLabels(ctx context.Context, params *oamprovidertypes.Params[ClusterLabelsParams]) (*ClusterLabelsReturns, error) {
+	vc, err := multicluster.GetVirtualCluster(ctx, params.KubeClient, params.Params.Cluster)
+	if err != nil {
+		return nil, err
+	}
+	labels := vc.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	return &ClusterLabelsReturns{Returns: ClusterLabelsResult{Labels: labels}}, nil
+}
+
 // DeployParams is the parameter for deploy
 type DeployParams = oamprovidertypes.Params[DeployParameter]
 
@@ -97,7 +123,7 @@ func Deploy(ctx context.Context, params *DeployParams) (*any, error) {
 	if params.Params.Parallelism <= 0 {
 		return nil, errors.Errorf("parallelism cannot be smaller than 1")
 	}
-	executor := NewDeployWorkflowStepExecutor(params.KubeClient, params.Appfile, params.ComponentApply, params.ComponentHealthCheck, params.WorkloadRender, params.Params)
+	executor := NewDeployWorkflowStepExecutorWithKubeHandlers(params.KubeClient, params.KubeHandlers, params.Appfile, params.ComponentApply, params.ComponentRender, params.ComponentHealthCheck, params.WorkloadRender, params.Params)
 	healthy, reason, err := executor.Deploy(ctx)
 	if err != nil {
 		return nil, err
@@ -150,6 +176,7 @@ func GetTemplate() string {
 func GetProviders() map[string]cuexruntime.ProviderFn {
 	return map[string]cuexruntime.ProviderFn{
 		"list-clusters":                         oamprovidertypes.GenericProviderFn[any, ClusterReturns](ListClusters),
+		"get-cluster-labels":                    oamprovidertypes.GenericProviderFn[ClusterLabelsParams, ClusterLabelsReturns](GetClusterLabels),
 		"get-placements-from-topology-policies": oamprovidertypes.GenericProviderFn[PoliciesVars, PoliciesReturns](GetPlacementsFromTopologyPolicies),
 		"deploy":                                oamprovidertypes.GenericProviderFn[DeployParameter, any](Deploy),
 	}

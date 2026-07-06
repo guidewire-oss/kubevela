@@ -1,0 +1,15 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Dispatcher
+metadata:
+  name: default
+  namespace: vela-system
+spec:
+  schematic:
+    cue:
+      targetsTemplate: |
+        // Keep the default multicluster placement behavior.
+        targets: context.placements
+      dispatchTemplate: |
+        // Pass rendered workload/traits through unchanged.
+        output:  context.output
+        outputs: context.outputs

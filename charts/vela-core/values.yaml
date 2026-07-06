@@ -19,6 +19,7 @@ concurrentReconciles: 4
 ## @param controllerArgs.reSyncPeriod The period for resync the applications
 controllerArgs:
   reSyncPeriod: 5m
+  defaultDispatcher: "default"
 
 
 ## @section KubeVela workflow parameters

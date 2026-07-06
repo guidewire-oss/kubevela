@@ -1760,3 +1760,30 @@ func TestGeneratePolicyManifests(t *testing.T) {
 	assert.True(t, found)
 	assert.Equal(t, "test-value", data["key"])
 }
+
+func TestGeneratePolicyManifestsSkipRender(t *testing.T) {
+	af := &Appfile{
+		Name:            "test-app",
+		Namespace:       "test-ns",
+		AppRevisionName: "test-app-v1",
+		ParsedPolicies: []*Component{
+			{
+				Name: "skip-policy",
+				Type: "custom-policy",
+				FullTemplate: &Template{
+					PolicyDefinition: &v1beta1.PolicyDefinition{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								AnnotationPolicyNoOutputs: "true",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	manifests, err := af.GeneratePolicyManifests(context.Background(), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(manifests))
+}

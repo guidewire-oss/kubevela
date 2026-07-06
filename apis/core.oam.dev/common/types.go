@@ -48,6 +48,18 @@ type CUE struct {
 	// Template defines the abstraction template data of the capability, it will replace the old CUE template in extension field.
 	// Template is a required field if CUE is defined in Capability Definition.
 	Template string `json:"template"`
+	// TargetsTemplate defines target resolution logic for Dispatcher.
+	// +optional
+	TargetsTemplate string `json:"targetsTemplate,omitempty"`
+	// DispatchTemplate defines resource transformation logic for Dispatcher.
+	// +optional
+	DispatchTemplate string `json:"dispatchTemplate,omitempty"`
+	// StatusMappingTemplate defines status remapping logic for Dispatcher.
+	// +optional
+	StatusMappingTemplate string `json:"statusMappingTemplate,omitempty"`
+	// HealthOverrideTemplate defines health override logic for Dispatcher.
+	// +optional
+	HealthOverrideTemplate string `json:"healthOverrideTemplate,omitempty"`
 }
 
 // Schematic defines the encapsulation of this capability(workload/trait/scope),

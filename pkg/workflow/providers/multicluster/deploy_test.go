@@ -18,6 +18,7 @@ package multicluster
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	wfTypesv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 
@@ -35,7 +37,10 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	oamprovidertypes "github.com/oam-dev/kubevela/pkg/workflow/providers/types"
 )
 
 func TestOverrideConfiguration(t *testing.T) {
@@ -406,5 +411,496 @@ func TestApplyComponentsIO(t *testing.T) {
 		r.NoError(err)
 		r.True(healthy)
 
+	})
+}
+
+func TestLoadDispatcherTemplate(t *testing.T) {
+	r := require.New(t)
+	scheme := runtime.NewScheme()
+	cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+	dispatcher := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "core.oam.dev/v1beta1",
+		"kind":       "Dispatcher",
+		"metadata": map[string]interface{}{
+			"name":      "default",
+			"namespace": "default",
+		},
+		"spec": map[string]interface{}{
+			"schematic": map[string]interface{}{
+				"cue": map[string]interface{}{
+					"template": "targets: [{cluster: \"local\", namespace: \"default\"}]",
+				},
+			},
+		},
+	}}
+	err := cli.Create(context.Background(), dispatcher)
+	r.NoError(err)
+	templates, err := loadDispatcherTemplates(context.Background(), cli, "default", "default")
+	r.NoError(err)
+	r.Contains(templates.TargetsTemplate, "targets")
+}
+
+func TestEvalDispatcherTemplate(t *testing.T) {
+	r := require.New(t)
+tpl := `
+targets: [{cluster: "local", namespace: "demo"}]
+output: {
+	apiVersion: "v1"
+	kind: "ConfigMap"
+	metadata: {name: "cm"}
+}
+outputs: {
+	svc: {
+		apiVersion: "v1"
+		kind: "Service"
+		metadata: {name: "svc"}
+	}
+}
+`
+	val, err := compileDispatcherTemplate(context.Background(), tpl, map[string]interface{}{}, map[string]interface{}{})
+	r.NoError(err)
+	resolveVal := val.LookupPath(cue.ParsePath("targets"))
+	r.True(resolveVal.Exists())
+	var targets []v1alpha1.PlacementDecision
+	bs, err := resolveVal.MarshalJSON()
+	r.NoError(err)
+	r.NoError(json.Unmarshal(bs, &targets))
+	r.Len(targets, 1)
+	r.Equal("local", targets[0].Cluster)
+	outputVal := val.LookupPath(cue.ParsePath("output"))
+	r.True(outputVal.Exists())
+	outputJSON, err := outputVal.MarshalJSON()
+	r.NoError(err)
+	output := map[string]interface{}{}
+	r.NoError(json.Unmarshal(outputJSON, &output))
+	r.Equal("ConfigMap", output["kind"])
+}
+
+func TestResolveTargetsIgnoresDispatchOnlyContext(t *testing.T) {
+	r := require.New(t)
+	tpl := `
+targets: [{cluster: "local", namespace: "demo"}]
+output: context.output
+`
+	targets, err := callDispatcherResolveTargets(context.Background(), tpl, map[string]interface{}{}, map[string]interface{}{}, []v1alpha1.PlacementDecision{{Cluster: "local", Namespace: "demo"}})
+	r.NoError(err)
+	r.Len(targets, 1)
+	r.Equal("local", targets[0].Cluster)
+}
+
+func TestResolveTargetsLegacyFieldStillWorks(t *testing.T) {
+	r := require.New(t)
+	tpl := `
+resolveTargets: [{cluster: "local", namespace: "demo"}]
+`
+	targets, err := callDispatcherResolveTargets(context.Background(), tpl, map[string]interface{}{}, map[string]interface{}{}, []v1alpha1.PlacementDecision{{Cluster: "local", Namespace: "demo"}})
+	r.NoError(err)
+	r.Len(targets, 1)
+	r.Equal("local", targets[0].Cluster)
+}
+
+func TestFilterComponents(t *testing.T) {
+	r := require.New(t)
+	all := []apicommon.ApplicationComponent{
+		{Name: "a"},
+		{Name: "b"},
+	}
+	filtered, err := filterComponents(all, []string{"b"})
+	r.NoError(err)
+	r.Len(filtered, 1)
+	r.Equal("b", filtered[0].Name)
+
+	_, err = filterComponents(all, []string{"c"})
+	r.Error(err)
+	r.Contains(err.Error(), "component(s) not found")
+}
+
+func TestResolveDispatcherStatusMapping(t *testing.T) {
+	r := require.New(t)
+	scheme := runtime.NewScheme()
+	cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	dispatcher := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "core.oam.dev/v1beta1",
+		"kind":       "Dispatcher",
+		"metadata": map[string]interface{}{
+			"name":      "status-only",
+			"namespace": "default",
+		},
+		"spec": map[string]interface{}{
+			"schematic": map[string]interface{}{
+				"cue": map[string]interface{}{
+					"targetsTemplate":  `resolveTargets: []`,
+					"dispatchTemplate": `output: {}`,
+					"statusMappingTemplate": `
+output: {
+  status: {
+    replicas: context.output.status.replicas
+  }
+}
+outputs: {}
+`,
+				},
+			},
+		},
+	}}
+	r.NoError(cli.Create(context.Background(), dispatcher))
+
+	mw := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "work.open-cluster-management.io/v1",
+		"kind":       "ManifestWork",
+		"metadata": map[string]interface{}{
+			"name":      "vela-web-local",
+			"namespace": "ocm-spoke",
+		},
+		"status": map[string]interface{}{
+			"replicas": float64(2),
+		},
+	}}
+	r.NoError(cli.Create(multicluster.ContextWithClusterName(context.Background(), "local"), mw))
+
+	policies := []v1beta1.AppPolicy{{
+		Name:       "ocm-topology",
+		Type:       "ocm-topology",
+		Properties: &runtime.RawExtension{Raw: []byte(`{"workNamespace":"ocm-spoke"}`)},
+	}}
+	mapped, err := ResolveDispatcherStatusMapping(
+		context.Background(),
+		cli,
+		&appfile.Appfile{Name: "app", Namespace: "default"},
+		"status-only",
+		"local",
+		v1alpha1.PlacementDecision{Cluster: "local"},
+		apicommon.ApplicationComponent{Name: "web"},
+		policies,
+		[]*unstructured.Unstructured{mw},
+	)
+	r.NoError(err)
+	r.NotNil(mapped)
+	r.NotNil(mapped.Output)
+	status, ok := mapped.Output["status"].(map[string]interface{})
+	r.True(ok)
+	r.Equal(float64(2), status["replicas"])
+}
+
+func TestDispatcherBaseContextInjectedIntoTemplates(t *testing.T) {
+	r := require.New(t)
+	base := buildDispatcherBaseContext(&appfile.Appfile{
+		Name:            "app-with-ctx",
+		Namespace:       "default",
+		AppRevisionName: "app-with-ctx-v3",
+		AppLabels: map[string]string{
+			"team": "platform",
+		},
+		AppAnnotations: map[string]string{
+			oam.AnnotationWorkflowName:  "rollout-v2",
+			oam.AnnotationPublishVersion: "42",
+			"example.io/marker":         "present",
+		},
+	}, "ocm-manifestwork", []map[string]interface{}{{"name": "topology"}})
+	tpl := `
+resolveTargets: [{
+	cluster: context.placements[0].cluster
+	namespace: context.namespace
+}]
+`
+	targets, err := callDispatcherResolveTargets(
+		context.Background(),
+		tpl,
+		nil,
+		base,
+		[]v1alpha1.PlacementDecision{{Cluster: "local", Namespace: "spoke"}},
+	)
+	r.NoError(err)
+	r.Len(targets, 1)
+	r.Equal("local", targets[0].Cluster)
+	r.Equal("default", targets[0].Namespace)
+
+	transformTpl := `
+output: {
+	apiVersion: "v1"
+	kind: "ConfigMap"
+	metadata: {
+		name:      context.appName
+		namespace: context.namespace
+		labels: {
+			dispatcher: context.dispatcher
+			revision:   context.appRevision
+			team:       context.appLabels.team
+			workflow:   context.workflowName
+			publish:    context.publishVersion
+		}
+		annotations: context.appAnnotations
+	}
+}
+`
+	result, err := callDispatcherTransform(
+		context.Background(),
+		transformTpl,
+		nil,
+		base,
+		v1alpha1.PlacementDecision{Cluster: "local", Namespace: "spoke"},
+		apicommon.ApplicationComponent{Name: "web"},
+		&unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "apps/v1", "kind": "Deployment"}},
+		nil,
+	)
+	r.NoError(err)
+	r.Equal("ConfigMap", result.Output["kind"])
+	metadata, ok := result.Output["metadata"].(map[string]interface{})
+	r.True(ok)
+	r.Equal("app-with-ctx", metadata["name"])
+	r.Equal("default", metadata["namespace"])
+	labels, ok := metadata["labels"].(map[string]interface{})
+	r.True(ok)
+	r.Equal("ocm-manifestwork", labels["dispatcher"])
+	r.Equal("app-with-ctx-v3", labels["revision"])
+	r.Equal("platform", labels["team"])
+	r.Equal("rollout-v2", labels["workflow"])
+	r.Equal("42", labels["publish"])
+}
+
+func TestApplyWithDispatcherHealthGating(t *testing.T) {
+	r := require.New(t)
+	scheme := runtime.NewScheme()
+	cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	dispatcher := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "core.oam.dev/v1beta1",
+		"kind":       "Dispatcher",
+		"metadata": map[string]interface{}{
+			"name":      "gate-test",
+			"namespace": "default",
+		},
+		"spec": map[string]interface{}{
+			"schematic": map[string]interface{}{
+				"cue": map[string]interface{}{
+					"targetsTemplate":  `resolveTargets: []`,
+					"dispatchTemplate": `output: context.output`,
+				},
+			},
+		},
+	}}
+	r.NoError(cli.Create(context.Background(), dispatcher))
+
+	componentRender := func(_ context.Context, comp apicommon.ApplicationComponent, _ *cue.Value, _ string, overrideNamespace string) (*unstructured.Unstructured, []*unstructured.Unstructured, error) {
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "apps/v1",
+			"kind":       "Deployment",
+			"metadata": map[string]interface{}{
+				"name":      comp.Name,
+				"namespace": overrideNamespace,
+			},
+		}}, nil, nil
+	}
+
+	af := &appfile.Appfile{Name: "app", Namespace: "default"}
+	components := []apicommon.ApplicationComponent{{Name: "web"}}
+	placements := []v1alpha1.PlacementDecision{{Cluster: "local", Namespace: "default"}}
+
+	t.Run("returns not healthy when health check is false", func(t *testing.T) {
+		healthy, reason, err := applyWithDispatcher(
+			context.Background(),
+			cli,
+			nil,
+			componentRender,
+			func(_ context.Context, _ apicommon.ApplicationComponent, _ *cue.Value, _ string, _ string) (bool, *apicommon.ApplicationComponentStatus, *unstructured.Unstructured, []*unstructured.Unstructured, error) {
+				return false, nil, nil, nil, nil
+			},
+			"gate-test",
+			af,
+			nil,
+			components,
+			placements,
+		)
+		r.NoError(err)
+		r.False(healthy)
+		r.Contains(reason, "not healthy")
+	})
+
+	t.Run("returns error when health check errors", func(t *testing.T) {
+		healthy, reason, err := applyWithDispatcher(
+			context.Background(),
+			cli,
+			nil,
+			componentRender,
+			func(_ context.Context, _ apicommon.ApplicationComponent, _ *cue.Value, _ string, _ string) (bool, *apicommon.ApplicationComponentStatus, *unstructured.Unstructured, []*unstructured.Unstructured, error) {
+				return false, nil, nil, nil, fmt.Errorf("boom")
+			},
+			"gate-test",
+			af,
+			nil,
+			components,
+			placements,
+		)
+		r.Error(err)
+		r.False(healthy)
+		r.Equal("", reason)
+		r.Contains(err.Error(), "health check failed")
+	})
+
+	t.Run("returns healthy when health check passes", func(t *testing.T) {
+		healthy, reason, err := applyWithDispatcher(
+			context.Background(),
+			cli,
+			nil,
+			componentRender,
+			func(_ context.Context, _ apicommon.ApplicationComponent, _ *cue.Value, _ string, _ string) (bool, *apicommon.ApplicationComponentStatus, *unstructured.Unstructured, []*unstructured.Unstructured, error) {
+				return true, nil, nil, nil, nil
+			},
+			"gate-test",
+			af,
+			nil,
+			components,
+			placements,
+		)
+		r.NoError(err)
+		r.True(healthy)
+		r.Equal("", reason)
+	})
+}
+
+func TestApplyWithDispatcherHealthOverride(t *testing.T) {
+	r := require.New(t)
+	scheme := runtime.NewScheme()
+
+	componentRender := func(_ context.Context, comp apicommon.ApplicationComponent, _ *cue.Value, _ string, overrideNamespace string) (*unstructured.Unstructured, []*unstructured.Unstructured, error) {
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "work.open-cluster-management.io/v1",
+			"kind":       "ManifestWork",
+			"metadata": map[string]interface{}{
+				"name":      comp.Name,
+				"namespace": overrideNamespace,
+			},
+		}}, nil, nil
+	}
+
+	af := &appfile.Appfile{Name: "app", Namespace: "default"}
+	components := []apicommon.ApplicationComponent{{Name: "web"}}
+	placements := []v1alpha1.PlacementDecision{{Cluster: "local", Namespace: "default"}}
+
+	t.Run("override unhealthy supersedes component health", func(t *testing.T) {
+		cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+		dispatcher := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "core.oam.dev/v1beta1",
+			"kind":       "Dispatcher",
+			"metadata": map[string]interface{}{
+				"name":      "override-unhealthy",
+				"namespace": "default",
+			},
+			"spec": map[string]interface{}{
+				"schematic": map[string]interface{}{
+					"cue": map[string]interface{}{
+						"targetsTemplate":        `resolveTargets: []`,
+						"dispatchTemplate":       `output: context.output`,
+						"healthOverrideTemplate": `isHealth: false, message: "ocm apply signals not ready"`,
+					},
+				},
+			},
+		}}
+		r.NoError(cli.Create(context.Background(), dispatcher))
+
+		healthy, reason, err := applyWithDispatcher(
+			context.Background(),
+			cli,
+			nil,
+			componentRender,
+			func(ctx context.Context, _ apicommon.ApplicationComponent, _ *cue.Value, _ string, _ string) (bool, *apicommon.ApplicationComponentStatus, *unstructured.Unstructured, []*unstructured.Unstructured, error) {
+				if mapped := oamprovidertypes.DispatchMappedHealthFrom(ctx); mapped != nil && mapped.Healthy != nil {
+					return *mapped.Healthy, nil, nil, nil, nil
+				}
+				return true, nil, nil, nil, nil
+			},
+			"override-unhealthy",
+			af,
+			nil,
+			components,
+			placements,
+		)
+		r.NoError(err)
+		r.False(healthy)
+		r.Contains(reason, "not healthy")
+	})
+
+	t.Run("override healthy bypasses component health check", func(t *testing.T) {
+		cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+		dispatcher := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "core.oam.dev/v1beta1",
+			"kind":       "Dispatcher",
+			"metadata": map[string]interface{}{
+				"name":      "override-healthy",
+				"namespace": "default",
+			},
+			"spec": map[string]interface{}{
+				"schematic": map[string]interface{}{
+					"cue": map[string]interface{}{
+						"targetsTemplate":        `resolveTargets: []`,
+						"dispatchTemplate":       `output: context.output`,
+						"healthOverrideTemplate": `isHealth: true, message: "ocm conditions ready", details: {source: "override"}`,
+					},
+				},
+			},
+		}}
+		r.NoError(cli.Create(context.Background(), dispatcher))
+
+		healthy, reason, err := applyWithDispatcher(
+			context.Background(),
+			cli,
+			nil,
+			componentRender,
+			func(ctx context.Context, _ apicommon.ApplicationComponent, _ *cue.Value, _ string, _ string) (bool, *apicommon.ApplicationComponentStatus, *unstructured.Unstructured, []*unstructured.Unstructured, error) {
+				if mapped := oamprovidertypes.DispatchMappedHealthFrom(ctx); mapped != nil && mapped.Healthy != nil {
+					return *mapped.Healthy, nil, nil, nil, nil
+				}
+				return false, nil, nil, nil, nil
+			},
+			"override-healthy",
+			af,
+			nil,
+			components,
+			placements,
+		)
+		r.NoError(err)
+		r.True(healthy)
+		r.Equal("", reason)
+	})
+
+	t.Run("override eval error keeps reconcile pending", func(t *testing.T) {
+		cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+		dispatcher := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "core.oam.dev/v1beta1",
+			"kind":       "Dispatcher",
+			"metadata": map[string]interface{}{
+				"name":      "override-bad-template",
+				"namespace": "default",
+			},
+			"spec": map[string]interface{}{
+				"schematic": map[string]interface{}{
+					"cue": map[string]interface{}{
+						"targetsTemplate":        `resolveTargets: []`,
+						"dispatchTemplate":       `output: context.output`,
+						"healthOverrideTemplate": `isHealth: context.output.status..broken`,
+					},
+				},
+			},
+		}}
+		r.NoError(cli.Create(context.Background(), dispatcher))
+
+		healthy, reason, err := applyWithDispatcher(
+			context.Background(),
+			cli,
+			nil,
+			componentRender,
+			func(_ context.Context, _ apicommon.ApplicationComponent, _ *cue.Value, _ string, _ string) (bool, *apicommon.ApplicationComponentStatus, *unstructured.Unstructured, []*unstructured.Unstructured, error) {
+				return false, nil, nil, nil, nil
+			},
+			"override-bad-template",
+			af,
+			nil,
+			components,
+			placements,
+		)
+		r.NoError(err)
+		r.False(healthy)
+		r.Contains(reason, "health override pending")
 	})
 }

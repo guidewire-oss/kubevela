@@ -1,0 +1,30 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: app-with-ocm-dispatcher
+  namespace: default
+spec:
+  components:
+    - name: web
+      type: webservice
+      properties:
+        image: nginx
+        ports:
+          - port: 80
+            expose: true
+
+  policies:
+    - name: ocm-topology
+      type: ocm-topology
+      properties:
+        hubCluster: local
+        workNamespace: ocm-spoke
+        namePrefix: vela-ocm
+
+  workflow:
+    steps:
+      - name: deploy-via-ocm
+        type: deploy
+        properties:
+          policies: ["ocm-topology"]
+          dispatcher: ocm-manifestwork

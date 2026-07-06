@@ -63,6 +63,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
+	wfmulticluster "github.com/oam-dev/kubevela/pkg/workflow/providers/multicluster"
 	oamwebhook "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev"
 	"github.com/oam-dev/kubevela/version"
 )
@@ -224,6 +225,10 @@ func syncConfigurations(ctx context.Context, coreOptions *options.CoreOptions) {
 	if coreOptions.OAM != nil {
 		klog.V(3).InfoS("Syncing OAM configuration")
 		coreOptions.OAM.SyncToOAMGlobals()
+	}
+	if coreOptions.Controller != nil {
+		klog.V(3).InfoS("Syncing controller workflow defaults")
+		wfmulticluster.DefaultDispatcher = coreOptions.Controller.DefaultDispatcher
 	}
 }
 

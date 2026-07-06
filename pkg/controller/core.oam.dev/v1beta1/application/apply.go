@@ -27,6 +27,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	monitorContext "github.com/kubevela/pkg/monitor/context"
@@ -46,6 +47,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/resourcekeeper"
+	oamprovidertypes "github.com/oam-dev/kubevela/pkg/workflow/providers/types"
 )
 
 // AppHandler handles application reconcile
@@ -298,7 +300,33 @@ func (h *AppHandler) collectWorkloadHealthStatus(ctx context.Context, comp *appf
 	} else {
 		templateContext, err := comp.GetTemplateContext(comp.Ctx, h.Client, accessor)
 		if err != nil {
-			return false, nil, nil, errors.WithMessagef(err, "app=%s, comp=%s, get template context error", appName, comp.Name)
+			if mapped := oamprovidertypes.DispatchMappedHealthFrom(ctx); mapped != nil {
+				templateContext, err = buildTemplateContextFromRenderedComponent(comp)
+				if err != nil {
+					return false, nil, nil, errors.WithMessagef(err, "app=%s, comp=%s, get template context error", appName, comp.Name)
+				}
+				klog.V(1).Infof("dispatcher: fallback to rendered template context app=%s comp=%s", appName, comp.Name)
+			} else {
+				return false, nil, nil, errors.WithMessagef(err, "app=%s, comp=%s, get template context error", appName, comp.Name)
+			}
+		}
+		if mapped := oamprovidertypes.DispatchMappedHealthFrom(ctx); mapped != nil {
+			mergeMappedStatusIntoTemplateContext(templateContext, mapped)
+		}
+		if mapped := oamprovidertypes.DispatchMappedHealthFrom(ctx); mapped != nil {
+			if mapped.Healthy != nil {
+				// Dispatcher health override: use override fields directly and skip
+				// component default health evaluation/template requirements.
+				status.Healthy = *mapped.Healthy
+				if mapped.Message != "" {
+					status.Message = mapped.Message
+				}
+				if len(mapped.Details) > 0 {
+					status.Details = mapped.Details
+				}
+				output, outputs = extractOutputAndOutputs(templateContext)
+				return status.Healthy, output, outputs, nil
+			}
 		}
 		statusResult, err := comp.EvalStatus(templateContext)
 		if err != nil {
@@ -318,6 +346,106 @@ func (h *AppHandler) collectWorkloadHealthStatus(ctx context.Context, comp *appf
 		output, outputs = extractOutputAndOutputs(templateContext)
 	}
 	return status.Healthy, output, outputs, nil
+}
+
+func buildTemplateContextFromRenderedComponent(comp *appfile.Component) (map[string]interface{}, error) {
+	base, auxiliaries := comp.Ctx.Output()
+	workload, err := base.Unstructured()
+	if err != nil {
+		return nil, err
+	}
+	templateContext := map[string]interface{}{
+		"output": workload.Object,
+	}
+	outputs := map[string]interface{}{}
+	for _, aux := range auxiliaries {
+		u, err := aux.Ins.Unstructured()
+		if err != nil {
+			return nil, err
+		}
+		outputs[aux.Name] = u.Object
+	}
+	templateContext["outputs"] = outputs
+	templateContext[velaprocess.ParameterFieldName] = comp.Params
+	return templateContext, nil
+}
+
+func mergeMappedStatusIntoTemplateContext(templateContext map[string]interface{}, mapped *oamprovidertypes.DispatchMappedHealth) {
+	if templateContext == nil || mapped == nil {
+		return
+	}
+	if mapped.Output != nil {
+		if mappedOutputStatus, ok := mapped.Output["status"].(map[string]interface{}); ok {
+			outputObj, _ := templateContext["output"].(map[string]interface{})
+			if outputObj == nil {
+				outputObj = map[string]interface{}{}
+				templateContext["output"] = outputObj
+			}
+			// status-only replacement: replace output.status but preserve other output fields
+			outputObj["status"] = mappedOutputStatus
+		}
+	}
+	if len(mapped.Outputs) == 0 {
+		return
+	}
+	outputsObj, _ := templateContext["outputs"].(map[string]interface{})
+	if outputsObj == nil {
+		outputsObj = map[string]interface{}{}
+		templateContext["outputs"] = outputsObj
+	}
+	for name, mappedOut := range mapped.Outputs {
+		if mappedOut == nil {
+			continue
+		}
+		mappedOutStatus, ok := mappedOut["status"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		targetKey := name
+		existingOut, _ := outputsObj[targetKey].(map[string]interface{})
+		if existingOut == nil {
+			if k := findOutputKeyByStatusResourceMeta(outputsObj, mappedOutStatus); k != "" {
+				targetKey = k
+				existingOut, _ = outputsObj[targetKey].(map[string]interface{})
+			}
+		}
+		if existingOut == nil {
+			existingOut = map[string]interface{}{}
+			outputsObj[targetKey] = existingOut
+		}
+		// status-only replacement: replace outputs.<name>.status but preserve other fields
+		existingOut["status"] = mappedOutStatus
+	}
+}
+
+func findOutputKeyByStatusResourceMeta(outputs map[string]interface{}, status map[string]interface{}) string {
+	rm, _ := status["resourceMeta"].(map[string]interface{})
+	if rm == nil {
+		return ""
+	}
+	kind, _ := rm["kind"].(string)
+	name, _ := rm["name"].(string)
+	namespace, _ := rm["namespace"].(string)
+	if kind == "" || name == "" {
+		return ""
+	}
+	for key, out := range outputs {
+		obj, _ := out.(map[string]interface{})
+		if obj == nil {
+			continue
+		}
+		objKind, _ := obj["kind"].(string)
+		meta, _ := obj["metadata"].(map[string]interface{})
+		if objKind == "" || meta == nil {
+			continue
+		}
+		objName, _ := meta["name"].(string)
+		objNamespace, _ := meta["namespace"].(string)
+		if objKind == kind && objName == name && (namespace == "" || objNamespace == namespace) {
+			return key
+		}
+	}
+	return ""
 }
 
 // nolint

@@ -88,6 +88,51 @@ func TestListClusters(t *testing.T) {
 	r.Equal(clusterNames, res.Returns.Outputs.Clusters)
 }
 
+func TestGetClusterLabels(t *testing.T) {
+	r := require.New(t)
+	originalNS := multicluster.ClusterGatewaySecretNamespace
+	multicluster.ClusterGatewaySecretNamespace = types.DefaultKubeVelaNS
+	t.Cleanup(func() {
+		multicluster.ClusterGatewaySecretNamespace = originalNS
+	})
+
+	t.Run("cluster secret labels", func(t *testing.T) {
+		cli := fake.NewClientBuilder().WithScheme(commontypes.Scheme).Build()
+		expectedLabels := map[string]string{
+			clustercommon.LabelKeyClusterCredentialType: string(clusterv1alpha1.CredentialTypeX509Certificate),
+			"team": "platform",
+		}
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "cluster-a",
+				Namespace: multicluster.ClusterGatewaySecretNamespace,
+				Labels:    expectedLabels,
+			},
+		}
+		r.NoError(cli.Create(context.Background(), secret))
+		res, err := GetClusterLabels(context.Background(), &oamprovidertypes.Params[ClusterLabelsParams]{
+			Params: ClusterLabelsParams{Cluster: "cluster-a"},
+			RuntimeParams: oamprovidertypes.RuntimeParams{
+				KubeClient: cli,
+			},
+		})
+		r.NoError(err)
+		r.Equal(expectedLabels, res.Returns.Labels)
+	})
+
+	t.Run("local cluster has empty labels", func(t *testing.T) {
+		cli := fake.NewClientBuilder().WithScheme(commontypes.Scheme).Build()
+		res, err := GetClusterLabels(context.Background(), &oamprovidertypes.Params[ClusterLabelsParams]{
+			Params: ClusterLabelsParams{Cluster: multicluster.ClusterLocalName},
+			RuntimeParams: oamprovidertypes.RuntimeParams{
+				KubeClient: cli,
+			},
+		})
+		r.NoError(err)
+		r.Empty(res.Returns.Labels)
+	})
+}
+
 func TestDeploy(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()
@@ -187,6 +232,101 @@ func TestDeploy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDeployUsesDefaultDispatcher(t *testing.T) {
+	r := require.New(t)
+	ctx := context.Background()
+	cli := fake.NewClientBuilder().WithScheme(commontypes.Scheme).Build()
+
+	origDefaultDispatcher := DefaultDispatcher
+	DefaultDispatcher = "default"
+	t.Cleanup(func() {
+		DefaultDispatcher = origDefaultDispatcher
+	})
+
+	dispatcher := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "core.oam.dev/v1beta1",
+		"kind":       "Dispatcher",
+		"metadata": map[string]interface{}{
+			"name":      "default",
+			"namespace": "default",
+		},
+		"spec": map[string]interface{}{
+			"schematic": map[string]interface{}{
+				"cue": map[string]interface{}{
+					"targetsTemplate":  `resolveTargets: context.placements`,
+					"dispatchTemplate": `output: context.output`,
+				},
+			},
+		},
+	}}
+	r.NoError(cli.Create(ctx, dispatcher))
+
+	componentRender := func(_ context.Context, comp common.ApplicationComponent, _ *cue.Value, _ string, overrideNamespace string) (*unstructured.Unstructured, []*unstructured.Unstructured, error) {
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "apps/v1",
+			"kind":       "Deployment",
+			"metadata": map[string]interface{}{
+				"name":      comp.Name,
+				"namespace": overrideNamespace,
+			},
+			"spec": map[string]interface{}{
+				"selector": map[string]interface{}{
+					"matchLabels": map[string]interface{}{
+						"app": comp.Name,
+					},
+				},
+				"template": map[string]interface{}{
+					"metadata": map[string]interface{}{
+						"labels": map[string]interface{}{
+							"app": comp.Name,
+						},
+					},
+					"spec": map[string]interface{}{
+						"containers": []map[string]interface{}{{
+							"name":  comp.Name,
+							"image": "nginx",
+						}},
+					},
+				},
+			},
+		}}, nil, nil
+	}
+	componentHealthCheck := func(_ context.Context, _ common.ApplicationComponent, _ *cue.Value, _ string, _ string) (bool, *common.ApplicationComponentStatus, *unstructured.Unstructured, []*unstructured.Unstructured, error) {
+		return true, nil, nil, nil, nil
+	}
+	workloadRender := func(_ context.Context, _ common.ApplicationComponent) (*appfile.Component, error) {
+		return &appfile.Component{}, nil
+	}
+
+	params := &DeployParams{
+		Params: DeployParameter{
+			Parallelism:              1,
+			IgnoreTerraformComponent: true,
+			Policies:                 []string{},
+			Dispatcher:               "",
+		},
+		RuntimeParams: oamprovidertypes.RuntimeParams{
+			KubeClient:           cli,
+			ComponentRender:      componentRender,
+			ComponentHealthCheck: componentHealthCheck,
+			WorkloadRender:       workloadRender,
+			Appfile: &appfile.Appfile{
+				Name:      "test-app",
+				Namespace: "default",
+				Policies:  []v1beta1.AppPolicy{},
+				Components: []common.ApplicationComponent{{
+					Name:       "web",
+					Type:       "webservice",
+					Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx"}`)},
+				}},
+			},
+		},
+	}
+
+	_, err := Deploy(ctx, params)
+	r.NoError(err)
 }
 
 func TestGetPlacementsFromTopologyPolicies(t *testing.T) {

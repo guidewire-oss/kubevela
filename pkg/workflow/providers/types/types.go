@@ -56,6 +56,8 @@ const (
 	appfileKey              providertypes.ContextKey = "appfile"
 	configFactoryKey        providertypes.ContextKey = "configFactory"
 	kubeconfigKey           providertypes.ContextKey = "kubeconfig"
+	dispatchHealthResourcesKey providertypes.ContextKey = "dispatchHealthResources"
+	dispatchMappedHealthKey providertypes.ContextKey = "dispatchMappedHealth"
 )
 
 // RuntimeParams is the params for runtime
@@ -182,6 +184,45 @@ func WithRuntimeParams(parent context.Context, params RuntimeParams) context.Con
 	ctx = context.WithValue(ctx, kubeconfigKey, params.KubeConfig)
 
 	return ctx
+}
+
+// WithDispatchHealthResources stores transformed resources for dispatcher-aware health checks.
+func WithDispatchHealthResources(parent context.Context, resources []*unstructured.Unstructured) context.Context {
+	return context.WithValue(parent, dispatchHealthResourcesKey, resources)
+}
+
+// DispatchHealthResourcesFrom returns transformed resources for dispatcher-aware health checks.
+func DispatchHealthResourcesFrom(ctx context.Context) []*unstructured.Unstructured {
+	if resources, ok := ctx.Value(dispatchHealthResourcesKey).([]*unstructured.Unstructured); ok {
+		return resources
+	}
+	return nil
+}
+
+// DispatchMappedHealth carries dispatcher-provided status mapping.
+// The mapping is merged into health template context using status-only replacement:
+// - output.status replaces context.output.status
+// - outputs.<name>.status replaces context.outputs.<name>.status
+// Other output fields remain unchanged and continue to be sourced from rendered objects.
+type DispatchMappedHealth struct {
+	Healthy *bool
+	Message string
+	Details map[string]string
+	Output  map[string]interface{}
+	Outputs map[string]map[string]interface{}
+}
+
+// WithDispatchMappedHealth stores mapped dispatcher health/status context.
+func WithDispatchMappedHealth(parent context.Context, mapping *DispatchMappedHealth) context.Context {
+	return context.WithValue(parent, dispatchMappedHealthKey, mapping)
+}
+
+// DispatchMappedHealthFrom returns mapped dispatcher health/status context.
+func DispatchMappedHealthFrom(ctx context.Context) *DispatchMappedHealth {
+	if mapping, ok := ctx.Value(dispatchMappedHealthKey).(*DispatchMappedHealth); ok {
+		return mapping
+	}
+	return nil
 }
 
 // RuntimeParamsFrom returns the runtime params value stored in ctx, if any.

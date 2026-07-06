@@ -1,0 +1,79 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: dispatchers.core.oam.dev
+spec:
+  group: core.oam.dev
+  names:
+    categories:
+    - oam
+    kind: Dispatcher
+    listKind: DispatcherList
+    plural: dispatchers
+    shortNames:
+    - dispatcher
+    singular: dispatcher
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: Dispatcher is the Schema for the dispatchers API.
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DispatcherSpec defines dispatcher template and metadata.
+            properties:
+              schematic:
+                description: Schematic defines the data format and template of dispatcher logic.
+                properties:
+                  cue:
+                    properties:
+                      dispatchTemplate:
+                        type: string
+                      healthOverrideTemplate:
+                        type: string
+                      statusMappingTemplate:
+                        type: string
+                      targetsTemplate:
+                        type: string
+                      template:
+                        type: string
+                    type: object
+                type: object
+            type: object
+          status:
+            description: DispatcherStatus is the status of Dispatcher.
+            properties:
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      type: string
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - type
+                  - status
+                  - lastTransitionTime
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

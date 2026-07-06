@@ -18,6 +18,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ import (
 	wfTypes "github.com/kubevela/workflow/pkg/types"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
@@ -56,6 +58,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers"
+	wfmulticluster "github.com/oam-dev/kubevela/pkg/workflow/providers/multicluster"
 	oamprovidertypes "github.com/oam-dev/kubevela/pkg/workflow/providers/types"
 	"github.com/oam-dev/kubevela/pkg/workflow/template"
 )
@@ -273,7 +276,20 @@ func (h *AppHandler) checkComponentHealth(appParser *appfile.Parser, af *appfile
 		ctx := multicluster.ContextWithClusterName(baseCtx, clusterName)
 		ctx = contextWithComponentNamespace(ctx, overrideNamespace)
 		ctx = contextWithReplicaKey(ctx, comp.ReplicaKey)
-
+		var mapped *oamprovidertypes.DispatchMappedHealth
+		if fromCtx := oamprovidertypes.DispatchMappedHealthFrom(baseCtx); fromCtx != nil {
+			mapped = fromCtx
+		}
+		if mapped == nil {
+			var err error
+			mapped, err = h.resolveDispatcherMappedHealth(auth.ContextWithUserInfo(ctx, h.app), af, comp, clusterName, overrideNamespace)
+			if err != nil {
+				return false, nil, nil, nil, err
+			}
+		}
+		if mapped != nil {
+			ctx = oamprovidertypes.WithDispatchMappedHealth(ctx, mapped)
+		}
 		wl, manifest, err := h.prepareWorkloadAndManifests(ctx, appParser, comp, patcher, af)
 		if err != nil {
 			return false, nil, nil, nil, err
@@ -290,6 +306,11 @@ func (h *AppHandler) checkComponentHealth(appParser *appfile.Parser, af *appfile
 		if !wl.SkipApplyWorkload {
 			dispatchResources = append([]*unstructured.Unstructured{readyWorkload}, readyTraits...)
 		}
+		// Dispatcher mode can transform rendered resources before apply (for example into ManifestWork).
+		// In that case, use transformed resources as the source of truth for tracker-based health/status wiring.
+		if transformed := oamprovidertypes.DispatchHealthResourcesFrom(baseCtx); len(transformed) > 0 {
+			dispatchResources = transformed
+		}
 		if !h.resourceKeeper.ContainsResources(dispatchResources) {
 			return false, nil, nil, nil, err
 		}
@@ -301,6 +322,100 @@ func (h *AppHandler) checkComponentHealth(appParser *appfile.Parser, af *appfile
 
 		return isHealth, status, output, outputs, err
 	}
+}
+
+func (h *AppHandler) resolveDispatcherMappedHealth(ctx context.Context, af *appfile.Appfile, comp common.ApplicationComponent, clusterName string, overrideNamespace string) (*oamprovidertypes.DispatchMappedHealth, error) {
+	dispatcherName, stepPolicies := findDispatcherHealthConfig(h.app)
+	if dispatcherName == "" {
+		return nil, nil
+	}
+	policies := af.Policies
+	if len(stepPolicies) > 0 {
+		var err error
+		policies, err = selectAppPolicies(af.Policies, stepPolicies)
+		if err != nil {
+			return nil, err
+		}
+	}
+	resources, err := h.loadAppliedResourcesForComponent(ctx, comp.Name, clusterName)
+	if err != nil {
+		return nil, err
+	}
+	if len(resources) == 0 {
+		return nil, nil
+	}
+	placement := v1alpha1.PlacementDecision{
+		Cluster:   clusterName,
+		Namespace: overrideNamespace,
+	}
+	mapped, err := wfmulticluster.ResolveDispatcherStatusMapping(ctx, h.Client, af, dispatcherName, clusterName, placement, comp, policies, resources)
+	if err != nil {
+		// Status mapping is optional metadata enrichment for dispatcher mode.
+		// Never fail default component health collection if mapping evaluation fails.
+		return nil, nil
+	}
+	return mapped, nil
+}
+
+func (h *AppHandler) loadAppliedResourcesForComponent(ctx context.Context, componentName string, clusterName string) ([]*unstructured.Unstructured, error) {
+	resources := make([]*unstructured.Unstructured, 0)
+	for _, ref := range h.app.Status.AppliedResources {
+		if ref.Cluster != clusterName || ref.Kind == "" || ref.APIVersion == "" || ref.Name == "" {
+			continue
+		}
+		obj := &unstructured.Unstructured{}
+		obj.SetAPIVersion(ref.APIVersion)
+		obj.SetKind(ref.Kind)
+		if err := h.Client.Get(ctx, client.ObjectKey{Name: ref.Name, Namespace: ref.Namespace}, obj); err != nil {
+			continue
+		}
+		if obj.GetLabels()[oam.LabelAppComponent] != componentName {
+			continue
+		}
+		resources = append(resources, obj)
+	}
+	return resources, nil
+}
+
+func findDispatcherHealthConfig(app *v1beta1.Application) (string, []string) {
+	if app == nil || app.Spec.Workflow == nil {
+		return wfmulticluster.DefaultDispatcher, nil
+	}
+	for _, step := range app.Spec.Workflow.Steps {
+		if step.Type != "deploy" || step.Properties == nil || len(step.Properties.Raw) == 0 {
+			continue
+		}
+		props := struct {
+			Dispatcher string   `json:"dispatcher"`
+			Policies   []string `json:"policies"`
+		}{}
+		if err := json.Unmarshal(step.Properties.Raw, &props); err != nil {
+			continue
+		}
+		if props.Dispatcher != "" {
+			return props.Dispatcher, props.Policies
+		}
+	}
+	return wfmulticluster.DefaultDispatcher, nil
+}
+
+func selectAppPolicies(all []v1beta1.AppPolicy, names []string) ([]v1beta1.AppPolicy, error) {
+	if len(names) == 0 {
+		return all, nil
+	}
+	byName := map[string]v1beta1.AppPolicy{}
+	for _, p := range all {
+		byName[p.Name] = p
+	}
+	out := make([]v1beta1.AppPolicy, 0, len(names))
+	for _, n := range names {
+		p, ok := byName[n]
+		if !ok {
+			return nil, fmt.Errorf("policy %s not found", n)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 func (h *AppHandler) applyComponentFunc(appParser *appfile.Parser, af *appfile.Appfile) oamprovidertypes.ComponentApply {

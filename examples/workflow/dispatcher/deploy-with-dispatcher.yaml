@@ -1,0 +1,25 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: app-with-dispatcher
+  namespace: default
+spec:
+  components:
+    - name: web
+      type: webservice
+      properties:
+        image: nginx
+        ports:
+          - port: 80
+  policies:
+    - name: topology-local
+      type: topology
+      properties:
+        clusters: ["local"]
+  workflow:
+    steps:
+      - name: deploy
+        type: deploy
+        properties:
+          policies: ["topology-local"]
+          dispatcher: default

@@ -1,0 +1,52 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Dispatcher
+metadata:
+  name: internal-cluster-gateway
+  namespace: vela-system
+spec:
+  schematic:
+    cue:
+      targetsTemplate: |
+        // Keep default multicluster placement behavior.
+        targets: context.placements
+      dispatchTemplate: |
+        import "vela/multicluster"
+
+        // Showcase provider usage: load labels for the target cluster.
+        _clusterLabels: multicluster.#GetClusterLabels & {
+          $params: {
+            cluster: context.placement.cluster
+          }
+        }
+
+        // Pass rendered workload/traits through, and project each cluster label
+        // onto every rendered resource as a resource label.
+
+        output: context.output & {
+          metadata: {
+            labels: {
+              for key, value in _clusterLabels.$returns.labels {
+                "\(key)": value
+              }
+            }
+            annotations: {
+              "example.dispatcher.oam.dev/target-cluster": context.placement.cluster
+            }
+          }
+        }
+        outputs: {
+          for name, obj in context.outputs {
+            "\(name)": obj & {
+              metadata: {
+                labels: {
+                  for key, value in _clusterLabels.$returns.labels {
+                    "\(key)": value
+                  }
+                }
+                annotations: {
+                  "example.dispatcher.oam.dev/target-cluster": context.placement.cluster
+                }
+              }
+            }
+          }
+        }

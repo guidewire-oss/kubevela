@@ -42,4 +42,7 @@ type Args struct {
 
 	// IgnoreDefinitionWithoutControllerRequirement indicates that trait/component/workflowstep definition controller will not process the definition without 'definition.oam.dev/controller-version-require' annotation.
 	IgnoreDefinitionWithoutControllerRequirement bool
+
+	// DefaultDispatcher is the default dispatcher name used by deploy workflow step when step-level dispatcher is not set.
+	DefaultDispatcher string
 }

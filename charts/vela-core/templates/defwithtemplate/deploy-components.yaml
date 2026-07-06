@@ -37,24 +37,13 @@ spec:
         // Gated so nothing is applied unless every component name is valid.
         if len(_missingComponents) == 0 {
         	deploy: {
-        		// "comp", not "value" -- shadows the $params.value field below otherwise.
-        		for name, comp in components.$returns.value {
-        			for entry in parameter.components if entry.name == name {
-        				"\(name)": {
-        					placements: multicluster.#GetPlacementsFromTopologyPolicies & {
-        						$params: policies: entry.policies
-        					}
-        					apply: {
-        						for p in placements.$returns.placements {
-        							"\(p.cluster)-\(p.namespace)": oam.#ApplyComponent & {
-        								$params: {
-        									value:     comp
-        									cluster:   p.cluster
-        									namespace: p.namespace
-        								}
-        							}
-        						}
-        					}
+        		for entry in parameter.components {
+        			"\(entry.name)": multicluster.#Deploy & {
+        				$params: {
+        					policies:                 entry.policies
+        					components:               [entry.name]
+        					parallelism:              1
+        					ignoreTerraformComponent: true
         				}
         			}
         		}

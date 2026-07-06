@@ -87,6 +87,15 @@ var (
 	WorkflowStepDefinitionGVR              = SchemeGroupVersion.WithResource("workflowstepdefinitions")
 )
 
+// Dispatcher type metadata.
+var (
+	DispatcherKind             = reflect.TypeOf(Dispatcher{}).Name()
+	DispatcherGroupKind        = schema.GroupKind{Group: Group, Kind: DispatcherKind}.String()
+	DispatcherKindAPIVersion   = DispatcherKind + "." + SchemeGroupVersion.String()
+	DispatcherGroupVersionKind = SchemeGroupVersion.WithKind(DispatcherKind)
+	DispatcherGVR              = SchemeGroupVersion.WithResource("dispatchers")
+)
+
 // DefinitionRevision type metadata.
 var (
 	DefinitionRevisionKind             = reflect.TypeOf(DefinitionRevision{}).Name()
@@ -131,6 +140,7 @@ var DefinitionTypeMap = map[reflect.Type]DefinitionTypeInfo{
 	reflect.TypeOf(TraitDefinition{}):        {GVR: TraitDefinitionGVR, Kind: TraitDefinitionKind},
 	reflect.TypeOf(PolicyDefinition{}):       {GVR: PolicyDefinitionGVR, Kind: PolicyDefinitionKind},
 	reflect.TypeOf(WorkflowStepDefinition{}): {GVR: WorkflowStepDefinitionGVR, Kind: WorkflowStepDefinitionKind},
+	reflect.TypeOf(Dispatcher{}):             {GVR: DispatcherGVR, Kind: DispatcherKind},
 }
 
 func init() {
@@ -139,6 +149,7 @@ func init() {
 	SchemeBuilder.Register(&TraitDefinition{}, &TraitDefinitionList{})
 	SchemeBuilder.Register(&PolicyDefinition{}, &PolicyDefinitionList{})
 	SchemeBuilder.Register(&WorkflowStepDefinition{}, &WorkflowStepDefinitionList{})
+	SchemeBuilder.Register(&Dispatcher{}, &DispatcherList{})
 	SchemeBuilder.Register(&DefinitionRevision{}, &DefinitionRevisionList{})
 	SchemeBuilder.Register(&Application{}, &ApplicationList{})
 	SchemeBuilder.Register(&ApplicationRevision{}, &ApplicationRevisionList{})

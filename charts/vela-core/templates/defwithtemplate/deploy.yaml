@@ -24,8 +24,12 @@ spec:
         deploy: multicluster.#Deploy & {
         	$params: {
         		policies:                 parameter.policies
+        		components:               parameter.components
         		parallelism:              parameter.parallelism
         		ignoreTerraformComponent: parameter.ignoreTerraformComponent
+        		if parameter.dispatcher != _|_ {
+        			dispatcher: parameter.dispatcher
+        		}
         	}
         }
         parameter: {
@@ -33,9 +37,13 @@ spec:
         	auto: *true | bool
         	//+usage=Declare the policies that used for this deployment. If not specified, the components will be deployed to the hub cluster.
         	policies: *[] | [...string]
+        	//+usage=Optionally limit deploy to specific component names.
+        	components: *[] | [...string]
         	//+usage=Maximum number of concurrent delivered components.
         	parallelism: *5 | int
         	//+usage=If set false, this step will apply the components with the terraform workload.
         	ignoreTerraformComponent: *true | bool
+        	//+usage=Optional Dispatcher CRD name. If omitted, controller-level default dispatcher is used (default: "default").
+        	dispatcher?: string
         }
 

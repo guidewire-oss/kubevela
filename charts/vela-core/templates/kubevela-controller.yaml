@@ -290,6 +290,9 @@ spec:
             - "--enable-cluster-metrics"
             {{ end }}
             - "--application-re-sync-period={{ .Values.controllerArgs.reSyncPeriod }}"
+            {{ if .Values.controllerArgs.defaultDispatcher }}
+            - "--default-dispatcher={{ .Values.controllerArgs.defaultDispatcher }}"
+            {{ end }}
             - "--concurrent-reconciles={{ .Values.concurrentReconciles }}"
             - "--kube-api-qps={{ .Values.kubeClient.qps }}"
             - "--kube-api-burst={{ .Values.kubeClient.burst }}"

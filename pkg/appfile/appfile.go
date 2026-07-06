@@ -60,6 +60,8 @@ const (
 	errTerraformConfigurationIsNotSet            = "terraform configuration is not set"
 	errTerraformComponentDefinition              = "terraform component definition is not valid"
 	errFailToConvertTerraformComponentProperties = "failed to convert Terraform component properties"
+	// AnnotationPolicyNoOutputs marks policy definitions that are config-only and should not render K8s manifests.
+	AnnotationPolicyNoOutputs = "policy.oam.dev/no-outputs"
 )
 
 const (
@@ -198,6 +200,9 @@ type Appfile struct {
 func (af *Appfile) GeneratePolicyManifests(ctx context.Context, cli client.Client) ([]*unstructured.Unstructured, error) {
 	var manifests []*unstructured.Unstructured
 	for _, policy := range af.ParsedPolicies {
+		if shouldSkipPolicyRender(policy) {
+			continue
+		}
 		// Skip Application-scoped policies - they were already processed in ApplyApplicationScopeTransforms
 		if af.isApplicationScopedPolicy(ctx, cli, policy) {
 			continue
@@ -210,6 +215,17 @@ func (af *Appfile) GeneratePolicyManifests(ctx context.Context, cli client.Clien
 		manifests = append(manifests, un...)
 	}
 	return manifests, nil
+}
+
+func shouldSkipPolicyRender(policy *Component) bool {
+	if policy == nil || policy.FullTemplate == nil || policy.FullTemplate.PolicyDefinition == nil {
+		return false
+	}
+	annotations := policy.FullTemplate.PolicyDefinition.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+	return strings.EqualFold(annotations[AnnotationPolicyNoOutputs], "true")
 }
 
 func (af *Appfile) generatePolicyUnstructured(workload *Component) ([]*unstructured.Unstructured, error) {

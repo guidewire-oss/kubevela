@@ -1,0 +1,191 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Dispatcher
+metadata:
+  name: ocm-manifestwork
+  namespace: vela-system
+spec:
+  schematic:
+    cue:
+      targetsTemplate: |
+        // Example: resolve to hub-only then package rendered resources
+        // into a single OCM ManifestWork.
+        // Query ocm-topology policy from context.policies.
+        // Expected policy properties:
+        // {
+        //   "hubCluster": "local",
+        //   "workNamespace": "open-cluster-management-agent",
+        //   "namePrefix": "vela"
+        // }
+        _ocmPolicy: [for p in context.policies if p.type == "ocm-topology" {p}]
+
+        _hubCluster:    *"local" | string
+        _workNamespace: *"open-cluster-management-agent" | string
+        _namePrefix:    *"vela" | string
+
+        if len(_ocmPolicy) > 0 && _ocmPolicy[0].properties != _|_ {
+          if _ocmPolicy[0].properties.hubCluster != _|_ {
+            _hubCluster: _ocmPolicy[0].properties.hubCluster
+          }
+          if _ocmPolicy[0].properties.workNamespace != _|_ {
+            _workNamespace: _ocmPolicy[0].properties.workNamespace
+          }
+          if _ocmPolicy[0].properties.namePrefix != _|_ {
+            _namePrefix: _ocmPolicy[0].properties.namePrefix
+          }
+        }
+
+        targets: [{
+          cluster:   _hubCluster
+          namespace: ""
+        }]
+      dispatchTemplate: |
+        // Example: prepare a single OCM ManifestWork from rendered resources.
+        _ocmPolicy: [for p in context.policies if p.type == "ocm-topology" {p}]
+        _workNamespace: *"open-cluster-management-agent" | string
+        _namePrefix:    *"vela" | string
+        if len(_ocmPolicy) > 0 && _ocmPolicy[0].properties != _|_ {
+          if _ocmPolicy[0].properties.workNamespace != _|_ {
+            _workNamespace: _ocmPolicy[0].properties.workNamespace
+          }
+          if _ocmPolicy[0].properties.namePrefix != _|_ {
+            _namePrefix: _ocmPolicy[0].properties.namePrefix
+          }
+        }
+
+        // Build a single ManifestWork from rendered workload/traits.
+        _resourceForKind: {
+          "Deployment": "deployments"
+          "Service":    "services"
+          "ConfigMap":  "configmaps"
+          "Secret":     "secrets"
+          "StatefulSet": "statefulsets"
+          "DaemonSet":  "daemonsets"
+          "Job":        "jobs"
+          "CronJob":    "cronjobs"
+        }
+        _groupForAPIVersion: {
+          "v1":       ""
+          "apps/v1":  "apps"
+          "batch/v1": "batch"
+        }
+        output: {
+          _manifests: [
+            context.output,
+            for _, obj in context.outputs {obj},
+          ]
+          apiVersion: "work.open-cluster-management.io/v1"
+          kind:       "ManifestWork"
+          metadata: {
+            name:      "\(_namePrefix)-\(context.component.name)-\(context.placement.cluster)"
+            namespace: _workNamespace
+          }
+          spec: {
+            workload: manifests: _manifests
+            manifestConfigs: [
+              for m in _manifests if m.apiVersion != _|_ && m.kind != _|_ && m.metadata != _|_ && m.metadata.name != _|_ && _resourceForKind[m.kind] != _|_ && _groupForAPIVersion[m.apiVersion] != _|_ {
+                _namespace: *"" | string
+                if m.metadata.namespace != _|_ {
+                  _namespace: m.metadata.namespace
+                }
+                resourceIdentifier: {
+                  group:     _groupForAPIVersion[m.apiVersion]
+                  resource:  _resourceForKind[m.kind]
+                  namespace: _namespace
+                  name:      m.metadata.name
+                }
+                feedbackRules: [{type: "WellKnownStatus"}]
+              },
+            ]
+          }
+        }
+      healthOverrideTemplate: |
+        import "vela/transform"
+
+        _manifests: *[] | [...{
+          conditions?: [...{
+            type?:   string
+            reason?: string
+            status?: string
+          }]
+        }]
+        if context.output != _|_ &&
+          context.output.status != _|_ &&
+          context.output.status.resourceStatus != _|_ &&
+          context.output.status.resourceStatus.manifests != _|_ {
+          _manifests: context.output.status.resourceStatus.manifests
+        }
+
+        _perManifestChecks: [for m in _manifests {
+          _conditions: *[] | [...{
+            type?:   string
+            reason?: string
+            status?: string
+          }]
+          if m.conditions != _|_ {
+            _conditions: m.conditions
+          }
+          applied: len([for c in _conditions if (c.reason == "AppliedManifestComplete" || c.type == "Applied") && c.status == "True" {c}]) > 0
+          available: len([for c in _conditions if (c.reason == "ResourceAvailable" || c.type == "Available") && c.status == "True" {c}]) > 0
+        }]
+
+        _allHealthy: len(_perManifestChecks) > 0 && len([for c in _perManifestChecks if c.applied && c.available {c}]) == len(_perManifestChecks)
+
+        isHealth: _allHealthy
+        message: *"waiting for manifestwork conditions AppliedManifestComplete and ResourceAvailable" | string
+        if _allHealthy {
+          message: "manifestwork reports applied and available for all manifests"
+        }
+        _feedbackDetails: transform.#Reshape & {
+          $params: {
+            input: context.output
+            query: """
+            def manifests: (.status.resourceStatus.manifests // []);
+            def lcf:
+              if type == "string" and length > 0 then
+                (.[0:1] | ascii_downcase) + .[1:]
+              else
+                .
+              end;
+            def key_for($i; $m):
+              if $i == 0 then
+                "output"
+              else
+                "outputs." + (($m.resourceMeta.name // ("manifest-" + ($i|tostring))) | tostring)
+              end;
+            [
+              manifests
+              | to_entries[]
+              | . as $e
+              | (($e.value.statusFeedback.values // $e.value.statusFeedbacks.values // []))[]
+              | . as $v
+              | ($v.name // "") as $name
+              | ($v.fieldValue.integer // $v.fieldValue.string // $v.fieldValue.boolean // null) as $val
+              | select($name != "" and $val != null)
+              | {
+                  key: (key_for($e.key; $e.value) + "." + ($name | lcf)),
+                  value: $val
+                }
+            ] | from_entries
+            """
+          }
+        }
+        _details: _feedbackDetails.$returns.output
+        for i, c in _perManifestChecks {
+          if i == 0 {
+            _details: {
+              "output.checks.applied":   c.applied
+              "output.checks.available": c.available
+            }
+          }
+          if i > 0 {
+            _name: *"manifest-\(i)" | string
+            if _manifests[i].resourceMeta != _|_ && _manifests[i].resourceMeta.name != _|_ {
+              _name: _manifests[i].resourceMeta.name
+            }
+            _details: {
+              "outputs.\(_name).checks.applied":   c.applied
+              "outputs.\(_name).checks.available": c.available
+            }
+          }
+        }
+        details: _details

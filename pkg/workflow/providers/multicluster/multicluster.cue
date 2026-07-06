@@ -11,6 +11,18 @@
 	}
 }
 
+#GetClusterLabels: {
+	#provider: "multicluster"
+	#do:       "get-cluster-labels"
+
+	$params: {
+		cluster: string
+	}
+	$returns?: {
+		labels: [string]: string
+	}
+}
+
 #GetPlacementsFromTopologyPolicies: {
 	#provider: "multicluster"
 	#do:       "get-placements-from-topology-policies"
@@ -32,9 +44,11 @@
 
 	$params: {
 		policies: [...string]
+		components: *[] | [...string]
 		parallelism:              int
 		ignoreTerraformComponent: bool
 		inlinePolicies: *[] | [...{...}]
+		dispatcher?: string
 	}
 	$returns?: {...}
 }
