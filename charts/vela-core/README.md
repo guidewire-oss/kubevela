@@ -72,7 +72,7 @@ helm install --create-namespace -n vela-system kubevela kubevela/vela-core --wai
 | `resources.limits.memory`   | KubeVela controller's memory limit   | `1Gi`              |
 | `resources.requests.cpu`    | KubeVela controller's cpu request    | `50m`              |
 | `resources.requests.memory` | KubeVela controller's memory request | `20Mi`             |
-| `extraEnvs`                 | Extra environment variables to inject into the KubeVela controller container | `[{"name":"CUE_EXPERIMENT","value":"evalv3=0,keepvalidators=0"}]` |
+| `extraEnvs`                 | Extra environment variables to inject into the KubeVela controller container | `[]`               |
 | `webhookService.type`       | KubeVela webhook service type        | `ClusterIP`        |
 | `webhookService.port`       | KubeVela webhook service port        | `9443`             |
 | `healthCheck.port`          | KubeVela health check port           | `9440`             |
@@ -106,6 +106,7 @@ helm install --create-namespace -n vela-system kubevela kubevela/vela-core --wai
 | `featureGates.validateResourcesExist`                        | enable webhook validation to check if resource types referenced in definition templates exist in the cluster                                                                                                                     | `false` |
 | `featureGates.enableApplicationScopedPolicies`               | enable Application-scoped PolicyDefinitions that transform Application CR before rendering (Alpha)                                                                                                                               | `false` |
 | `featureGates.enableGlobalPolicies`                          | enable automatic discovery and application of global PolicyDefinitions to all Applications (Alpha)                                                                                                                               | `false` |
+| `featureGates.enableCueExpVariable`                          | inject the CUE_EXPERIMENT env var (evalv3=0,keepvalidators=0) into the controller to disable experimental CUE features during the v0.14.x migration window                                                                       | `true`  |
 
 ### MultiCluster parameters
 
