@@ -335,6 +335,10 @@ spec:
             - "--dev-logs={{ .Values.devLogs }}"
           image: {{ .Values.imageRegistry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}
           imagePullPolicy: {{ quote .Values.image.pullPolicy }}
+          {{- with .Values.extraEnvs }}
+          env:
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
           resources:
           {{- toYaml .Values.resources | nindent 12 }}
           {{ if .Values.admissionWebhooks.enabled }}

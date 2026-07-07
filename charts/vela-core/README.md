@@ -72,6 +72,7 @@ helm install --create-namespace -n vela-system kubevela kubevela/vela-core --wai
 | `resources.limits.memory`   | KubeVela controller's memory limit   | `1Gi`              |
 | `resources.requests.cpu`    | KubeVela controller's cpu request    | `50m`              |
 | `resources.requests.memory` | KubeVela controller's memory request | `20Mi`             |
+| `extraEnvs`                 | Extra environment variables to inject into the KubeVela controller container | `[{"name":"CUE_EXPERIMENT","value":"evalv3=0,keepvalidators=0"}]` |
 | `webhookService.type`       | KubeVela webhook service type        | `ClusterIP`        |
 | `webhookService.port`       | KubeVela webhook service port        | `9443`             |
 | `healthCheck.port`          | KubeVela health check port           | `9440`             |

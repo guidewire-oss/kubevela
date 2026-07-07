@@ -72,6 +72,13 @@ resources:
     cpu: 50m
     memory: 20Mi
 
+## @param extraEnvs Extra environment variables to inject into the KubeVela controller container
+## Disables experimental CUE features (evalv3, keepvalidators) that can break existing
+## definitions during the CUE v0.14.x migration window. Set to [] to remove.
+extraEnvs:
+  - name: CUE_EXPERIMENT
+    value: "evalv3=0,keepvalidators=0"
+
 ## @param webhookService.type KubeVela webhook service type
 ## @param webhookService.port KubeVela webhook service port
 webhookService:
