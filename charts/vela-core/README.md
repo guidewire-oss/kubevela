@@ -61,21 +61,21 @@ helm install --create-namespace -n vela-system kubevela kubevela/vela-core --wai
 
 ### KubeVela controller parameters
 
-| Name                        | Description                          | Value              |
-| --------------------------- | ------------------------------------ | ------------------ |
-| `replicaCount`              | KubeVela controller replica count    | `1`                |
-| `imageRegistry`             | Image registry                       | `""`               |
-| `image.repository`          | Image repository                     | `oamdev/vela-core` |
-| `image.tag`                 | Image tag                            | `latest`           |
-| `image.pullPolicy`          | Image pull policy                    | `Always`           |
-| `resources.limits.cpu`      | KubeVela controller's cpu limit      | `500m`             |
-| `resources.limits.memory`   | KubeVela controller's memory limit   | `1Gi`              |
-| `resources.requests.cpu`    | KubeVela controller's cpu request    | `50m`              |
-| `resources.requests.memory` | KubeVela controller's memory request | `20Mi`             |
+| Name                        | Description                                                                  | Value              |
+| --------------------------- | ---------------------------------------------------------------------------- | ------------------ |
+| `replicaCount`              | KubeVela controller replica count                                            | `1`                |
+| `imageRegistry`             | Image registry                                                               | `""`               |
+| `image.repository`          | Image repository                                                             | `oamdev/vela-core` |
+| `image.tag`                 | Image tag                                                                    | `latest`           |
+| `image.pullPolicy`          | Image pull policy                                                            | `Always`           |
+| `resources.limits.cpu`      | KubeVela controller's cpu limit                                              | `500m`             |
+| `resources.limits.memory`   | KubeVela controller's memory limit                                           | `1Gi`              |
+| `resources.requests.cpu`    | KubeVela controller's cpu request                                            | `50m`              |
+| `resources.requests.memory` | KubeVela controller's memory request                                         | `20Mi`             |
 | `extraEnvs`                 | Extra environment variables to inject into the KubeVela controller container | `[]`               |
-| `webhookService.type`       | KubeVela webhook service type        | `ClusterIP`        |
-| `webhookService.port`       | KubeVela webhook service port        | `9443`             |
-| `healthCheck.port`          | KubeVela health check port           | `9440`             |
+| `webhookService.type`       | KubeVela webhook service type                                                | `ClusterIP`        |
+| `webhookService.port`       | KubeVela webhook service port                                                | `9443`             |
+| `healthCheck.port`          | KubeVela health check port                                                   | `9440`             |
 
 ### KubeVela controller optimization parameters
 
