@@ -482,6 +482,7 @@ func (h *ValidatingHandler) ValidateCreate(ctx context.Context, app *v1beta1.App
 
 	errs = append(errs, h.ValidateAnnotations(ctx, app)...)
 	errs = append(errs, h.ValidateDefinitionPermissions(ctx, app, req)...)
+	errs = append(errs, h.ValidateSources(ctx, app)...)
 	errs = append(errs, h.ValidateWorkflow(ctx, app)...)
 	errs = append(errs, h.ValidateComponents(ctx, app)...)
 	return errs
