@@ -181,6 +181,9 @@ parameter: {
 				Schematic: &oamcomm.Schematic{
 					CUE: &oamcomm.CUE{
 						Template: `
+schema: {
+  image: string
+}
 storage: {
   key: "source-cache-policy-\(context.namespace)"
   storageTTL: "1h"
@@ -198,6 +201,33 @@ parameter: {
 			},
 		}
 		Expect(k8sClient.Create(ctx, sourceDef)).Should(Succeed())
+		// SourceDefinition controller should publish deterministic ConfigTemplate reference.
+		Eventually(func() error {
+			latest := &v1beta1.SourceDefinition{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: "stale-image-source"}, latest); err != nil {
+				return err
+			}
+			if latest.Status.ConfigTemplateRef == nil || latest.Status.ConfigTemplateRef.Name == "" {
+				return fmt.Errorf("configTemplateRef not ready")
+			}
+			if latest.Status.ConfigTemplateRef.SchemaHash == "" {
+				return fmt.Errorf("configTemplateRef.schemaHash not ready")
+			}
+			cm := &corev1.ConfigMap{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{
+				Namespace: "vela-system",
+				Name:      "config-template-" + latest.Status.ConfigTemplateRef.Name,
+			}, cm); err != nil {
+				return err
+			}
+			if cm.Labels["config.oam.dev/catalog"] != "velacore-config" {
+				return fmt.Errorf("unexpected config catalog label: %q", cm.Labels["config.oam.dev/catalog"])
+			}
+			if cm.Data["schema"] == "" {
+				return fmt.Errorf("missing schema in config template")
+			}
+			return nil
+		}, 60*time.Second, time.Second).Should(Succeed())
 
 		app := &v1beta1.Application{
 			ObjectMeta: metav1.ObjectMeta{
@@ -210,7 +240,7 @@ parameter: {
 						Name: "img",
 						Type: "stale-image-source",
 						Properties: &runtime.RawExtension{
-							Raw: []byte(`{"image":"busybox:1.36.1"}`),
+							Raw: []byte(`{"image":"nginx:1.25.0"}`),
 						},
 					},
 				},
@@ -230,6 +260,45 @@ parameter: {
 		}
 		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
 		verifyApplicationPhase(ctx, namespaceName, app.Name, oamcomm.ApplicationRunning)
+
+		// Source cache should be persisted as a Secret keyed by storage.key.
+		Eventually(func() error {
+			secret := &corev1.Secret{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{
+				Namespace: "vela-system",
+				Name:      fmt.Sprintf("source-cache-policy-%s", namespaceName),
+			}, secret); err != nil {
+				return err
+			}
+			sourceDef := &v1beta1.SourceDefinition{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{
+				Namespace: namespaceName,
+				Name:      "stale-image-source",
+			}, sourceDef); err != nil {
+				return err
+			}
+			if secret.Labels["config.oam.dev/catalog"] != "velacore-config" {
+				return fmt.Errorf("unexpected config catalog label: %q", secret.Labels["config.oam.dev/catalog"])
+			}
+			if sourceDef.Status.ConfigTemplateRef == nil || sourceDef.Status.ConfigTemplateRef.Name == "" {
+				return fmt.Errorf("source definition configTemplateRef missing")
+			}
+			if secret.Labels["config.oam.dev/type"] != sourceDef.Status.ConfigTemplateRef.Name {
+				return fmt.Errorf("unexpected config type label: %q", secret.Labels["config.oam.dev/type"])
+			}
+			if len(secret.Data["input-properties"]) == 0 {
+				return fmt.Errorf("missing input-properties in source cache secret")
+			}
+			var got map[string]interface{}
+			if err := json.Unmarshal(secret.Data["input-properties"], &got); err != nil {
+				return err
+			}
+			image, _ := got["image"].(string)
+			if image != "nginx:1.25.0" {
+				return fmt.Errorf("unexpected cached image: %v", got["image"])
+			}
+			return nil
+		}, 60*time.Second, time.Second).Should(Succeed())
 	})
 
 	It("resolves chained nested sources where second source depends on first", func() {

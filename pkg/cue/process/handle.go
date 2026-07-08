@@ -20,9 +20,9 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kubevela/workflow/pkg/cue/process"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/types"
@@ -52,14 +52,20 @@ type ContextData struct {
 	SourceTemplates map[string]string
 	// SourceSensitivePaths maps source definition type to non-overridable sensitive field paths.
 	SourceSensitivePaths map[string][]string
-	// SourceCacheClient is used for persistent source cache read/write operations.
-	SourceCacheClient client.Client
+	// SourceCacheStore is used for persistent source cache read/write operations.
+	SourceCacheStore SourceCacheStore
 
 	AppLabels      map[string]string
 	AppAnnotations map[string]string
 
 	ClusterVersion types.ClusterVersion
 	Output         interface{}
+}
+
+// SourceCacheStore abstracts source cache persistence operations.
+type SourceCacheStore interface {
+	Read(ctx context.Context, cacheKey string, ttl time.Duration) (map[string]interface{}, bool, bool, time.Time, error)
+	Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}) error
 }
 
 // policyAdditionalContextKey is the shared Go context key for policy output.ctx data
@@ -112,8 +118,8 @@ func NewContext(data ContextData) process.Context {
 		data.SourceSensitivePaths = map[string][]string{}
 	}
 	ctx.PushData(ContextAppSourceSensitivePaths, data.SourceSensitivePaths)
-	if data.SourceCacheClient != nil {
-		ctx.PushData(ContextAppSourceCacheClient, data.SourceCacheClient)
+	if data.SourceCacheStore != nil {
+		ctx.PushData(ContextAppSourceCacheStore, data.SourceCacheStore)
 	}
 	appLabels := data.AppLabels
 	if appLabels == nil {

@@ -182,6 +182,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.Recorder.Event(app, event.Warning(velatypes.ReasonFailedParse, err))
 		return r.endWithNegativeCondition(logCtx, app, condition.ErrorCondition("Parsed", err), common.ApplicationRendering)
 	}
+	appFile.SourceCacheStore = newConfigAPISourceCacheStore(r.Client, sourceTemplateRefsByType(appFile))
 	app.Status.SetConditions(condition.ReadyCondition("Parsed"))
 	r.Recorder.Event(app, event.Normal(velatypes.ReasonParsed, velatypes.MessageParsed))
 

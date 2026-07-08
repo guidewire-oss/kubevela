@@ -195,6 +195,8 @@ type Appfile struct {
 	Context context.Context
 	// KubeClient is used by runtime resolvers that need API access during rendering.
 	KubeClient client.Client
+	// SourceCacheStore provides source cache persistence backing for rendering.
+	SourceCacheStore velaprocess.SourceCacheStore
 
 	Debug bool
 }
@@ -787,7 +789,10 @@ func GenerateContextDataFromAppFile(appfile *Appfile, wlName string) velaprocess
 		SourceTypes:          map[string]string{},
 		SourceTemplates:      map[string]string{},
 		SourceSensitivePaths: map[string][]string{},
-		SourceCacheClient:    appfile.KubeClient,
+		SourceCacheStore:     appfile.SourceCacheStore,
+	}
+	if data.SourceCacheStore == nil {
+		data.SourceCacheStore = definition.NewSecretSourceCacheStore(appfile.KubeClient)
 	}
 	for _, source := range appfile.Sources {
 		props := map[string]interface{}{}

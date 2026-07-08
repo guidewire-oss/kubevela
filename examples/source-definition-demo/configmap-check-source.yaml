@@ -1,0 +1,30 @@
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: configmap-check-source
+spec:
+  schematic:
+    cue:
+      template: |
+        schema: {
+          image: string
+          tag?: string
+        }
+
+        storage: {
+          key: "configmap-check-\(context.namespace)"
+          storageTTL: "15m"
+          onStaleFailure: "use-stale"
+        }
+
+        output: {
+          image: parameter.image
+          if parameter.tag != _|_ {
+            tag: parameter.tag
+          }
+        }
+
+        parameter: {
+          image: string
+          tag?: string
+        }

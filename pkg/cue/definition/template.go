@@ -35,14 +35,15 @@ import (
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/cuecontext"
 	cueerrors "cuelang.org/go/cue/errors"
+	cueformat "cuelang.org/go/cue/format"
+	cueparser "cuelang.org/go/cue/parser"
 	"github.com/kubevela/pkg/multicluster"
 
 	"github.com/pkg/errors"
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	ktypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kubevela/workflow/pkg/cue/model"
@@ -50,7 +51,6 @@ import (
 	"github.com/kubevela/workflow/pkg/cue/model/value"
 	"github.com/kubevela/workflow/pkg/cue/process"
 
-	apitypes "github.com/oam-dev/kubevela/apis/types"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/cue/task"
 	"github.com/oam-dev/kubevela/pkg/cue/upgrade"
@@ -792,8 +792,9 @@ type sourceResolver struct {
 	sourceProps     map[string]map[string]interface{}
 	sourceTypes     map[string]string
 	sourceTemplates map[string]string
+	sourceSchemas   map[string]string
 	sensitivePaths  map[string][]string
-	cacheClient     client.Client
+	cacheStore      velaprocess.SourceCacheStore
 	resolved        map[string]map[string]interface{}
 	resolving       map[string]bool
 }
@@ -824,21 +825,33 @@ func newSourceResolver(ctx process.Context) *sourceResolver {
 	if sourceTemplates == nil {
 		sourceTemplates = map[string]string{}
 	}
+	sourceSchemas := map[string]string{}
+	for sourceType, sourceTemplate := range sourceTemplates {
+		schemaExpr, err := extractSourceSchemaExpr(sourceTemplate)
+		if err != nil {
+			klog.Warningf("extract source schema failed for %s: %v", sourceType, err)
+			continue
+		}
+		if schemaExpr != "" {
+			sourceSchemas[sourceType] = schemaExpr
+		}
+	}
 	sensitivePaths, _ := ctx.GetData(velaprocess.ContextAppSourceSensitivePaths).(map[string][]string)
 	if sensitivePaths == nil {
 		sensitivePaths = map[string][]string{}
 	}
-	var cacheClient client.Client
-	if c, ok := ctx.GetData(velaprocess.ContextAppSourceCacheClient).(client.Client); ok && c != nil {
-		cacheClient = c
+	var cacheStore velaprocess.SourceCacheStore
+	if s, ok := ctx.GetData(velaprocess.ContextAppSourceCacheStore).(velaprocess.SourceCacheStore); ok && s != nil {
+		cacheStore = s
 	}
 	return &sourceResolver{
 		ctx:             ctx,
 		sourceProps:     sourceProps,
 		sourceTypes:     sourceTypes,
 		sourceTemplates: sourceTemplates,
+		sourceSchemas:   sourceSchemas,
 		sensitivePaths:  sensitivePaths,
-		cacheClient:     cacheClient,
+		cacheStore:      cacheStore,
 		resolved:        map[string]map[string]interface{}{},
 		resolving:       map[string]bool{},
 	}
@@ -928,6 +941,15 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
 		return nil, errors.WithMessagef(err, "decode output for source definition %s", sourceType)
 	}
+	if err := r.validateResolvedOutput(sourceType, sourceTemplate, output); err != nil {
+		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.resolved[sourceName] = cached
+			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh failed; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
+			return cached, nil
+		}
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
+		return nil, errors.WithMessagef(err, "validate output against schema for source definition %s", sourceType)
+	}
 	r.resolved[sourceName] = output
 	expiresAt := time.Now().Add(cachePolicy.TTL).Format(time.RFC3339)
 	if err := r.writeSourceCache(cachePolicy.Key, sourceType, output); err != nil {
@@ -1000,81 +1022,69 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 	return policy
 }
 
-func (r *sourceResolver) readSourceCache(cacheKey string, ttl time.Duration) (map[string]interface{}, bool, bool, time.Time, error) {
-	if r.cacheClient == nil || cacheKey == "" {
-		return nil, false, false, time.Time{}, nil
-	}
-	secret := &corev1.Secret{}
-	if err := r.cacheClient.Get(r.ctx.GetCtx(), ktypes.NamespacedName{Namespace: sourceCacheNamespace, Name: cacheKey}, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, false, false, time.Time{}, nil
+func (r *sourceResolver) validateResolvedOutput(sourceType, sourceTemplate string, output map[string]interface{}) error {
+	schemaExpr := r.sourceSchemas[sourceType]
+	if schemaExpr == "" {
+		extracted, err := extractSourceSchemaExpr(sourceTemplate)
+		if err != nil {
+			return err
 		}
-		return nil, false, false, time.Time{}, err
-	}
-	if secret.Data == nil || len(secret.Data[sourceCacheDataKey]) == 0 {
-		return nil, false, false, time.Time{}, nil
-	}
-	properties := map[string]interface{}{}
-	if err := json.Unmarshal(secret.Data[sourceCacheDataKey], &properties); err != nil {
-		return nil, false, false, time.Time{}, err
-	}
-	lastSync := secret.CreationTimestamp.Time
-	if ts := secret.Annotations[sourceCacheSyncAtKey]; ts != "" {
-		if t, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
-			lastSync = t
+		if extracted == "" {
+			return nil
 		}
+		schemaExpr = extracted
+		r.sourceSchemas[sourceType] = extracted
 	}
-	if ttl <= 0 {
-		ttl = sourceCacheTTL
-	}
-	stale := time.Since(lastSync) > ttl
-	expiresAt := lastSync.Add(ttl)
-	return properties, stale, true, expiresAt, nil
-}
-
-func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[string]interface{}) error {
-	if r.cacheClient == nil || cacheKey == "" {
-		return nil
-	}
-	raw, err := json.Marshal(data)
+	raw, err := json.Marshal(output)
 	if err != nil {
 		return err
 	}
-	now := time.Now().Format(time.RFC3339)
-	key := ktypes.NamespacedName{Namespace: sourceCacheNamespace, Name: cacheKey}
-	secret := &corev1.Secret{}
-	if err := r.cacheClient.Get(r.ctx.GetCtx(), key, secret); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return err
+	v := cuecontext.New().CompileString(fmt.Sprintf("schema: %s\noutput: close(schema) & %s", schemaExpr, string(raw)))
+	if v.Err() != nil {
+		return v.Err()
+	}
+	out := v.LookupPath(cue.ParsePath("output"))
+	if !out.Exists() {
+		return fmt.Errorf("source output missing")
+	}
+	return out.Validate(cue.Concrete(true))
+}
+
+func extractSourceSchemaExpr(template string) (string, error) {
+	file, err := cueparser.ParseFile("-", template, cueparser.ParseComments)
+	if err != nil {
+		return "", err
+	}
+	for _, decl := range file.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
 		}
-		secret = &corev1.Secret{}
-		secret.Namespace = sourceCacheNamespace
-		secret.Name = cacheKey
-		secret.Type = corev1.SecretTypeOpaque
-		secret.Labels = map[string]string{
-			apitypes.LabelConfigCatalog: apitypes.VelaCoreConfig,
-			apitypes.LabelConfigType:    sourceType,
+		name, _, err := ast.LabelName(field.Label)
+		if err != nil || name != "schema" {
+			continue
 		}
-		secret.Annotations = map[string]string{}
-		secret.Data = map[string][]byte{}
-		secret.Annotations[sourceCacheSyncAtKey] = now
-		secret.Data[sourceCacheDataKey] = raw
-		return r.cacheClient.Create(r.ctx.GetCtx(), secret)
+		bt, err := cueformat.Node(field.Value)
+		if err != nil {
+			return "", err
+		}
+		return string(bt), nil
 	}
-	if secret.Annotations == nil {
-		secret.Annotations = map[string]string{}
+	return "", nil
+}
+
+func (r *sourceResolver) readSourceCache(cacheKey string, ttl time.Duration) (map[string]interface{}, bool, bool, time.Time, error) {
+	if r.cacheStore == nil || cacheKey == "" {
+		return nil, false, false, time.Time{}, nil
 	}
-	if secret.Data == nil {
-		secret.Data = map[string][]byte{}
+	return r.cacheStore.Read(r.ctx.GetCtx(), cacheKey, ttl)
+}
+
+func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[string]interface{}) error {
+	if r.cacheStore == nil || cacheKey == "" {
+		return nil
 	}
-	if secret.Labels == nil {
-		secret.Labels = map[string]string{}
-	}
-	secret.Labels[apitypes.LabelConfigCatalog] = apitypes.VelaCoreConfig
-	secret.Labels[apitypes.LabelConfigType] = sourceType
-	secret.Annotations[sourceCacheSyncAtKey] = now
-	secret.Data[sourceCacheDataKey] = raw
-	return r.cacheClient.Update(r.ctx.GetCtx(), secret)
+	return r.cacheStore.Write(r.ctx.GetCtx(), cacheKey, sourceType, data)
 }
 
 func (r *sourceResolver) setSourceStatus(sourceName, sourceType, phase, message, config, expiresAt string, resolved map[string]interface{}) {

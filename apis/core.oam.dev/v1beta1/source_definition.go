@@ -33,6 +33,17 @@ type SourceDefinitionSpec struct {
 // SourceDefinitionStatus defines the observed state of SourceDefinition.
 type SourceDefinitionStatus struct {
 	condition.ConditionedStatus `json:",inline"`
+	// ConfigTemplateRef references the ConfigTemplate generated from this SourceDefinition schema.
+	// +optional
+	ConfigTemplateRef *SourceDefinitionConfigTemplateRef `json:"configTemplateRef,omitempty"`
+}
+
+// SourceDefinitionConfigTemplateRef references an auto-generated config template for source schema validation.
+type SourceDefinitionConfigTemplateRef struct {
+	// Name is the deterministic template name.
+	Name string `json:"name,omitempty"`
+	// SchemaHash is the sha256 hash (hex) of the canonical schema cue snippet.
+	SchemaHash string `json:"schemaHash,omitempty"`
 }
 
 // SetConditions sets conditions for SourceDefinition.

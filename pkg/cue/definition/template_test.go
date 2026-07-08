@@ -1948,7 +1948,7 @@ func TestResolveSourceUsesStaleCacheOnRefreshFailure(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
 
 	ctx := process.NewContext(process.ContextData{})
-	ctx.PushData(process.ContextAppSourceCacheClient, cli)
+	ctx.PushData(process.ContextAppSourceCacheStore, NewSecretSourceCacheStore(cli))
 	resolver := newSourceResolver(ctx)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
@@ -1997,7 +1997,7 @@ func TestResolveSourceFailsOnStaleRefreshFailureWhenPolicyFail(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
 
 	ctx := process.NewContext(process.ContextData{})
-	ctx.PushData(process.ContextAppSourceCacheClient, cli)
+	ctx.PushData(process.ContextAppSourceCacheStore, NewSecretSourceCacheStore(cli))
 	resolver := newSourceResolver(ctx)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
@@ -2022,4 +2022,30 @@ parameter: {
 	statuses, _ := resolver.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
 	require.NotNil(t, statuses)
 	assert.Equal(t, "stale-cache-fail", statuses["s"].Config)
+}
+
+func TestResolveSourceSchemaMismatchFails(t *testing.T) {
+	ctx := process.NewContext(process.ContextData{})
+	resolver := newSourceResolver(ctx)
+	resolver.sourceTypes = map[string]string{"s": "t"}
+	resolver.sourceTemplates = map[string]string{
+		"t": `
+schema: {
+  image: string
+}
+output: {
+  image: parameter.image
+}
+parameter: {
+  image: _
+}
+`,
+	}
+	resolver.sourceProps = map[string]map[string]interface{}{
+		"s": {"image": 123},
+	}
+
+	_, err := resolver.resolve("s")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validate output against schema")
 }
