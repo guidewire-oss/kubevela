@@ -77,7 +77,15 @@ const (
 	sourceCacheTTL            = 15 * time.Minute
 	sourceCacheSyncAtKey      = "config.oam.dev/last-sync-at"
 	sourceCacheDataKey        = "input-properties"
+	sourceCachePolicyUseStale = "use-stale"
+	sourceCachePolicyFail     = "fail"
 )
+
+type sourceCachePolicy struct {
+	Key            string
+	TTL            time.Duration
+	OnStaleFailure string
+}
 
 // GetWorkloadTemplateKey returns the context key for storing workload templates
 func GetWorkloadTemplateKey(name string) string {
@@ -796,6 +804,8 @@ type SourceResolutionStatus struct {
 	Type           string
 	Phase          string
 	Message        string
+	Config         string
+	ExpiresAt      string
 	ResolvedFields map[string]interface{}
 	ConsumedFields map[string]interface{}
 	SensitivePaths []string
@@ -840,7 +850,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	}
 	if r.resolving[sourceName] {
 		err := fmt.Errorf("circular source dependency detected at %q", sourceName)
-		r.setSourceStatus(sourceName, "", "Failed", err.Error(), nil)
+		r.setSourceStatus(sourceName, "", "Failed", err.Error(), "", "", nil)
 		return nil, err
 	}
 	r.resolving[sourceName] = true
@@ -849,13 +859,13 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	sourceType, ok := r.sourceTypes[sourceName]
 	if !ok || sourceType == "" {
 		err := fmt.Errorf("source %q not found", sourceName)
-		r.setSourceStatus(sourceName, "", "Failed", err.Error(), nil)
+		r.setSourceStatus(sourceName, "", "Failed", err.Error(), "", "", nil)
 		return nil, err
 	}
 	sourceTemplate, ok := r.sourceTemplates[sourceType]
 	if !ok || sourceTemplate == "" {
 		err := fmt.Errorf("source definition %q for source %q is missing cue template", sourceType, sourceName)
-		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 		return nil, err
 	}
 	resolvedProps := map[string]interface{}{}
@@ -863,59 +873,71 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	if props, ok := r.sourceProps[sourceName]; ok && props != nil {
 		resolvedPropsNode, err := resolveFromSourceNode(props, r)
 		if err != nil {
-			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 			return nil, errors.WithMessagef(err, "resolve source properties for %s", sourceName)
 		}
 		rp, ok := resolvedPropsNode.(map[string]interface{})
 		if !ok {
 			err := fmt.Errorf("resolved source properties for %s are invalid", sourceName)
-			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 			return nil, err
 		}
 		resolvedProps = rp
 		raw, err := json.Marshal(rp)
 		if err != nil {
-			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 			return nil, errors.WithMessagef(err, "marshal properties for source %s", sourceName)
 		}
 		paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(raw))
 	}
-	cacheKey := r.cacheKey(sourceName, sourceType, sourceTemplate, resolvedProps)
-	if cached, stale, err := r.readSourceCache(cacheKey); err == nil && len(cached) > 0 {
+	cachePolicy := r.resolveCachePolicy(sourceName, sourceType, sourceTemplate, resolvedProps)
+	cached, stale, found, cacheExpiresAt, err := r.readSourceCache(cachePolicy.Key, cachePolicy.TTL)
+	if err != nil {
+		klog.Warningf("read source cache failed for %s: %v", sourceName, err)
+	} else if found {
 		if !stale {
 			r.resolved[sourceName] = cached
-			r.setSourceStatus(sourceName, sourceType, "Resolved", "", cached)
+			r.setSourceStatus(sourceName, sourceType, "Resolved", "", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
 			return cached, nil
 		}
-	} else if err != nil {
-		klog.Warningf("read source cache failed for %s: %v", sourceName, err)
 	}
 	c, err := r.ctx.BaseContextFile()
 	if err != nil {
-		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
 		return nil, err
 	}
 	val, err := velacuex.WorkloadCompiler.Get().CompileString(r.ctx.GetCtx(), strings.Join([]string{
 		renderTemplate(sourceTemplate), paramFile, c,
 	}, "\n"))
 	if err != nil {
-		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.resolved[sourceName] = cached
+			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh failed; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
+			return cached, nil
+		}
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
 		return nil, errors.WithMessagef(err, "compile source definition %s", sourceType)
 	}
 	output := map[string]interface{}{}
 	if err := val.LookupPath(value.FieldPath(OutputFieldName)).Decode(&output); err != nil {
-		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.resolved[sourceName] = cached
+			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh failed; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
+			return cached, nil
+		}
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
 		return nil, errors.WithMessagef(err, "decode output for source definition %s", sourceType)
 	}
 	r.resolved[sourceName] = output
-	if err := r.writeSourceCache(cacheKey, output); err != nil {
+	expiresAt := time.Now().Add(cachePolicy.TTL).Format(time.RFC3339)
+	if err := r.writeSourceCache(cachePolicy.Key, sourceType, output); err != nil {
 		klog.Warningf("write source cache failed for %s: %v", sourceName, err)
 	}
-	r.setSourceStatus(sourceName, sourceType, "Resolved", "", output)
+	r.setSourceStatus(sourceName, sourceType, "Resolved", "", cachePolicy.Key, expiresAt, output)
 	return output, nil
 }
 
-func (r *sourceResolver) cacheKey(sourceName, sourceType, sourceTemplate string, props map[string]interface{}) string {
+func (r *sourceResolver) defaultCacheKey(sourceName, sourceType, sourceTemplate string, props map[string]interface{}) string {
 	cluster, _ := r.ctx.GetData(velaprocess.ContextCluster).(string)
 	raw, _ := json.Marshal(map[string]interface{}{
 		"sourceName": sourceName,
@@ -928,23 +950,73 @@ func (r *sourceResolver) cacheKey(sourceName, sourceType, sourceTemplate string,
 	return "source-cache-" + hex.EncodeToString(sum[:12])
 }
 
-func (r *sourceResolver) readSourceCache(cacheKey string) (map[string]interface{}, bool, error) {
+func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTemplate string, props map[string]interface{}) sourceCachePolicy {
+	policy := sourceCachePolicy{
+		Key:            r.defaultCacheKey(sourceName, sourceType, sourceTemplate, props),
+		TTL:            sourceCacheTTL,
+		OnStaleFailure: sourceCachePolicyUseStale,
+	}
+	if sourceTemplate == "" {
+		return policy
+	}
+	paramFile := velaprocess.ParameterFieldName + ": {}"
+	if len(props) > 0 {
+		if raw, err := json.Marshal(props); err == nil {
+			paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(raw))
+		}
+	}
+	c, err := r.ctx.BaseContextFile()
+	if err != nil {
+		return policy
+	}
+	val, err := velacuex.WorkloadCompiler.Get().CompileString(r.ctx.GetCtx(), strings.Join([]string{
+		renderTemplate(sourceTemplate), paramFile, c,
+	}, "\n"))
+	if err != nil {
+		klog.Warningf("resolve source cache policy failed for %s: %v", sourceName, err)
+		return policy
+	}
+	storage := val.LookupPath(value.FieldPath("storage"))
+	if !storage.Exists() {
+		return policy
+	}
+	cacheKey := ""
+	if err := storage.LookupPath(value.FieldPath("key")).Decode(&cacheKey); err == nil && cacheKey != "" {
+		policy.Key = cacheKey
+	}
+	ttlRaw := ""
+	if err := storage.LookupPath(value.FieldPath("storageTTL")).Decode(&ttlRaw); err == nil && ttlRaw != "" {
+		if ttl, err := time.ParseDuration(ttlRaw); err == nil && ttl > 0 {
+			policy.TTL = ttl
+		}
+	}
+	onStaleFailure := ""
+	if err := storage.LookupPath(value.FieldPath("onStaleFailure")).Decode(&onStaleFailure); err == nil {
+		switch onStaleFailure {
+		case sourceCachePolicyUseStale, sourceCachePolicyFail:
+			policy.OnStaleFailure = onStaleFailure
+		}
+	}
+	return policy
+}
+
+func (r *sourceResolver) readSourceCache(cacheKey string, ttl time.Duration) (map[string]interface{}, bool, bool, time.Time, error) {
 	if r.cacheClient == nil || cacheKey == "" {
-		return nil, false, nil
+		return nil, false, false, time.Time{}, nil
 	}
 	secret := &corev1.Secret{}
 	if err := r.cacheClient.Get(r.ctx.GetCtx(), ktypes.NamespacedName{Namespace: sourceCacheNamespace, Name: cacheKey}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, false, nil
+			return nil, false, false, time.Time{}, nil
 		}
-		return nil, false, err
+		return nil, false, false, time.Time{}, err
 	}
 	if secret.Data == nil || len(secret.Data[sourceCacheDataKey]) == 0 {
-		return nil, false, nil
+		return nil, false, false, time.Time{}, nil
 	}
 	properties := map[string]interface{}{}
 	if err := json.Unmarshal(secret.Data[sourceCacheDataKey], &properties); err != nil {
-		return nil, false, err
+		return nil, false, false, time.Time{}, err
 	}
 	lastSync := secret.CreationTimestamp.Time
 	if ts := secret.Annotations[sourceCacheSyncAtKey]; ts != "" {
@@ -952,11 +1024,15 @@ func (r *sourceResolver) readSourceCache(cacheKey string) (map[string]interface{
 			lastSync = t
 		}
 	}
-	stale := time.Since(lastSync) > sourceCacheTTL
-	return properties, stale, nil
+	if ttl <= 0 {
+		ttl = sourceCacheTTL
+	}
+	stale := time.Since(lastSync) > ttl
+	expiresAt := lastSync.Add(ttl)
+	return properties, stale, true, expiresAt, nil
 }
 
-func (r *sourceResolver) writeSourceCache(cacheKey string, data map[string]interface{}) error {
+func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[string]interface{}) error {
 	if r.cacheClient == nil || cacheKey == "" {
 		return nil
 	}
@@ -977,7 +1053,7 @@ func (r *sourceResolver) writeSourceCache(cacheKey string, data map[string]inter
 		secret.Type = corev1.SecretTypeOpaque
 		secret.Labels = map[string]string{
 			apitypes.LabelConfigCatalog: apitypes.VelaCoreConfig,
-			apitypes.LabelConfigType:    "",
+			apitypes.LabelConfigType:    sourceType,
 		}
 		secret.Annotations = map[string]string{}
 		secret.Data = map[string][]byte{}
@@ -991,12 +1067,17 @@ func (r *sourceResolver) writeSourceCache(cacheKey string, data map[string]inter
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}
 	}
+	if secret.Labels == nil {
+		secret.Labels = map[string]string{}
+	}
+	secret.Labels[apitypes.LabelConfigCatalog] = apitypes.VelaCoreConfig
+	secret.Labels[apitypes.LabelConfigType] = sourceType
 	secret.Annotations[sourceCacheSyncAtKey] = now
 	secret.Data[sourceCacheDataKey] = raw
 	return r.cacheClient.Update(r.ctx.GetCtx(), secret)
 }
 
-func (r *sourceResolver) setSourceStatus(sourceName, sourceType, phase, message string, resolved map[string]interface{}) {
+func (r *sourceResolver) setSourceStatus(sourceName, sourceType, phase, message, config, expiresAt string, resolved map[string]interface{}) {
 	statuses, _ := r.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
 	if statuses == nil {
 		statuses = map[string]SourceResolutionStatus{}
@@ -1011,6 +1092,8 @@ func (r *sourceResolver) setSourceStatus(sourceName, sourceType, phase, message 
 		Type:           sourceType,
 		Phase:          phase,
 		Message:        message,
+		Config:         config,
+		ExpiresAt:      expiresAt,
 		ResolvedFields: resolved,
 		ConsumedFields: consumed,
 		SensitivePaths: append([]string{}, r.sensitivePaths[sourceType]...),

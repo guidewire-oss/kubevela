@@ -203,10 +203,12 @@ type ApplicationTraitStatus struct {
 
 // ApplicationSourceStatus records source resolution status.
 type ApplicationSourceStatus struct {
-	Name    string `json:"name"`
-	Type    string `json:"type,omitempty"`
-	Config  string `json:"config,omitempty"`
-	Message string `json:"message,omitempty"`
+	Name   string `json:"name"`
+	Type   string `json:"type,omitempty"`
+	Config string `json:"config,omitempty"`
+	// ExpiresAt is the RFC3339 timestamp when the currently served cache value expires.
+	ExpiresAt string `json:"expiresAt,omitempty"`
+	Message   string `json:"message,omitempty"`
 	// Properties records only source fields actually consumed by this service render.
 	// +optional
 	Properties *runtime.RawExtension `json:"properties,omitempty"`

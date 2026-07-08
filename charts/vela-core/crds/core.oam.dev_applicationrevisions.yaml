@@ -726,6 +726,10 @@ spec:
                                 properties:
                                   config:
                                     type: string
+                                  expiresAt:
+                                    description: ExpiresAt is the RFC3339 timestamp
+                                      when the currently served cache value expires.
+                                    type: string
                                   message:
                                     type: string
                                   name:

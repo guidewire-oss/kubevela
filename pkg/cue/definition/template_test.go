@@ -19,11 +19,13 @@ package definition
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1925,4 +1927,99 @@ parameter: {
 	resolved, ok := out["resolved"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "nginx:1.25.2", resolved["image"])
+}
+
+func TestResolveSourceUsesStaleCacheOnRefreshFailure(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	cacheKey := "stale-cache-use"
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cacheKey,
+			Namespace: sourceCacheNamespace,
+			Annotations: map[string]string{
+				sourceCacheSyncAtKey: time.Now().Add(-time.Hour).Format(time.RFC3339),
+			},
+		},
+		Data: map[string][]byte{
+			sourceCacheDataKey: []byte(`{"value":"cached"}`),
+		},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+	ctx := process.NewContext(process.ContextData{})
+	ctx.PushData(process.ContextAppSourceCacheClient, cli)
+	resolver := newSourceResolver(ctx)
+	resolver.sourceTypes = map[string]string{"s": "t"}
+	resolver.sourceTemplates = map[string]string{
+		"t": `
+storage: {
+  key: "stale-cache-use"
+  storageTTL: "1ms"
+  onStaleFailure: "use-stale"
+}
+output: {
+  value: parameter.value
+}
+parameter: {
+  value: string
+}
+`,
+	}
+	// Invalid parameter type triggers refresh compile failure.
+	resolver.sourceProps = map[string]map[string]interface{}{"s": {"value": 1}}
+
+	out, err := resolver.resolve("s")
+	require.NoError(t, err)
+	require.Equal(t, "cached", out["value"])
+	statuses, _ := resolver.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
+	require.NotNil(t, statuses)
+	assert.Equal(t, "stale-cache-use", statuses["s"].Config)
+	assert.NotEmpty(t, statuses["s"].ExpiresAt)
+}
+
+func TestResolveSourceFailsOnStaleRefreshFailureWhenPolicyFail(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	cacheKey := "stale-cache-fail"
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cacheKey,
+			Namespace: sourceCacheNamespace,
+			Annotations: map[string]string{
+				sourceCacheSyncAtKey: time.Now().Add(-time.Hour).Format(time.RFC3339),
+			},
+		},
+		Data: map[string][]byte{
+			sourceCacheDataKey: []byte(`{"value":"cached"}`),
+		},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+	ctx := process.NewContext(process.ContextData{})
+	ctx.PushData(process.ContextAppSourceCacheClient, cli)
+	resolver := newSourceResolver(ctx)
+	resolver.sourceTypes = map[string]string{"s": "t"}
+	resolver.sourceTemplates = map[string]string{
+		"t": `
+storage: {
+  key: "stale-cache-fail"
+  storageTTL: "1ms"
+  onStaleFailure: "fail"
+}
+output: {
+  value: parameter.value
+}
+parameter: {
+  value: string
+}
+`,
+	}
+	resolver.sourceProps = map[string]map[string]interface{}{"s": {"value": 1}}
+
+	_, err := resolver.resolve("s")
+	require.Error(t, err)
+	statuses, _ := resolver.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
+	require.NotNil(t, statuses)
+	assert.Equal(t, "stale-cache-fail", statuses["s"].Config)
 }

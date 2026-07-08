@@ -478,6 +478,8 @@ func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status
 		current.Type = src.Type
 		if rs, ok := resolvedStatuses[src.Name]; ok {
 			current.Message = rs.Message
+			current.Config = rs.Config
+			current.ExpiresAt = rs.ExpiresAt
 			if rs.Type != "" {
 				current.Type = rs.Type
 			}

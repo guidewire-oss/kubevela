@@ -171,6 +171,67 @@ parameter: {
 		}, 60*time.Second, time.Second).Should(Equal("***"))
 	})
 
+	It("creates source cache using storage key policy", func() {
+		sourceDef := &v1beta1.SourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "stale-image-source",
+				Namespace: namespaceName,
+			},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &oamcomm.Schematic{
+					CUE: &oamcomm.CUE{
+						Template: `
+storage: {
+  key: "source-cache-policy-\(context.namespace)"
+  storageTTL: "1h"
+  onStaleFailure: "use-stale"
+}
+output: {
+  image: parameter.image
+}
+parameter: {
+  image: string
+}
+`,
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sourceDef)).Should(Succeed())
+
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "source-stale-app",
+				Namespace: namespaceName,
+			},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{
+					{
+						Name: "img",
+						Type: "stale-image-source",
+						Properties: &runtime.RawExtension{
+							Raw: []byte(`{"image":"busybox:1.36.1"}`),
+						},
+					},
+				},
+				Components: []oamcomm.ApplicationComponent{
+					{
+						Name: "web-stale",
+						Type: "webservice",
+						Properties: &runtime.RawExtension{
+							Raw: []byte(`{
+  "image":{"fromSource":"img.image"},
+  "port":80
+}`),
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
+		verifyApplicationPhase(ctx, namespaceName, app.Name, oamcomm.ApplicationRunning)
+	})
+
 	It("resolves chained nested sources where second source depends on first", func() {
 		sourceA := &v1beta1.SourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
