@@ -22,7 +22,6 @@ import (
 
 	types "github.com/oam-dev/terraform-controller/api/types/crossplane-runtime"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -206,21 +205,13 @@ type ApplicationTraitStatus struct {
 type ApplicationSourceStatus struct {
 	Name    string `json:"name"`
 	Type    string `json:"type,omitempty"`
-	Phase   string `json:"phase,omitempty"`
 	Config  string `json:"config,omitempty"`
 	Message string `json:"message,omitempty"`
-	// Consumed records only source fields actually consumed by this service render.
+	// Properties records only source fields actually consumed by this service render.
 	// +optional
-	Consumed []ApplicationSourceConsumedStatus `json:"consumed,omitempty"`
+	Properties *runtime.RawExtension `json:"properties,omitempty"`
 	// +optional
 	ResolvedFields *runtime.RawExtension `json:"resolvedFields,omitempty"`
-}
-
-// ApplicationSourceConsumedStatus records one consumed source property.
-type ApplicationSourceConsumedStatus struct {
-	Property string `json:"property"`
-	// +optional
-	Value *apiextensionsv1.JSON `json:"value,omitempty"`
 }
 
 // Revision has name and revision number

@@ -26,9 +26,9 @@ import (
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -346,9 +346,8 @@ func (h *AppHandler) collectHealthStatus(ctx context.Context, comp *appfile.Comp
 		status.Sources = make([]common.ApplicationSourceStatus, 0, len(h.app.Spec.Sources))
 		for _, src := range h.app.Spec.Sources {
 			status.Sources = append(status.Sources, common.ApplicationSourceStatus{
-				Name:  src.Name,
-				Type:  src.Type,
-				Phase: "Pending",
+				Name: src.Name,
+				Type: src.Type,
 			})
 		}
 	}
@@ -468,9 +467,8 @@ func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status
 	for _, src := range h.app.Spec.Sources {
 		if _, ok := byName[src.Name]; !ok {
 			byName[src.Name] = common.ApplicationSourceStatus{
-				Name:  src.Name,
-				Type:  src.Type,
-				Phase: "Pending",
+				Name: src.Name,
+				Type: src.Type,
 			}
 		}
 	}
@@ -479,13 +477,12 @@ func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status
 		current := byName[src.Name]
 		current.Type = src.Type
 		if rs, ok := resolvedStatuses[src.Name]; ok {
-			current.Phase = rs.Phase
 			current.Message = rs.Message
 			if rs.Type != "" {
 				current.Type = rs.Type
 			}
 			current.ResolvedFields = nil
-			current.Consumed = nil
+			current.Properties = nil
 
 			maskPaths := append([]string{}, rs.SensitivePaths...)
 			if src.StatusPolicy != nil {
@@ -501,25 +498,22 @@ func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status
 			exposeValues := src.StatusPolicy == nil ||
 				src.StatusPolicy.ExposeConsumedValues ||
 				src.StatusPolicy.ExposeResolvedFields
-			if len(rs.ConsumedFields) > 0 {
+			if exposeValues && len(rs.ConsumedFields) > 0 {
 				paths := make([]string, 0, len(rs.ConsumedFields))
 				for p := range rs.ConsumedFields {
 					paths = append(paths, p)
 				}
 				sort.Strings(paths)
-				current.Consumed = make([]common.ApplicationSourceConsumedStatus, 0, len(paths))
+				props := make(map[string]interface{}, len(paths))
 				for _, p := range paths {
-					item := common.ApplicationSourceConsumedStatus{Property: p}
-					if exposeValues {
-						val := rs.ConsumedFields[p]
-						if _, masked := maskSet[p]; masked {
-							val = "***"
-						}
-						if raw, err := valueToRawExtension(val); err == nil {
-							item.Value = raw
-						}
+					val := rs.ConsumedFields[p]
+					if _, masked := maskSet[p]; masked {
+						val = "***"
 					}
-					current.Consumed = append(current.Consumed, item)
+					props[p] = val
+				}
+				if raw, err := mapToRawExtension(props); err == nil {
+					current.Properties = raw
 				}
 			}
 		}
@@ -532,12 +526,12 @@ func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status
 	status.Sources = merged
 }
 
-func valueToRawExtension(v interface{}) (*apiextensionsv1.JSON, error) {
+func mapToRawExtension(v map[string]interface{}) (*runtime.RawExtension, error) {
 	bt, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
-	return &apiextensionsv1.JSON{Raw: bt}, nil
+	return &runtime.RawExtension{Raw: bt}, nil
 }
 
 func setStatus(status *common.ApplicationComponentStatus, observedGeneration, generation int64, labels map[string]string,

@@ -154,23 +154,18 @@ parameter: {
 				if src.Name != "img" {
 					continue
 				}
-				if len(src.Consumed) == 0 {
-					return "", fmt.Errorf("consumed values missing")
+				if src.Properties == nil {
+					return "", fmt.Errorf("source properties missing")
 				}
-				for _, consumed := range src.Consumed {
-					if consumed.Property != "image" {
-						continue
-					}
-					if consumed.Value == nil {
-						return "", fmt.Errorf("consumed value missing")
-					}
-					var image string
-					if err := json.Unmarshal(consumed.Value.Raw, &image); err != nil {
-						return "", err
-					}
-					return image, nil
+				var props map[string]interface{}
+				if err := json.Unmarshal(src.Properties.Raw, &props); err != nil {
+					return "", err
 				}
-				return "", fmt.Errorf("consumed image value not found")
+				image, _ := props["image"].(string)
+				if image == "" {
+					return "", fmt.Errorf("image property missing")
+				}
+				return image, nil
 			}
 			return "", fmt.Errorf("source status for img not found")
 		}, 60*time.Second, time.Second).Should(Equal("***"))

@@ -6,7 +6,7 @@ This example shows:
 - nested path resolution
 - chained source resolution where a second source consumes the first
 - trait property resolution via `fromSource`
-- source status reporting with redacted consumed values (`consumed[]`)
+- source status reporting with redacted consumed values (`properties`)
 
 ## Files
 

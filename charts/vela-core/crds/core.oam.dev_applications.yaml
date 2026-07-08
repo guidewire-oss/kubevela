@@ -673,27 +673,15 @@ spec:
                         properties:
                           config:
                             type: string
-                          consumed:
-                            description: Consumed records only source fields actually
-                              consumed by this service render.
-                            items:
-                              description: ApplicationSourceConsumedStatus records
-                                one consumed source property.
-                              properties:
-                                property:
-                                  type: string
-                                value:
-                                  x-kubernetes-preserve-unknown-fields: true
-                              required:
-                              - property
-                              type: object
-                            type: array
                           message:
                             type: string
                           name:
                             type: string
-                          phase:
-                            type: string
+                          properties:
+                            description: Properties records only source fields actually
+                              consumed by this service render.
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
                           resolvedFields:
                             type: object
                             x-kubernetes-preserve-unknown-fields: true
