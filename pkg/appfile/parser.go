@@ -110,6 +110,7 @@ func (p *Parser) GenerateAppFileFromApp(ctx context.Context, app *v1beta1.Applic
 	}
 
 	appFile := newAppFile(app)
+	appFile.KubeClient = p.client
 	if err := p.parseSources(ctx, appFile); err != nil {
 		return nil, errors.Wrap(err, "failed to parseSources")
 	}
@@ -223,6 +224,7 @@ func (p *Parser) GenerateAppFileFromRevision(appRev *v1beta1.ApplicationRevision
 
 	ctx := context.Background()
 	appfile := newAppFile(appRev.Spec.Application.DeepCopy())
+	appfile.KubeClient = p.client
 	appfile.AppRevision = appRev
 	appfile.AppRevisionName = appRev.Name
 	appfile.AppRevisionHash = appRev.Labels[oam.LabelAppRevisionHash]

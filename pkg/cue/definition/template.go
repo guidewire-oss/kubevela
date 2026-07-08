@@ -18,6 +18,8 @@ package definition
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -37,7 +39,10 @@ import (
 	"github.com/kubevela/pkg/multicluster"
 
 	"github.com/pkg/errors"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kubevela/workflow/pkg/cue/model"
@@ -45,6 +50,7 @@ import (
 	"github.com/kubevela/workflow/pkg/cue/model/value"
 	"github.com/kubevela/workflow/pkg/cue/process"
 
+	apitypes "github.com/oam-dev/kubevela/apis/types"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/cue/task"
 	"github.com/oam-dev/kubevela/pkg/cue/upgrade"
@@ -67,6 +73,10 @@ const (
 	TemplateContextPrefix = "template-context-"
 	// SourceResolutionStatusKey stores per-source runtime resolution statuses in process context.
 	SourceResolutionStatusKey = "sourceResolutionStatuses"
+	sourceCacheNamespace      = "vela-system"
+	sourceCacheTTL            = 15 * time.Minute
+	sourceCacheSyncAtKey      = "config.oam.dev/last-sync-at"
+	sourceCacheDataKey        = "input-properties"
 )
 
 // GetWorkloadTemplateKey returns the context key for storing workload templates
@@ -775,6 +785,7 @@ type sourceResolver struct {
 	sourceTypes     map[string]string
 	sourceTemplates map[string]string
 	sensitivePaths  map[string][]string
+	cacheClient     client.Client
 	resolved        map[string]map[string]interface{}
 	resolving       map[string]bool
 }
@@ -807,12 +818,17 @@ func newSourceResolver(ctx process.Context) *sourceResolver {
 	if sensitivePaths == nil {
 		sensitivePaths = map[string][]string{}
 	}
+	var cacheClient client.Client
+	if c, ok := ctx.GetData(velaprocess.ContextAppSourceCacheClient).(client.Client); ok && c != nil {
+		cacheClient = c
+	}
 	return &sourceResolver{
 		ctx:             ctx,
 		sourceProps:     sourceProps,
 		sourceTypes:     sourceTypes,
 		sourceTemplates: sourceTemplates,
 		sensitivePaths:  sensitivePaths,
+		cacheClient:     cacheClient,
 		resolved:        map[string]map[string]interface{}{},
 		resolving:       map[string]bool{},
 	}
@@ -842,6 +858,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
 		return nil, err
 	}
+	resolvedProps := map[string]interface{}{}
 	paramFile := velaprocess.ParameterFieldName + ": {}"
 	if props, ok := r.sourceProps[sourceName]; ok && props != nil {
 		resolvedPropsNode, err := resolveFromSourceNode(props, r)
@@ -849,18 +866,29 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
 			return nil, errors.WithMessagef(err, "resolve source properties for %s", sourceName)
 		}
-		resolvedProps, ok := resolvedPropsNode.(map[string]interface{})
+		rp, ok := resolvedPropsNode.(map[string]interface{})
 		if !ok {
 			err := fmt.Errorf("resolved source properties for %s are invalid", sourceName)
 			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
 			return nil, err
 		}
-		raw, err := json.Marshal(resolvedProps)
+		resolvedProps = rp
+		raw, err := json.Marshal(rp)
 		if err != nil {
 			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
 			return nil, errors.WithMessagef(err, "marshal properties for source %s", sourceName)
 		}
 		paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(raw))
+	}
+	cacheKey := r.cacheKey(sourceName, sourceType, sourceTemplate, resolvedProps)
+	if cached, stale, err := r.readSourceCache(cacheKey); err == nil && len(cached) > 0 {
+		if !stale {
+			r.resolved[sourceName] = cached
+			r.setSourceStatus(sourceName, sourceType, "Resolved", "", cached)
+			return cached, nil
+		}
+	} else if err != nil {
+		klog.Warningf("read source cache failed for %s: %v", sourceName, err)
 	}
 	c, err := r.ctx.BaseContextFile()
 	if err != nil {
@@ -880,8 +908,92 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 		return nil, errors.WithMessagef(err, "decode output for source definition %s", sourceType)
 	}
 	r.resolved[sourceName] = output
+	if err := r.writeSourceCache(cacheKey, output); err != nil {
+		klog.Warningf("write source cache failed for %s: %v", sourceName, err)
+	}
 	r.setSourceStatus(sourceName, sourceType, "Resolved", "", output)
 	return output, nil
+}
+
+func (r *sourceResolver) cacheKey(sourceName, sourceType, sourceTemplate string, props map[string]interface{}) string {
+	cluster, _ := r.ctx.GetData(velaprocess.ContextCluster).(string)
+	raw, _ := json.Marshal(map[string]interface{}{
+		"sourceName": sourceName,
+		"sourceType": sourceType,
+		"cluster":    cluster,
+		"template":   sourceTemplate,
+		"props":      props,
+	})
+	sum := sha256.Sum256(raw)
+	return "source-cache-" + hex.EncodeToString(sum[:12])
+}
+
+func (r *sourceResolver) readSourceCache(cacheKey string) (map[string]interface{}, bool, error) {
+	if r.cacheClient == nil || cacheKey == "" {
+		return nil, false, nil
+	}
+	secret := &corev1.Secret{}
+	if err := r.cacheClient.Get(r.ctx.GetCtx(), ktypes.NamespacedName{Namespace: sourceCacheNamespace, Name: cacheKey}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if secret.Data == nil || len(secret.Data[sourceCacheDataKey]) == 0 {
+		return nil, false, nil
+	}
+	properties := map[string]interface{}{}
+	if err := json.Unmarshal(secret.Data[sourceCacheDataKey], &properties); err != nil {
+		return nil, false, err
+	}
+	lastSync := secret.CreationTimestamp.Time
+	if ts := secret.Annotations[sourceCacheSyncAtKey]; ts != "" {
+		if t, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
+			lastSync = t
+		}
+	}
+	stale := time.Since(lastSync) > sourceCacheTTL
+	return properties, stale, nil
+}
+
+func (r *sourceResolver) writeSourceCache(cacheKey string, data map[string]interface{}) error {
+	if r.cacheClient == nil || cacheKey == "" {
+		return nil
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	now := time.Now().Format(time.RFC3339)
+	key := ktypes.NamespacedName{Namespace: sourceCacheNamespace, Name: cacheKey}
+	secret := &corev1.Secret{}
+	if err := r.cacheClient.Get(r.ctx.GetCtx(), key, secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		secret = &corev1.Secret{}
+		secret.Namespace = sourceCacheNamespace
+		secret.Name = cacheKey
+		secret.Type = corev1.SecretTypeOpaque
+		secret.Labels = map[string]string{
+			apitypes.LabelConfigCatalog: apitypes.VelaCoreConfig,
+			apitypes.LabelConfigType:    "",
+		}
+		secret.Annotations = map[string]string{}
+		secret.Data = map[string][]byte{}
+		secret.Annotations[sourceCacheSyncAtKey] = now
+		secret.Data[sourceCacheDataKey] = raw
+		return r.cacheClient.Create(r.ctx.GetCtx(), secret)
+	}
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	secret.Annotations[sourceCacheSyncAtKey] = now
+	secret.Data[sourceCacheDataKey] = raw
+	return r.cacheClient.Update(r.ctx.GetCtx(), secret)
 }
 
 func (r *sourceResolver) setSourceStatus(sourceName, sourceType, phase, message string, resolved map[string]interface{}) {

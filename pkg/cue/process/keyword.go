@@ -49,6 +49,8 @@ const (
 	ContextAppSourceTemplates = "appSourceTemplates"
 	// ContextAppSourceSensitivePaths maps source definition type to platform-sensitive paths.
 	ContextAppSourceSensitivePaths = "appSourceSensitivePaths"
+	// ContextAppSourceCacheClient stores the kubernetes client used for source cache access.
+	ContextAppSourceCacheClient = "appSourceCacheClient"
 	// ContextNamespace is the namespace of the app
 	ContextNamespace = "namespace"
 	// ContextCluster is the cluster currently focusing on

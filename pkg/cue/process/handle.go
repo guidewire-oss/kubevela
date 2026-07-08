@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/kubevela/workflow/pkg/cue/process"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/types"
@@ -51,6 +52,8 @@ type ContextData struct {
 	SourceTemplates map[string]string
 	// SourceSensitivePaths maps source definition type to non-overridable sensitive field paths.
 	SourceSensitivePaths map[string][]string
+	// SourceCacheClient is used for persistent source cache read/write operations.
+	SourceCacheClient client.Client
 
 	AppLabels      map[string]string
 	AppAnnotations map[string]string
@@ -109,6 +112,9 @@ func NewContext(data ContextData) process.Context {
 		data.SourceSensitivePaths = map[string][]string{}
 	}
 	ctx.PushData(ContextAppSourceSensitivePaths, data.SourceSensitivePaths)
+	if data.SourceCacheClient != nil {
+		ctx.PushData(ContextAppSourceCacheClient, data.SourceCacheClient)
+	}
 	appLabels := data.AppLabels
 	if appLabels == nil {
 		appLabels = map[string]string{}

@@ -193,6 +193,8 @@ type Appfile struct {
 	// Context is the reconciliation context for the current Application, populated during
 	// controller reconcile and carried into rendering
 	Context context.Context
+	// KubeClient is used by runtime resolvers that need API access during rendering.
+	KubeClient client.Client
 
 	Debug bool
 }
@@ -785,6 +787,7 @@ func GenerateContextDataFromAppFile(appfile *Appfile, wlName string) velaprocess
 		SourceTypes:          map[string]string{},
 		SourceTemplates:      map[string]string{},
 		SourceSensitivePaths: map[string][]string{},
+		SourceCacheClient:    appfile.KubeClient,
 	}
 	for _, source := range appfile.Sources {
 		props := map[string]interface{}{}
