@@ -46,6 +46,8 @@ const (
 	TypeWorkflowStep CapType = "workflowstep"
 	// TypePolicy represent OAM Policy
 	TypePolicy CapType = "policy"
+	// TypeSource represent OAM SourceDefinition
+	TypeSource CapType = "source"
 )
 
 // CapabilityConfigMapNamePrefix is the prefix for capability ConfigMap name

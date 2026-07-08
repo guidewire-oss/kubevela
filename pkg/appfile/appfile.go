@@ -23,6 +23,8 @@ import (
 	"reflect"
 	"strings"
 
+	"cuelang.org/go/cue/ast"
+	cueparser "cuelang.org/go/cue/parser"
 	"github.com/oam-dev/kubevela/pkg/cue/definition/health"
 
 	"cuelang.org/go/cue"
@@ -173,8 +175,10 @@ type Appfile struct {
 	RelatedTraitDefinitions        map[string]*v1beta1.TraitDefinition
 	RelatedComponentDefinitions    map[string]*v1beta1.ComponentDefinition
 	RelatedWorkflowStepDefinitions map[string]*v1beta1.WorkflowStepDefinition
+	RelatedSourceDefinitions       map[string]*v1beta1.SourceDefinition
 
 	Policies      []v1beta1.AppPolicy
+	Sources       []v1beta1.ApplicationSource
 	Components    []common.ApplicationComponent
 	Artifacts     []*types.ComponentManifest
 	WorkflowSteps []wfTypesv1alpha1.WorkflowStep
@@ -771,12 +775,30 @@ func setParameterValuesToKubeObj(obj *unstructured.Unstructured, values paramVal
 // GenerateContextDataFromAppFile generates process context data from app file
 func GenerateContextDataFromAppFile(appfile *Appfile, wlName string) velaprocess.ContextData {
 	data := velaprocess.ContextData{
-		Namespace:       appfile.Namespace,
-		AppName:         appfile.Name,
-		CompName:        wlName,
-		AppRevisionName: appfile.AppRevisionName,
-		Components:      appfile.Components,
-		Ctx:             appfile.Context,
+		Namespace:            appfile.Namespace,
+		AppName:              appfile.Name,
+		CompName:             wlName,
+		AppRevisionName:      appfile.AppRevisionName,
+		Components:           appfile.Components,
+		Ctx:                  appfile.Context,
+		Sources:              map[string]map[string]interface{}{},
+		SourceTypes:          map[string]string{},
+		SourceTemplates:      map[string]string{},
+		SourceSensitivePaths: map[string][]string{},
+	}
+	for _, source := range appfile.Sources {
+		props := map[string]interface{}{}
+		if source.Properties != nil && len(source.Properties.Raw) > 0 {
+			_ = json.Unmarshal(source.Properties.Raw, &props)
+		}
+		data.Sources[source.Name] = props
+		data.SourceTypes[source.Name] = source.Type
+	}
+	for sourceType, def := range appfile.RelatedSourceDefinitions {
+		if def != nil && def.Spec.Schematic != nil && def.Spec.Schematic.CUE != nil {
+			data.SourceTemplates[sourceType] = def.Spec.Schematic.CUE.Template
+			data.SourceSensitivePaths[sourceType] = extractSensitiveOutputPaths(def.Spec.Schematic.CUE.Template)
+		}
 	}
 	if appfile.AppAnnotations != nil {
 		data.WorkflowName = appfile.AppAnnotations[oam.AnnotationWorkflowName]
@@ -787,6 +809,78 @@ func GenerateContextDataFromAppFile(appfile *Appfile, wlName string) velaprocess
 		data.AppLabels = appfile.AppLabels
 	}
 	return data
+}
+
+func extractSensitiveOutputPaths(template string) []string {
+	f, err := cueparser.ParseFile("-", template, cueparser.ParseComments)
+	if err != nil || f == nil {
+		return nil
+	}
+	outStruct := findOutputStruct(f)
+	if outStruct == nil {
+		return nil
+	}
+	var paths []string
+	collectSensitivePaths(outStruct, nil, &paths)
+	return paths
+}
+
+func findOutputStruct(f *ast.File) *ast.StructLit {
+	for _, decl := range f.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
+		}
+		if labelName(field.Label) != "output" {
+			continue
+		}
+		if st, ok := field.Value.(*ast.StructLit); ok {
+			return st
+		}
+	}
+	return nil
+}
+
+func collectSensitivePaths(st *ast.StructLit, prefix []string, out *[]string) {
+	for _, elt := range st.Elts {
+		field, ok := elt.(*ast.Field)
+		if !ok {
+			continue
+		}
+		name := labelName(field.Label)
+		if name == "" {
+			continue
+		}
+		path := append(prefix, name)
+		if hasSensitiveMarker(field) {
+			*out = append(*out, strings.Join(path, "."))
+		}
+		if nested, ok := field.Value.(*ast.StructLit); ok {
+			collectSensitivePaths(nested, path, out)
+		}
+	}
+}
+
+func hasSensitiveMarker(field *ast.Field) bool {
+	for _, cg := range field.Comments() {
+		for _, c := range cg.List {
+			if strings.Contains(c.Text, "+sensitive") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func labelName(label ast.Label) string {
+	switch v := label.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.BasicLit:
+		return strings.Trim(v.Value, "\"")
+	default:
+		return ""
+	}
 }
 
 // WorkflowClient cache retrieved workflow if ApplicationRevision not exists in appfile

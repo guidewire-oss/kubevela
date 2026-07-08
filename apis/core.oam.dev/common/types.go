@@ -22,6 +22,7 @@ import (
 
 	types "github.com/oam-dev/terraform-controller/api/types/crossplane-runtime"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -178,11 +179,12 @@ type ApplicationComponentStatus struct {
 	Healthy            bool        `json:"healthy"`
 	// WorkloadHealthy indicates the workload health without considering trait health.
 	// +optional
-	WorkloadHealthy bool                     `json:"workloadHealthy,omitempty"`
-	Details         map[string]string        `json:"details,omitempty"`
-	Message         string                   `json:"message,omitempty"`
-	Traits          []ApplicationTraitStatus `json:"traits,omitempty"`
-	Scopes          []corev1.ObjectReference `json:"scopes,omitempty"`
+	WorkloadHealthy bool                      `json:"workloadHealthy,omitempty"`
+	Details         map[string]string         `json:"details,omitempty"`
+	Message         string                    `json:"message,omitempty"`
+	Traits          []ApplicationTraitStatus  `json:"traits,omitempty"`
+	Scopes          []corev1.ObjectReference  `json:"scopes,omitempty"`
+	Sources         []ApplicationSourceStatus `json:"sources,omitempty"`
 }
 
 // Equal check if two ApplicationComponentStatus are equal
@@ -198,6 +200,27 @@ type ApplicationTraitStatus struct {
 	Pending bool              `json:"pending,omitempty"`
 	Details map[string]string `json:"details,omitempty"`
 	Message string            `json:"message,omitempty"`
+}
+
+// ApplicationSourceStatus records source resolution status.
+type ApplicationSourceStatus struct {
+	Name    string `json:"name"`
+	Type    string `json:"type,omitempty"`
+	Phase   string `json:"phase,omitempty"`
+	Config  string `json:"config,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Consumed records only source fields actually consumed by this service render.
+	// +optional
+	Consumed []ApplicationSourceConsumedStatus `json:"consumed,omitempty"`
+	// +optional
+	ResolvedFields *runtime.RawExtension `json:"resolvedFields,omitempty"`
+}
+
+// ApplicationSourceConsumedStatus records one consumed source property.
+type ApplicationSourceConsumedStatus struct {
+	Property string `json:"property"`
+	// +optional
+	Value *apiextensionsv1.JSON `json:"value,omitempty"`
 }
 
 // Revision has name and revision number
@@ -323,7 +346,7 @@ type WorkflowStatus struct {
 }
 
 // DefinitionType describes the type of DefinitionRevision.
-// +kubebuilder:validation:Enum=Component;Trait;Policy;WorkflowStep
+// +kubebuilder:validation:Enum=Component;Trait;Policy;WorkflowStep;Source
 type DefinitionType string
 
 const (
@@ -338,6 +361,8 @@ const (
 
 	// WorkflowStepType represents DefinitionRevision refer to type WorkflowStepDefinition
 	WorkflowStepType DefinitionType = "WorkflowStep"
+	// SourceType represents DefinitionRevision refer to type SourceDefinition
+	SourceType DefinitionType = "Source"
 )
 
 // ApplicationTrait defines the trait of application

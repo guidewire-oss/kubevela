@@ -110,6 +110,9 @@ func (p *Parser) GenerateAppFileFromApp(ctx context.Context, app *v1beta1.Applic
 	}
 
 	appFile := newAppFile(app)
+	if err := p.parseSources(ctx, appFile); err != nil {
+		return nil, errors.Wrap(err, "failed to parseSources")
+	}
 	if app.Status.LatestRevision != nil {
 		appFile.AppRevisionName = app.Status.LatestRevision.Name
 	}
@@ -147,8 +150,10 @@ func newAppFile(app *v1beta1.Application) *Appfile {
 		RelatedTraitDefinitions:        make(map[string]*v1beta1.TraitDefinition),
 		RelatedComponentDefinitions:    make(map[string]*v1beta1.ComponentDefinition),
 		RelatedWorkflowStepDefinitions: make(map[string]*v1beta1.WorkflowStepDefinition),
+		RelatedSourceDefinitions:       make(map[string]*v1beta1.SourceDefinition),
 
 		ExternalPolicies: make(map[string]*v1alpha1.Policy),
+		Sources:          app.Spec.Sources,
 
 		app: app,
 	}
@@ -235,6 +240,9 @@ func (p *Parser) GenerateAppFileFromRevision(appRev *v1beta1.ApplicationRevision
 	}
 	if err := p.parsePoliciesFromRevision(ctx, appfile); err != nil {
 		return nil, errors.Wrap(err, "failed to parsePolicies")
+	}
+	if err := p.parseSourcesFromRevision(appfile); err != nil {
+		return nil, errors.Wrap(err, "failed to parseSourcesFromRevision")
 	}
 	if err := p.parseReferredObjectsFromRevision(appfile); err != nil {
 		return nil, errors.Wrap(err, "failed to parseReferredObjects")
@@ -473,6 +481,35 @@ func (p *Parser) parseWorkflowStepsFromRevision(ctx context.Context, af *Appfile
 	// Definitions are already in AppRevision
 	for k, v := range af.AppRevision.Spec.WorkflowStepDefinitions {
 		af.RelatedWorkflowStepDefinitions[k] = v.DeepCopy()
+	}
+	return nil
+}
+
+func (p *Parser) parseSources(ctx context.Context, af *Appfile) error {
+	for _, source := range af.Sources {
+		if source.Type == "" {
+			continue
+		}
+		if _, found := af.RelatedSourceDefinitions[source.Type]; found {
+			continue
+		}
+		def := &v1beta1.SourceDefinition{}
+		if err := util.GetCapabilityDefinition(ctx, p.client, def, source.Type, af.app.Annotations); err != nil {
+			return errors.Wrapf(err, "failed to get source definition %s", source.Type)
+		}
+		sd := def.DeepCopy()
+		sd.Status = v1beta1.SourceDefinitionStatus{}
+		af.RelatedSourceDefinitions[source.Type] = sd
+	}
+	return nil
+}
+
+func (p *Parser) parseSourcesFromRevision(af *Appfile) error {
+	if af.AppRevision == nil || af.AppRevision.Spec.SourceDefinitions == nil {
+		return nil
+	}
+	for k, v := range af.AppRevision.Spec.SourceDefinitions {
+		af.RelatedSourceDefinitions[k] = v.DeepCopy()
 	}
 	return nil
 }

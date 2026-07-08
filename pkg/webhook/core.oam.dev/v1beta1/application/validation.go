@@ -26,6 +26,8 @@ import (
 	"github.com/kubevela/pkg/util/singleton"
 	authv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
@@ -207,6 +209,14 @@ func (h *ValidatingHandler) definitionExistsInNamespace(ctx context.Context, res
 		obj = &v1beta1.PolicyDefinition{}
 	case "workflowstepdefinitions":
 		obj = &v1beta1.WorkflowStepDefinition{}
+	case "sourcedefinitions":
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   v1beta1.Group,
+			Version: v1beta1.Version,
+			Kind:    "SourceDefinition",
+		})
+		obj = u
 	default:
 		return false, fmt.Errorf("unknown resource type: %s", resource)
 	}
@@ -239,6 +249,7 @@ type definitionUsage struct {
 	traitTypes        map[string][][2]int
 	policyTypes       map[string][]int
 	workflowStepTypes map[string][]workflowStepLocation
+	sourceTypes       map[string][]int
 }
 
 // collectDefinitionUsage collects all unique definition types and their locations in the application
@@ -248,6 +259,7 @@ func collectDefinitionUsage(app *v1beta1.Application) *definitionUsage {
 		traitTypes:        make(map[string][][2]int),
 		policyTypes:       make(map[string][]int),
 		workflowStepTypes: make(map[string][]workflowStepLocation),
+		sourceTypes:       make(map[string][]int),
 	}
 
 	// Collect component and trait types
@@ -284,6 +296,9 @@ func collectDefinitionUsage(app *v1beta1.Application) *definitionUsage {
 				usage.workflowStepTypes[subStep.Type] = append(usage.workflowStepTypes[subStep.Type], subLocation)
 			}
 		}
+	}
+	for i, source := range app.Spec.Sources {
+		usage.sourceTypes[source.Type] = append(usage.sourceTypes[source.Type], i)
 	}
 
 	return usage
@@ -425,6 +440,15 @@ func (h *ValidatingHandler) ValidateDefinitionPermissions(ctx context.Context, a
 			}
 			return paths
 		})...)
+	for sourceType, indices := range usage.sourceTypes {
+		allowed, err := h.checkDefinitionPermission(ctx, req, "sourcedefinitions", sourceType, app.Namespace)
+		fieldPaths := make([]*field.Path, 0, len(indices))
+		for _, idx := range indices {
+			fieldPaths = append(fieldPaths, field.NewPath("spec", "sources").Index(idx).Child("type"))
+		}
+		errs = append(errs, h.processDefinitionPermissionCheck(
+			allowed, err, req, "SourceDefinition", sourceType, app.Namespace, fieldPaths)...)
+	}
 
 	return errs
 }

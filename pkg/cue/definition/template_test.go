@@ -1837,3 +1837,92 @@ func TestGetBaseContextLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveFromSourceNode(t *testing.T) {
+	sources := map[string]map[string]interface{}{
+		"cluster-info": {
+			"region": "us-east-1",
+			"nested": map[string]interface{}{"tier": "prod"},
+		},
+	}
+	in := map[string]interface{}{
+		"region": map[string]interface{}{
+			"fromSource": "cluster-info.region",
+		},
+		"tier": map[string]interface{}{
+			"fromSource": map[string]interface{}{
+				"name": "cluster-info",
+				"path": "nested.tier",
+			},
+		},
+	}
+	resolver := newSourceResolver(process.NewContext(process.ContextData{}))
+	resolver.resolved = sources
+	resolver.sourceTypes = map[string]string{"cluster-info": "cluster"}
+	got, err := resolveFromSourceNode(in, resolver)
+	require.NoError(t, err)
+	out, ok := got.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "us-east-1", out["region"])
+	assert.Equal(t, "prod", out["tier"])
+	statuses, _ := resolver.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
+	require.NotNil(t, statuses)
+	assert.Equal(t, "us-east-1", statuses["cluster-info"].ConsumedFields["region"])
+	assert.Equal(t, "prod", statuses["cluster-info"].ConsumedFields["nested.tier"])
+}
+
+func TestResolveChainedSourceProperties(t *testing.T) {
+	ctx := process.NewContext(process.ContextData{})
+	resolver := newSourceResolver(ctx)
+	resolver.sourceTypes = map[string]string{
+		"sourceA": "typeA",
+		"sourceB": "typeB",
+	}
+	resolver.sourceTemplates = map[string]string{
+		"typeA": `
+output: {
+  nested: {
+    image: {
+      repo: parameter.repo
+      tag:  parameter.tag
+    }
+  }
+}
+parameter: {
+  repo: string
+  tag:  string
+}
+`,
+		"typeB": `
+output: {
+  resolved: {
+    image: "\(parameter.repo):\(parameter.tag)"
+  }
+}
+parameter: {
+  repo: string
+  tag:  string
+}
+`,
+	}
+	resolver.sourceProps = map[string]map[string]interface{}{
+		"sourceA": {
+			"repo": "nginx",
+			"tag":  "1.25.2",
+		},
+		"sourceB": {
+			"repo": map[string]interface{}{
+				"fromSource": "sourceA.nested.image.repo",
+			},
+			"tag": map[string]interface{}{
+				"fromSource": "sourceA.nested.image.tag",
+			},
+		},
+	}
+
+	out, err := resolver.resolve("sourceB")
+	require.NoError(t, err)
+	resolved, ok := out["resolved"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "nginx:1.25.2", resolved["image"])
+}

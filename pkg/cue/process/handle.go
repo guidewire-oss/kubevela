@@ -42,10 +42,15 @@ type ContextData struct {
 	PublishVersion  string
 	ReplicaKey      string
 
-	Ctx            context.Context
-	BaseHooks      []process.BaseHook
-	AuxiliaryHooks []process.AuxiliaryHook
-	Components     []common.ApplicationComponent
+	Ctx             context.Context
+	BaseHooks       []process.BaseHook
+	AuxiliaryHooks  []process.AuxiliaryHook
+	Components      []common.ApplicationComponent
+	Sources         map[string]map[string]interface{}
+	SourceTypes     map[string]string
+	SourceTemplates map[string]string
+	// SourceSensitivePaths maps source definition type to non-overridable sensitive field paths.
+	SourceSensitivePaths map[string][]string
 
 	AppLabels      map[string]string
 	AppAnnotations map[string]string
@@ -88,6 +93,22 @@ func NewContext(data ContextData) process.Context {
 	ctx.PushData(ContextAppRevision, data.AppRevisionName)
 	ctx.PushData(ContextCompRevisionName, data.CompRevision)
 	ctx.PushData(ContextComponents, data.Components)
+	if data.Sources == nil {
+		data.Sources = map[string]map[string]interface{}{}
+	}
+	ctx.PushData(ContextAppSources, data.Sources)
+	if data.SourceTypes == nil {
+		data.SourceTypes = map[string]string{}
+	}
+	ctx.PushData(ContextAppSourceTypes, data.SourceTypes)
+	if data.SourceTemplates == nil {
+		data.SourceTemplates = map[string]string{}
+	}
+	ctx.PushData(ContextAppSourceTemplates, data.SourceTemplates)
+	if data.SourceSensitivePaths == nil {
+		data.SourceSensitivePaths = map[string][]string{}
+	}
+	ctx.PushData(ContextAppSourceSensitivePaths, data.SourceSensitivePaths)
 	appLabels := data.AppLabels
 	if appLabels == nil {
 		appLabels = map[string]string{}

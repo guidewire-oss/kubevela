@@ -47,9 +47,81 @@ type Workflow struct {
 	Steps []wfTypesv1alpha1.WorkflowStep       `json:"steps,omitempty"`
 }
 
+// SourceSelector selects a field from a named source.
+type SourceSelector struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// +optional
+	Default *runtime.RawExtension `json:"default,omitempty"`
+}
+
+// FromSource supports both shorthand and map forms.
+// It can be a string like "<source>.<path>" or a map with name/path/default.
+type FromSource struct {
+	String *string
+	Ref    *SourceSelector
+}
+
+// UnmarshalJSON unmarshals fromSource from string or object.
+func (in *FromSource) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		in.String = &s
+		in.Ref = nil
+		return nil
+	}
+	var ref SourceSelector
+	if err := json.Unmarshal(data, &ref); err != nil {
+		return err
+	}
+	in.String = nil
+	in.Ref = &ref
+	return nil
+}
+
+// MarshalJSON marshals fromSource as string when possible.
+func (in FromSource) MarshalJSON() ([]byte, error) {
+	if in.String != nil {
+		return json.Marshal(*in.String)
+	}
+	if in.Ref != nil {
+		return json.Marshal(*in.Ref)
+	}
+	return []byte("null"), nil
+}
+
+// ApplicationSource defines a source binding under spec.sources.
+type ApplicationSource struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Properties *runtime.RawExtension `json:"properties,omitempty"`
+	// StatusPolicy controls what source resolution details are exposed on Application status.
+	// +optional
+	StatusPolicy *ApplicationSourceStatusPolicy `json:"statusPolicy,omitempty"`
+}
+
+// ApplicationSourceStatusPolicy controls source status visibility.
+type ApplicationSourceStatusPolicy struct {
+	// ExposeResolvedFields controls whether resolved source fields are written to status.
+	// +optional
+	ExposeResolvedFields bool `json:"exposeResolvedFields,omitempty"`
+	// ExposeConsumedValues controls whether consumed source values are written to status.
+	// If false, consumed property paths may still be listed without values.
+	// +optional
+	ExposeConsumedValues bool `json:"exposeConsumedValues,omitempty"`
+	// MaskPaths redacts resolved field paths before writing to status.
+	// Paths are dot-delimited (e.g. "nested.token").
+	// +optional
+	MaskPaths []string `json:"maskPaths,omitempty"`
+}
+
 // ApplicationSpec is the spec of Application
 type ApplicationSpec struct {
 	Components []common.ApplicationComponent `json:"components"`
+
+	// Sources defines external sources that can be referenced via fromSource.
+	Sources []ApplicationSource `json:"sources,omitempty"`
 
 	// Policies defines the global policies for all components in the app, e.g. security, metrics, gitops,
 	// multi-cluster placement rules, etc.

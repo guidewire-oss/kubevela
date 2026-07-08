@@ -1760,3 +1760,18 @@ func TestGeneratePolicyManifests(t *testing.T) {
 	assert.True(t, found)
 	assert.Equal(t, "test-value", data["key"])
 }
+
+func TestExtractSensitiveOutputPaths(t *testing.T) {
+	paths := extractSensitiveOutputPaths(`
+output: {
+  // +sensitive
+  token: string
+  nested: {
+    // +sensitive
+    password: string
+    visible: string
+  }
+}
+`)
+	assert.ElementsMatch(t, []string{"token", "nested.password"}, paths)
+}

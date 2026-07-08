@@ -18,12 +18,15 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"slices"
+	"sort"
 	"sync"
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -39,6 +42,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
+	cuedefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
@@ -338,6 +342,16 @@ func (h *AppHandler) collectHealthStatus(ctx context.Context, comp *appfile.Comp
 		isHealth = true
 		err      error
 	)
+	if len(h.app.Spec.Sources) > 0 {
+		status.Sources = make([]common.ApplicationSourceStatus, 0, len(h.app.Spec.Sources))
+		for _, src := range h.app.Spec.Sources {
+			status.Sources = append(status.Sources, common.ApplicationSourceStatus{
+				Name:  src.Name,
+				Type:  src.Type,
+				Phase: "Pending",
+			})
+		}
+	}
 
 	status = h.getServiceStatus(status)
 	if !skipWorkload {
@@ -437,9 +451,93 @@ collectNext:
 			status.Message = "traits are not healthy"
 		}
 	}
+	h.mergeSourceResolutionStatus(comp, &status)
 	status.Traits = slices.Collect(maps.Values(traitStatusByKey))
 	h.addServiceStatus(true, status)
 	return &status, output, outputs, isHealth, nil
+}
+
+func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status *common.ApplicationComponentStatus) {
+	if len(h.app.Spec.Sources) == 0 || comp == nil || comp.Ctx == nil {
+		return
+	}
+	byName := map[string]common.ApplicationSourceStatus{}
+	for _, src := range status.Sources {
+		byName[src.Name] = src
+	}
+	for _, src := range h.app.Spec.Sources {
+		if _, ok := byName[src.Name]; !ok {
+			byName[src.Name] = common.ApplicationSourceStatus{
+				Name:  src.Name,
+				Type:  src.Type,
+				Phase: "Pending",
+			}
+		}
+	}
+	resolvedStatuses, _ := comp.Ctx.GetData(cuedefinition.SourceResolutionStatusKey).(map[string]cuedefinition.SourceResolutionStatus)
+	for _, src := range h.app.Spec.Sources {
+		current := byName[src.Name]
+		current.Type = src.Type
+		if rs, ok := resolvedStatuses[src.Name]; ok {
+			current.Phase = rs.Phase
+			current.Message = rs.Message
+			if rs.Type != "" {
+				current.Type = rs.Type
+			}
+			current.ResolvedFields = nil
+			current.Consumed = nil
+
+			maskPaths := append([]string{}, rs.SensitivePaths...)
+			if src.StatusPolicy != nil {
+				maskPaths = append(maskPaths, src.StatusPolicy.MaskPaths...)
+			}
+			maskSet := make(map[string]struct{}, len(maskPaths))
+			for _, p := range maskPaths {
+				if p == "" {
+					continue
+				}
+				maskSet[p] = struct{}{}
+			}
+			exposeValues := src.StatusPolicy == nil ||
+				src.StatusPolicy.ExposeConsumedValues ||
+				src.StatusPolicy.ExposeResolvedFields
+			if len(rs.ConsumedFields) > 0 {
+				paths := make([]string, 0, len(rs.ConsumedFields))
+				for p := range rs.ConsumedFields {
+					paths = append(paths, p)
+				}
+				sort.Strings(paths)
+				current.Consumed = make([]common.ApplicationSourceConsumedStatus, 0, len(paths))
+				for _, p := range paths {
+					item := common.ApplicationSourceConsumedStatus{Property: p}
+					if exposeValues {
+						val := rs.ConsumedFields[p]
+						if _, masked := maskSet[p]; masked {
+							val = "***"
+						}
+						if raw, err := valueToRawExtension(val); err == nil {
+							item.Value = raw
+						}
+					}
+					current.Consumed = append(current.Consumed, item)
+				}
+			}
+		}
+		byName[src.Name] = current
+	}
+	merged := make([]common.ApplicationSourceStatus, 0, len(h.app.Spec.Sources))
+	for _, src := range h.app.Spec.Sources {
+		merged = append(merged, byName[src.Name])
+	}
+	status.Sources = merged
+}
+
+func valueToRawExtension(v interface{}) (*apiextensionsv1.JSON, error) {
+	bt, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return &apiextensionsv1.JSON{Raw: bt}, nil
 }
 
 func setStatus(status *common.ApplicationComponentStatus, observedGeneration, generation int64, labels map[string]string,

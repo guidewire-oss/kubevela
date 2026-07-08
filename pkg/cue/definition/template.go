@@ -65,6 +65,8 @@ const (
 	ErrsFieldName = "errs"
 	// TemplateContextPrefix is the base prefix for storing templates in context
 	TemplateContextPrefix = "template-context-"
+	// SourceResolutionStatusKey stores per-source runtime resolution statuses in process context.
+	SourceResolutionStatusKey = "sourceResolutionStatuses"
 )
 
 // GetWorkloadTemplateKey returns the context key for storing workload templates
@@ -120,7 +122,14 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 
 	var paramFile = velaprocess.ParameterFieldName + ": {}"
 	if params != nil {
+		resolved, err := resolveFromSourceParams(ctx, params)
+		if err != nil {
+			return errors.WithMessagef(err, "resolve fromSource for workload %s", wd.name)
+		}
 		bt, err := json.Marshal(params)
+		if resolved != nil {
+			bt, err = json.Marshal(resolved)
+		}
 		if err != nil {
 			return errors.WithMessagef(err, "marshal parameter of workload %s", wd.name)
 		}
@@ -303,7 +312,14 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 	abstractTemplate, _ = upgrade.EnsureCueVersionCompatibility(abstractTemplate, td.name, upgrade.TraitKind, upgrade.TemplateAreaMain)
 	buff := abstractTemplate + "\n"
 	if params != nil {
+		resolved, err := resolveFromSourceParams(ctx, params)
+		if err != nil {
+			return errors.WithMessagef(err, "resolve fromSource for trait %s", td.name)
+		}
 		bt, err := json.Marshal(params)
+		if resolved != nil {
+			bt, err = json.Marshal(resolved)
+		}
 		if err != nil {
 			return errors.WithMessagef(err, "marshal parameter of trait %s", td.name)
 		}
@@ -650,4 +666,265 @@ func FormatCUEError(err error, messagePrefix string, entityType, entityName stri
 	}
 
 	return fmt.Errorf("%s", strings.TrimRight(result.String(), "\n"))
+}
+
+func resolveFromSourceParams(ctx process.Context, params interface{}) (interface{}, error) {
+	if params == nil {
+		return nil, nil
+	}
+	bt, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	var normalized interface{}
+	if err := json.Unmarshal(bt, &normalized); err != nil {
+		return nil, err
+	}
+	return resolveFromSourceNode(normalized, newSourceResolver(ctx))
+}
+
+func resolveFromSourceNode(node interface{}, resolver *sourceResolver) (interface{}, error) {
+	switch val := node.(type) {
+	case map[string]interface{}:
+		if selector, ok := val["fromSource"]; ok {
+			return evaluateFromSourceSelector(selector, resolver)
+		}
+		for k, child := range val {
+			resolved, err := resolveFromSourceNode(child, resolver)
+			if err != nil {
+				return nil, err
+			}
+			val[k] = resolved
+		}
+		return val, nil
+	case []interface{}:
+		for i, child := range val {
+			resolved, err := resolveFromSourceNode(child, resolver)
+			if err != nil {
+				return nil, err
+			}
+			val[i] = resolved
+		}
+		return val, nil
+	default:
+		return node, nil
+	}
+}
+
+func evaluateFromSourceSelector(selector interface{}, resolver *sourceResolver) (interface{}, error) {
+	sourceName := ""
+	path := ""
+	var def interface{}
+	switch v := selector.(type) {
+	case string:
+		parts := strings.SplitN(v, ".", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid fromSource reference %q", v)
+		}
+		sourceName, path = parts[0], parts[1]
+	case map[string]interface{}:
+		if n, ok := v["name"].(string); ok {
+			sourceName = n
+		}
+		if p, ok := v["path"].(string); ok {
+			path = p
+		}
+		def = v["default"]
+	default:
+		return nil, fmt.Errorf("invalid fromSource selector type %T", selector)
+	}
+	if sourceName == "" || path == "" {
+		return nil, fmt.Errorf("fromSource requires source name and path")
+	}
+	sourceVals, err := resolver.resolve(sourceName)
+	if err != nil {
+		if def != nil {
+			return def, nil
+		}
+		return nil, err
+	}
+	if val, ok := lookupMapPath(sourceVals, path); ok {
+		resolver.recordConsumedValue(sourceName, resolver.sourceTypes[sourceName], path, val)
+		return val, nil
+	}
+	if def != nil {
+		return def, nil
+	}
+	return nil, fmt.Errorf("path %q not found in source %q", path, sourceName)
+}
+
+func lookupMapPath(data map[string]interface{}, path string) (interface{}, bool) {
+	cur := interface{}(data)
+	for _, p := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		next, ok := m[p]
+		if !ok {
+			return nil, false
+		}
+		cur = next
+	}
+	return cur, true
+}
+
+type sourceResolver struct {
+	ctx             process.Context
+	sourceProps     map[string]map[string]interface{}
+	sourceTypes     map[string]string
+	sourceTemplates map[string]string
+	sensitivePaths  map[string][]string
+	resolved        map[string]map[string]interface{}
+	resolving       map[string]bool
+}
+
+// SourceResolutionStatus captures source runtime resolution result.
+type SourceResolutionStatus struct {
+	Name           string
+	Type           string
+	Phase          string
+	Message        string
+	ResolvedFields map[string]interface{}
+	ConsumedFields map[string]interface{}
+	SensitivePaths []string
+}
+
+func newSourceResolver(ctx process.Context) *sourceResolver {
+	sourceProps, _ := ctx.GetData(velaprocess.ContextAppSources).(map[string]map[string]interface{})
+	if sourceProps == nil {
+		sourceProps = map[string]map[string]interface{}{}
+	}
+	sourceTypes, _ := ctx.GetData(velaprocess.ContextAppSourceTypes).(map[string]string)
+	if sourceTypes == nil {
+		sourceTypes = map[string]string{}
+	}
+	sourceTemplates, _ := ctx.GetData(velaprocess.ContextAppSourceTemplates).(map[string]string)
+	if sourceTemplates == nil {
+		sourceTemplates = map[string]string{}
+	}
+	sensitivePaths, _ := ctx.GetData(velaprocess.ContextAppSourceSensitivePaths).(map[string][]string)
+	if sensitivePaths == nil {
+		sensitivePaths = map[string][]string{}
+	}
+	return &sourceResolver{
+		ctx:             ctx,
+		sourceProps:     sourceProps,
+		sourceTypes:     sourceTypes,
+		sourceTemplates: sourceTemplates,
+		sensitivePaths:  sensitivePaths,
+		resolved:        map[string]map[string]interface{}{},
+		resolving:       map[string]bool{},
+	}
+}
+
+func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, error) {
+	if v, ok := r.resolved[sourceName]; ok {
+		return v, nil
+	}
+	if r.resolving[sourceName] {
+		err := fmt.Errorf("circular source dependency detected at %q", sourceName)
+		r.setSourceStatus(sourceName, "", "Failed", err.Error(), nil)
+		return nil, err
+	}
+	r.resolving[sourceName] = true
+	defer delete(r.resolving, sourceName)
+
+	sourceType, ok := r.sourceTypes[sourceName]
+	if !ok || sourceType == "" {
+		err := fmt.Errorf("source %q not found", sourceName)
+		r.setSourceStatus(sourceName, "", "Failed", err.Error(), nil)
+		return nil, err
+	}
+	sourceTemplate, ok := r.sourceTemplates[sourceType]
+	if !ok || sourceTemplate == "" {
+		err := fmt.Errorf("source definition %q for source %q is missing cue template", sourceType, sourceName)
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		return nil, err
+	}
+	paramFile := velaprocess.ParameterFieldName + ": {}"
+	if props, ok := r.sourceProps[sourceName]; ok && props != nil {
+		resolvedPropsNode, err := resolveFromSourceNode(props, r)
+		if err != nil {
+			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+			return nil, errors.WithMessagef(err, "resolve source properties for %s", sourceName)
+		}
+		resolvedProps, ok := resolvedPropsNode.(map[string]interface{})
+		if !ok {
+			err := fmt.Errorf("resolved source properties for %s are invalid", sourceName)
+			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+			return nil, err
+		}
+		raw, err := json.Marshal(resolvedProps)
+		if err != nil {
+			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+			return nil, errors.WithMessagef(err, "marshal properties for source %s", sourceName)
+		}
+		paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(raw))
+	}
+	c, err := r.ctx.BaseContextFile()
+	if err != nil {
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		return nil, err
+	}
+	val, err := velacuex.WorkloadCompiler.Get().CompileString(r.ctx.GetCtx(), strings.Join([]string{
+		renderTemplate(sourceTemplate), paramFile, c,
+	}, "\n"))
+	if err != nil {
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		return nil, errors.WithMessagef(err, "compile source definition %s", sourceType)
+	}
+	output := map[string]interface{}{}
+	if err := val.LookupPath(value.FieldPath(OutputFieldName)).Decode(&output); err != nil {
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), nil)
+		return nil, errors.WithMessagef(err, "decode output for source definition %s", sourceType)
+	}
+	r.resolved[sourceName] = output
+	r.setSourceStatus(sourceName, sourceType, "Resolved", "", output)
+	return output, nil
+}
+
+func (r *sourceResolver) setSourceStatus(sourceName, sourceType, phase, message string, resolved map[string]interface{}) {
+	statuses, _ := r.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
+	if statuses == nil {
+		statuses = map[string]SourceResolutionStatus{}
+	}
+	current := statuses[sourceName]
+	consumed := current.ConsumedFields
+	if consumed == nil {
+		consumed = map[string]interface{}{}
+	}
+	statuses[sourceName] = SourceResolutionStatus{
+		Name:           sourceName,
+		Type:           sourceType,
+		Phase:          phase,
+		Message:        message,
+		ResolvedFields: resolved,
+		ConsumedFields: consumed,
+		SensitivePaths: append([]string{}, r.sensitivePaths[sourceType]...),
+	}
+	r.ctx.PushData(SourceResolutionStatusKey, statuses)
+}
+
+func (r *sourceResolver) recordConsumedValue(sourceName, sourceType, path string, v interface{}) {
+	statuses, _ := r.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
+	if statuses == nil {
+		statuses = map[string]SourceResolutionStatus{}
+	}
+	st := statuses[sourceName]
+	if st.Name == "" {
+		st.Name = sourceName
+	}
+	if st.Type == "" {
+		st.Type = sourceType
+	}
+	if st.ConsumedFields == nil {
+		st.ConsumedFields = map[string]interface{}{}
+	}
+	st.ConsumedFields[path] = v
+	if len(st.SensitivePaths) == 0 {
+		st.SensitivePaths = append([]string{}, r.sensitivePaths[sourceType]...)
+	}
+	statuses[sourceName] = st
+	r.ctx.PushData(SourceResolutionStatusKey, statuses)
 }

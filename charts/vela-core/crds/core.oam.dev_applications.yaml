@@ -158,6 +158,45 @@ spec:
                   - type
                   type: object
                 type: array
+              sources:
+                description: Sources defines external sources that can be referenced
+                  via fromSource.
+                items:
+                  description: ApplicationSource defines a source binding under spec.sources.
+                  properties:
+                    name:
+                      type: string
+                    properties:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    statusPolicy:
+                      description: StatusPolicy controls what source resolution details
+                        are exposed on Application status.
+                      properties:
+                        exposeConsumedValues:
+                          description: |-
+                            ExposeConsumedValues controls whether consumed source values are written to status.
+                            If false, consumed property paths may still be listed without values.
+                          type: boolean
+                        exposeResolvedFields:
+                          description: ExposeResolvedFields controls whether resolved
+                            source fields are written to status.
+                          type: boolean
+                        maskPaths:
+                          description: |-
+                            MaskPaths redacts resolved field paths before writing to status.
+                            Paths are dot-delimited (e.g. "nested.token").
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    type:
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                type: array
               workflow:
                 description: |-
                   Workflow defines how to customize the control logic.
@@ -626,6 +665,43 @@ spec:
                             type: string
                         type: object
                         x-kubernetes-map-type: atomic
+                      type: array
+                    sources:
+                      items:
+                        description: ApplicationSourceStatus records source resolution
+                          status.
+                        properties:
+                          config:
+                            type: string
+                          consumed:
+                            description: Consumed records only source fields actually
+                              consumed by this service render.
+                            items:
+                              description: ApplicationSourceConsumedStatus records
+                                one consumed source property.
+                              properties:
+                                property:
+                                  type: string
+                                value:
+                                  x-kubernetes-preserve-unknown-fields: true
+                              required:
+                              - property
+                              type: object
+                            type: array
+                          message:
+                            type: string
+                          name:
+                            type: string
+                          phase:
+                            type: string
+                          resolvedFields:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                          type:
+                            type: string
+                        required:
+                        - name
+                        type: object
                       type: array
                     traits:
                       items:

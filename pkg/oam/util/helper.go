@@ -134,6 +134,7 @@ var DefinitionKindToNameLabel = map[common.DefinitionType]string{
 	common.TraitType:        oam.LabelTraitDefinitionName,
 	common.PolicyType:       oam.LabelPolicyDefinitionName,
 	common.WorkflowStepType: oam.LabelWorkflowStepDefinitionName,
+	common.SourceType:       "source.oam.dev/name",
 }
 
 // A ConditionedObject is an Object type with condition field
@@ -250,6 +251,8 @@ func GetCapabilityDefinition(ctx context.Context, cli client.Reader, definition 
 		*def = defRev.Spec.PolicyDefinition
 	case *v1beta1.WorkflowStepDefinition:
 		*def = defRev.Spec.WorkflowStepDefinition
+	case *v1beta1.SourceDefinition:
+		*def = defRev.Spec.SourceDefinition
 	default:
 	}
 	return nil
@@ -266,6 +269,8 @@ func getDefinitionType(definition client.Object) (common.DefinitionType, error) 
 		definitionType = common.PolicyType
 	case *v1beta1.WorkflowStepDefinition:
 		definitionType = common.WorkflowStepType
+	case *v1beta1.SourceDefinition:
+		definitionType = common.SourceType
 	default:
 		return definitionType, fmt.Errorf("invalid definition type for %v", definition.GetName())
 	}

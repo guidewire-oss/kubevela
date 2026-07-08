@@ -70,6 +70,7 @@ const (
 	traitDefType        = "trait"
 	policyDefType       = "policy"
 	workflowStepDefType = "workflow-step"
+	sourceDefType       = "source"
 	workloadDefType     = "workload"
 )
 
@@ -83,6 +84,7 @@ var (
 		policyDefType:       v1beta1.PolicyDefinitionKind,
 		workloadDefType:     v1beta1.WorkloadDefinitionKind,
 		workflowStepDefType: v1beta1.WorkflowStepDefinitionKind,
+		sourceDefType:       v1beta1.SourceDefinitionKind,
 	}
 	// StringToDefinitionType converts user input to DefinitionType used in DefinitionRevisions
 	StringToDefinitionType = map[string]common.DefinitionType{
@@ -94,6 +96,8 @@ var (
 		policyDefType: common.PolicyType,
 		// workflow-step
 		workflowStepDefType: common.WorkflowStepType,
+		// source
+		sourceDefType: common.SourceType,
 	}
 	// DefinitionKindToNameLabel records DefinitionRevision types and labels to search its name
 	DefinitionKindToNameLabel = map[common.DefinitionType]string{
@@ -101,6 +105,7 @@ var (
 		common.TraitType:        oam.LabelTraitDefinitionName,
 		common.PolicyType:       oam.LabelPolicyDefinitionName,
 		common.WorkflowStepType: oam.LabelWorkflowStepDefinitionName,
+		common.SourceType:       "source.oam.dev/name",
 	}
 	// DefinitionKindToType maps the definition kinds to a shorter type
 	DefinitionKindToType = map[string]string{
@@ -109,6 +114,7 @@ var (
 		v1beta1.PolicyDefinitionKind:       policyDefType,
 		v1beta1.WorkloadDefinitionKind:     workloadDefType,
 		v1beta1.WorkflowStepDefinitionKind: workflowStepDefType,
+		v1beta1.SourceDefinitionKind:       sourceDefType,
 	}
 )
 
@@ -391,6 +397,8 @@ func validateSpec(spec map[string]interface{}, t string) error {
 		tpl = &v1beta1.PolicyDefinitionSpec{}
 	case workflowStepDefType:
 		tpl = &v1beta1.WorkflowStepDefinitionSpec{}
+	case sourceDefType:
+		tpl = &v1beta1.SourceDefinitionSpec{}
 	default:
 	}
 	if tpl != nil {
@@ -622,6 +630,8 @@ func GetDefinitionFromDefinitionRevision(rev *v1beta1.DefinitionRevision) (*Defi
 		u, err = runtime.DefaultUnstructuredConverter.ToUnstructured(&rev.Spec.PolicyDefinition)
 	case common.WorkflowStepType:
 		u, err = runtime.DefaultUnstructuredConverter.ToUnstructured(&rev.Spec.WorkflowStepDefinition)
+	case common.SourceType:
+		u, err = runtime.DefaultUnstructuredConverter.ToUnstructured(&rev.Spec.SourceDefinition)
 	default:
 		return nil, fmt.Errorf("unsupported definition type: %s", rev.Spec.DefinitionType)
 	}

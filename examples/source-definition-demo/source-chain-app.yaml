@@ -1,0 +1,84 @@
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: cluster-source
+  namespace: default
+spec:
+  schematic:
+    cue:
+      template: |
+        output: {
+          nested: {
+            image: {
+              repo: parameter.repo
+              tag:  parameter.tag
+            }
+            meta: {
+              region: parameter.region
+            }
+          }
+        }
+        parameter: {
+          repo:   string
+          tag:    string
+          region: string
+        }
+---
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: render-source
+  namespace: default
+spec:
+  schematic:
+    cue:
+      template: |
+        output: {
+          resolved: {
+            image: "\(parameter.repo):\(parameter.tag)"
+            region: parameter.region
+          }
+        }
+        parameter: {
+          repo:   string
+          tag:    string
+          region: string
+        }
+---
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: source-chain-app
+  namespace: default
+spec:
+  sources:
+    - name: clusterInfo
+      type: cluster-source
+      properties:
+        repo: nginx
+        tag: "1.25.2"
+        region: us-east-1
+      statusPolicy:
+        exposeConsumedValues: true
+        maskPaths:
+          - nested.image.tag
+    - name: rendered
+      type: render-source
+      properties:
+        repo:
+          fromSource: clusterInfo.nested.image.repo
+        tag:
+          fromSource: clusterInfo.nested.image.tag
+        region:
+          fromSource: clusterInfo.nested.meta.region
+  components:
+    - name: web-chain
+      type: webservice
+      properties:
+        image:
+          fromSource: rendered.resolved.image
+        port: 80
+      traits:
+        - type: scaler
+          properties:
+            replicas: 3

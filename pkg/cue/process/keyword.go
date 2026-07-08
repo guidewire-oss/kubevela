@@ -41,6 +41,14 @@ const (
 	ContextAppWorkflow = "appWorkflow"
 	// ContextAppPolicies is the policies array of the app
 	ContextAppPolicies = "appPolicies"
+	// ContextAppSources is the source binding map.
+	ContextAppSources = "appSources"
+	// ContextAppSourceTypes maps source binding name to source definition type.
+	ContextAppSourceTypes = "appSourceTypes"
+	// ContextAppSourceTemplates maps source definition type to CUE template.
+	ContextAppSourceTemplates = "appSourceTemplates"
+	// ContextAppSourceSensitivePaths maps source definition type to platform-sensitive paths.
+	ContextAppSourceSensitivePaths = "appSourceSensitivePaths"
 	// ContextNamespace is the namespace of the app
 	ContextNamespace = "namespace"
 	// ContextCluster is the cluster currently focusing on
