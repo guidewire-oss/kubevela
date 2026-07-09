@@ -190,7 +190,7 @@ func (h *ValidatingHandler) validateAddonComponents(ctx context.Context, app *v1
 // the addon meta from the registry and validates its SystemRequirements. It
 // returns nil (allow) on any resolve/registry error (fail open) and returns a
 // non-nil *field.Error only on a concrete compatibility mismatch.
-func (h *ValidatingHandler) defaultAddonCompatChecker(ctx context.Context, addonName, _, registry string) *field.Error {
+func (h *ValidatingHandler) defaultAddonCompatChecker(ctx context.Context, addonName, version, registry string) *field.Error {
 	var registries []string
 	if registry != "" {
 		registries = []string{registry}
@@ -208,7 +208,19 @@ func (h *ValidatingHandler) defaultAddonCompatChecker(ctx context.Context, addon
 		return nil
 	}
 
+	// FindAddonPackagesDetailFromRegistry returns the latest version. When the
+	// component pins a specific version, validate that version's requirements
+	// instead of the latest, so a valid pin is not falsely rejected (and an
+	// incompatible pin is rejected at admission, not only at render time).
 	require := pkgs[0].InstallPackage.SystemRequirements
+	if version != "" && version != pkgs[0].InstallPackage.Version {
+		exact, err := pkgaddon.GetAddonInstallPackageFromRegistry(ctx, cli, pkgs[0].RegistryName, addonName, version)
+		if err != nil {
+			klog.Infof("skip addon %q version %q compatibility check (fail-open): resolve version failed: %v", addonName, version, err)
+			return nil
+		}
+		require = exact.SystemRequirements
+	}
 	if require == nil {
 		return nil
 	}

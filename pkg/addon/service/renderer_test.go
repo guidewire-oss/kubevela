@@ -101,6 +101,85 @@ func TestHashPropertiesStable(t *testing.T) {
 	assert.Equal(t, hashProperties(nil), hashProperties(nil), "nil must hash stably")
 }
 
+func TestSanitizeManifest(t *testing.T) {
+	testCases := map[string]struct {
+		in   map[string]interface{}
+		want map[string]interface{}
+	}{
+		"strips root status and top-level creationTimestamp": {
+			in: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Namespace",
+				"metadata": map[string]interface{}{
+					"name":              "flux-system",
+					"creationTimestamp": nil,
+				},
+				"status": map[string]interface{}{"phase": "Active"},
+			},
+			want: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Namespace",
+				"metadata": map[string]interface{}{
+					"name": "flux-system",
+				},
+			},
+		},
+		"strips creationTimestamp in nested objects and arrays": {
+			in: map[string]interface{}{
+				"spec": map[string]interface{}{
+					"template": map[string]interface{}{
+						"metadata": map[string]interface{}{
+							"name":              "pod",
+							"creationTimestamp": nil,
+						},
+					},
+					"objects": []interface{}{
+						map[string]interface{}{
+							"metadata": map[string]interface{}{
+								"name":              "cm",
+								"creationTimestamp": nil,
+							},
+						},
+					},
+				},
+			},
+			want: map[string]interface{}{
+				"spec": map[string]interface{}{
+					"template": map[string]interface{}{
+						"metadata": map[string]interface{}{
+							"name": "pod",
+						},
+					},
+					"objects": []interface{}{
+						map[string]interface{}{
+							"metadata": map[string]interface{}{
+								"name": "cm",
+							},
+						},
+					},
+				},
+			},
+		},
+		"leaves a manifest without status or creationTimestamp unchanged": {
+			in: map[string]interface{}{
+				"kind":     "ConfigMap",
+				"metadata": map[string]interface{}{"name": "keep"},
+			},
+			want: map[string]interface{}{
+				"kind":     "ConfigMap",
+				"metadata": map[string]interface{}{"name": "keep"},
+			},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			sanitizeManifest(tc.in)
+			assert.Equal(t, tc.want, tc.in)
+		})
+	}
+}
+
 func TestRenderAddonReturnsApplicationAndResources(t *testing.T) {
 	if os.Getenv("KUBEVELA_ADDON_RENDER_E2E") == "" {
 		t.Skip("requires a reachable registry; happy path is covered by the e2e suite (set KUBEVELA_ADDON_RENDER_E2E to run)")

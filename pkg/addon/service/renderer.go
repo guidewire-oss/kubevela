@@ -38,7 +38,6 @@ import (
 
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/addon/service/api"
-	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
 type rendererImpl struct {
@@ -250,34 +249,7 @@ func (r *rendererImpl) validateSystemRequirements(ctx context.Context, name stri
 
 // fetchExactVersion resolves a specific addon version from the named registry.
 func (r *rendererImpl) fetchExactVersion(ctx context.Context, registryName, addonName, version string) (*pkgaddon.InstallPackage, error) {
-	ds := pkgaddon.NewRegistryDataStore(r.client())
-	reg, err := ds.GetRegistry(ctx, registryName)
-	if err != nil {
-		return nil, fmt.Errorf("get registry %q: %w", registryName, err)
-	}
-
-	if pkgaddon.IsVersionRegistry(reg) {
-		vr := pkgaddon.BuildVersionedRegistry(reg.Name, reg.Helm.URL, &common.HTTPOption{
-			Username:        reg.Helm.Username,
-			Password:        reg.Helm.Password,
-			InsecureSkipTLS: reg.Helm.InsecureSkipTLS,
-		})
-		return vr.GetAddonInstallPackage(ctx, addonName, version)
-	}
-
-	metas, err := reg.ListAddonMeta()
-	if err != nil {
-		return nil, err
-	}
-	meta, ok := metas[addonName]
-	if !ok {
-		return nil, fmt.Errorf("addon %q not found in registry %q", addonName, registryName)
-	}
-	uiData, err := reg.GetUIData(&meta, pkgaddon.UIMetaOptions)
-	if err != nil {
-		return nil, err
-	}
-	return reg.GetInstallPackage(&meta, uiData)
+	return pkgaddon.GetAddonInstallPackageFromRegistry(ctx, r.client(), registryName, addonName, version)
 }
 
 // renderAuxiliaries renders the definition, config-template, schema, view and
