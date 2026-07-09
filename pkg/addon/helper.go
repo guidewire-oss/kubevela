@@ -347,6 +347,41 @@ func ValidateSystemRequirements(ctx context.Context, require *SystemRequirements
 	return checkAddonVersionMeetRequired(ctx, require, k8sClient, dc)
 }
 
+// GetAddonInstallPackageFromRegistry resolves a specific addon version's
+// InstallPackage from the named registry. An empty version resolves the latest.
+// It is the shared version-pinning helper used by both the render-only addon
+// service and the Application validating webhook.
+func GetAddonInstallPackageFromRegistry(ctx context.Context, cli client.Client, registryName, addonName, version string) (*InstallPackage, error) {
+	ds := NewRegistryDataStore(cli)
+	reg, err := ds.GetRegistry(ctx, registryName)
+	if err != nil {
+		return nil, fmt.Errorf("get registry %q: %w", registryName, err)
+	}
+
+	if IsVersionRegistry(reg) {
+		vr := BuildVersionedRegistry(reg.Name, reg.Helm.URL, &common.HTTPOption{
+			Username:        reg.Helm.Username,
+			Password:        reg.Helm.Password,
+			InsecureSkipTLS: reg.Helm.InsecureSkipTLS,
+		})
+		return vr.GetAddonInstallPackage(ctx, addonName, version)
+	}
+
+	metas, err := reg.ListAddonMeta()
+	if err != nil {
+		return nil, err
+	}
+	meta, ok := metas[addonName]
+	if !ok {
+		return nil, fmt.Errorf("addon %q not found in registry %q", addonName, registryName)
+	}
+	uiData, err := reg.GetUIData(&meta, UIMetaOptions)
+	if err != nil {
+		return nil, err
+	}
+	return reg.GetInstallPackage(&meta, uiData)
+}
+
 // Status contain addon phase and related app status
 type Status struct {
 	AddonPhase string
