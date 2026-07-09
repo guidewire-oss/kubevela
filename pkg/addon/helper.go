@@ -338,6 +338,15 @@ func FindAddonPackagesDetailFromRegistry(ctx context.Context, k8sClient client.C
 	return addons, nil
 }
 
+// ValidateSystemRequirements checks an addon's SystemRequirements (vela and
+// kubernetes versions) against the running environment. nil require passes.
+func ValidateSystemRequirements(ctx context.Context, require *SystemRequirements, k8sClient client.Client, dc *discovery.DiscoveryClient) error {
+	if require == nil {
+		return nil
+	}
+	return checkAddonVersionMeetRequired(ctx, require, k8sClient, dc)
+}
+
 // Status contain addon phase and related app status
 type Status struct {
 	AddonPhase string
