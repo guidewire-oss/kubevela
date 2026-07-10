@@ -130,6 +130,35 @@ likely a stale deployed image / SourceDefinition controller not running the new
 reconciler in-cluster — NOT reproducible from this container (cluster lives on
 the user's Mac). Left for the user to confirm against a freshly built image.
 
+### e2e run 3: wrong cache config-type label — FIXED
+
+After the admission fix, the `storage key policy` test got much further (created
+the cache secret) but failed:
+`unexpected config type label: "stale-image-source"` — the cache Secret's
+`config.oam.dev/type` label was the RAW source type, not the versioned
+ConfigTemplate name the test expected.
+
+Root cause: `parseSources` (parser.go:503) wipes `sd.Status` on the appfile copy
+(consistent with Component/TraitDefinition, so status doesn't leak into the
+ApplicationRevision snapshot). But `sourceTemplateRefsByType` read
+`ConfigTemplateRef` FROM that wiped copy, so it was always empty →
+`templateName == ""` → the config store labeled the cache with the raw source
+type. Deterministic, not a race (the test waits for ConfigTemplateRef before
+creating the App, so the ref IS live in-cluster).
+
+Fix: `sourceTemplateRefsByType(ctx, cli, af)` now fetches the LIVE
+SourceDefinition via the client (app namespace, falling back to vela-system) to
+read `ConfigTemplateRef`, instead of the status-wiped appfile copy. Call site in
+application_controller.go passes logCtx + r.Client. The status-wipe convention is
+preserved (snapshot stays clean); only the cache-label lookup changed source.
+Tests: `TestSourceTemplateRefsByType` (system-ns ref, app-ns ref, no-ref skip,
+missing skip) + nil-inputs. Pass.
+
+## TODOs (post-e2e)
+- [x] Admission fromSource skip (run 2)
+- [x] Live ConfigTemplateRef lookup for cache label (run 3)
+- [ ] User: rebuild image + redeploy, re-run e2e to confirm all 4 specs green
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

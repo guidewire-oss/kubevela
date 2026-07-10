@@ -4,10 +4,14 @@ import (
 	"context"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	apitypes "github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/config"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 const (
@@ -30,13 +34,30 @@ func newConfigAPISourceCacheStore(cli client.Client, templateBySource map[string
 	}
 }
 
-func sourceTemplateRefsByType(af *appfile.Appfile) map[string]string {
+// sourceTemplateRefsByType maps each referenced SourceDefinition type to its
+// versioned ConfigTemplate name. The appfile's RelatedSourceDefinitions have
+// their Status wiped during parsing (consistent with Component/TraitDefinition,
+// so volatile status does not leak into the ApplicationRevision snapshot), so
+// ConfigTemplateRef is read from the LIVE SourceDefinition via the client. This
+// name is used to label cache Config entries with config.oam.dev/type, linking
+// them back to the ConfigTemplate version. A missing/not-yet-populated ref is
+// skipped; the cache store then falls back to the raw source type label.
+func sourceTemplateRefsByType(ctx context.Context, cli client.Client, af *appfile.Appfile) map[string]string {
 	out := map[string]string{}
-	if af == nil {
+	if af == nil || cli == nil {
 		return out
 	}
-	for sourceType, def := range af.RelatedSourceDefinitions {
-		if def == nil || def.Status.ConfigTemplateRef == nil || def.Status.ConfigTemplateRef.Name == "" {
+	for sourceType := range af.RelatedSourceDefinitions {
+		def := &v1beta1.SourceDefinition{}
+		if err := cli.Get(ctx, client.ObjectKey{Namespace: af.Namespace, Name: sourceType}, def); err != nil {
+			if !apierrors.IsNotFound(err) {
+				continue
+			}
+			if err := cli.Get(ctx, client.ObjectKey{Namespace: oam.SystemDefinitionNamespace, Name: sourceType}, def); err != nil {
+				continue
+			}
+		}
+		if def.Status.ConfigTemplateRef == nil || def.Status.ConfigTemplateRef.Name == "" {
 			continue
 		}
 		out[sourceType] = def.Status.ConfigTemplateRef.Name
