@@ -158,3 +158,55 @@ kubectl get configmap random-result -n source-demo -o jsonpath='{.data.value}{"\
   meaningless). Contrast with the `use-stale` default used elsewhere.
 - **int vs string.** The schema exposes both `value` (int) and `valueString`;
   the ConfigMap consumes `valueString` because ConfigMap data must be strings.
+
+---
+
+# SourceDefinition Demo: all sources → one Deployment (`random-deployment`)
+
+This ties every source together. A raw Deployment is created whose:
+
+- **replica count** is randomly 1–5, from `get-random`;
+- **name** is `<region>-<zone>-<department>-<tenant>-<component>`, assembled by a
+  chained `deployment-namer` source from `cluster-lookup` and `tenant-data`;
+- **labels** carry region, zone, department, tenant, and environment, each read
+  directly from the relevant source.
+
+## Files
+
+- `definitions/deployment-namer.yaml` — `SourceDefinition` `deployment-namer`: a
+  chained source that takes region/zone/department/tenant as inputs and returns
+  the joined, lowercased name (with the component name from `context.name`).
+- `apps/random-deployment.yaml` — `Application` `random-deployment`, using
+  `get-random`, `cluster-lookup`, `tenant-data`, and `deployment-namer`.
+
+Requires the same fixtures as the earlier demos plus the random service:
+
+```bash
+kubectl apply -f examples/source-definition-demo/resources/          # namespace, cluster-info, random-service
+kubectl -n source-demo rollout status deploy/random-service
+kubectl apply -f examples/source-definition-demo/definitions/        # all SourceDefinitions
+kubectl apply -f examples/source-definition-demo/apps/random-deployment.yaml
+```
+
+## Verify
+
+```bash
+# The created Deployment (name assembled from the sources)
+kubectl get deploy -n source-demo -l example.com/tenant=acme \
+  -o custom-columns=NAME:.metadata.name,REPLICAS:.spec.replicas,REGION:.metadata.labels.example\\.com/region
+# e.g. us-east-1-us-east-1a-platform-acme-web   3   us-east-1
+```
+
+## What to notice
+
+- **fromSource cannot concatenate.** A single `fromSource` replaces one node
+  with one source field; it cannot join values from several sources into one
+  string. Assembling the name therefore uses a **chained source**
+  (`deployment-namer`) whose inputs are fed via `fromSource` from earlier
+  sources — the KEP's source-chaining pattern. Labels, by contrast, are each a
+  single field, so they are read directly.
+- **Forward-only ordering.** `deployment-namer` is declared after `cluster` and
+  `tenant` in `spec.sources[]`; admission rejects a source that depends on one
+  declared at or after its own position.
+- **int flows straight through.** `spec.replicas` reads `rng.value` (an int) with
+  no string conversion, unlike the ConfigMap demo above.

@@ -279,6 +279,25 @@ Added a demo where a SourceDefinition polls an in-cluster HTTP service:
 Demonstrates caching a volatile source (bounds polling; re-roll via
 `vela config delete get-random-10-20`).
 
+### Example: random-deployment (all sources -> one Deployment)
+
+Ties every source together into one raw Deployment:
+- replicas 1-5 from get-random (int -> spec.replicas, no conversion)
+- name <region>-<zone>-<department>-<tenant>-<component> from a new chained
+  `deployment-namer` source (definitions/deployment-namer.yaml), because
+  fromSource cannot concatenate across sources; namer takes the four values as
+  inputs (fed via fromSource from cluster-lookup + tenant-data) and joins them
+  with context.name (the component name).
+- labels (region/zone/department/tenant/environment) read directly per field.
+- apps/random-deployment.yaml; sources ordered rng, cluster, tenant, namer so
+  namer's forward-only deps are satisfied.
+Verified: namer compiles and yields "us-east-1-us-east-1a-platform-acme-web";
+YAML parses; type/ordering/default admission rules satisfied.
+
+Note: source templates see the component name as `context.name` (the KEP table
+calls it context.componentName; shipped runtime uses context.name). Examples use
+context.name.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the
