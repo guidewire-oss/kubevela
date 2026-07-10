@@ -224,6 +224,22 @@ Status: compiles (`go vet ./test/e2e-test` clean). NOT yet run against a live
 cluster — requires the user to rebuild+redeploy the image (this container cannot
 reach the k3d cluster). Marked unverified-against-live until the user runs it.
 
+FIRST LIVE RUN: 2 passed (bad-path, no-default); 3 failed — but as a TEST bug,
+not a product bug. The 3 failing cases used `Components: nil`, and the
+Application CRD requires spec.components (json:"components", no omitempty), so the
+API server rejected them with `spec.components: Required value` BEFORE the
+webhook ran — ValidateSources never fired. Fix: added a shared `minimalComp()`
+(a valid webservice component) to the forward-ref, unknown-prop, and bad-type
+cases so they clear structural validation and reach ValidateSources. The webhook
+accumulates all error groups (no short-circuit, validation.go:483-488) so the
+source-level error still surfaces alongside the (passing) component check.
+
+Boundary noted (not acting on it): because spec.components is structurally
+required, a sources-only Application (no components) is not expressible today.
+Fine for current KEP scope (fromSource consumed by components/traits); relevant
+if the future "fromSource in workflow steps/policies" enhancement wants
+sources-only apps.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

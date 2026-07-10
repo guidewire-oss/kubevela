@@ -531,6 +531,15 @@ parameter: {
 			}
 		}
 
+		// spec.components is structurally required by the Application CRD, so
+		// cases that exercise only source-level validation still need a valid
+		// component to get past structural admission and reach the webhook.
+		minimalComp := func() []oamcomm.ApplicationComponent {
+			return []oamcomm.ApplicationComponent{
+				{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx:1.25.0","port":80}`)}},
+			}
+		}
+
 		It("denies a fromSource path not declared in the source schema", func() {
 			applyTypedSource()
 			app := newApp("bad-path", []v1beta1.ApplicationSource{
@@ -561,7 +570,7 @@ parameter: {
 			app := newApp("forward-ref", []v1beta1.ApplicationSource{
 				{Name: "first", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":{"fromSource":"second.image"},"replicas":1}`)}},
 				{Name: "second", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1}`)}},
-			}, nil)
+			}, minimalComp())
 			err := k8sClient.Create(ctx, app)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("can only depend on prior sources"))
@@ -571,7 +580,7 @@ parameter: {
 			applyTypedSource()
 			app := newApp("unknown-prop", []v1beta1.ApplicationSource{
 				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1,"bogus":"x"}`)}},
-			}, nil)
+			}, minimalComp())
 			err := k8sClient.Create(ctx, app)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("is not declared in the parameter schema of SourceDefinition"))
@@ -581,7 +590,7 @@ parameter: {
 			applyTypedSource()
 			app := newApp("bad-type", []v1beta1.ApplicationSource{
 				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":"three"}`)}},
-			}, nil)
+			}, minimalComp())
 			err := k8sClient.Create(ctx, app)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("type mismatch for parameter"))
