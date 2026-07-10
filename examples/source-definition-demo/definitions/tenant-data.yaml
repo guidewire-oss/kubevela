@@ -9,9 +9,6 @@ spec:
       template: |
         import "vela/kube"
 
-        // Tenant metadata surfaced from the current namespace's labels.
-        // costCenter is optional; consumers must supply a default when reading
-        // it (see the Application).
         schema: {
           name:        string
           department:  string
