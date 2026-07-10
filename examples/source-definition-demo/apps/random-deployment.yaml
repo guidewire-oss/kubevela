@@ -60,7 +60,7 @@ spec:
                 example.com/environment:
                   fromSource: tenant.environment
             spec:
-              # Random replica count between 1 and 5.
+              # Random replica count between 1 and 5, from random.org.
               replicas:
                 fromSource: rng.value
               selector:

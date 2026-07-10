@@ -298,6 +298,23 @@ Note: source templates see the component name as `context.name` (the KEP table
 calls it context.componentName; shipped runtime uses context.name). Examples use
 context.name.
 
+### get-random reworked to random.org (dropped in-cluster service)
+
+The in-cluster python service failed when the controller runs locally
+(`make run`): dial error resolving random-service.source-demo.svc.cluster.local
+(cluster DNS not reachable from a local process). Tried a serviceURL param +
+localhost:3030 port-forward; user preferred dropping the service entirely.
+
+Now get-random polls https://www.random.org/integers/?...&format=plain over
+HTTPS (external endpoint, no in-cluster DNS problem; needs controller outbound
+internet). random.org returns a bare integer with a trailing newline (NOT JSON),
+so parse with strings.TrimSpace + strconv.Atoi (not json.Unmarshal). Verified
+the endpoint returns e.g. "4\n" and the template compiles under WorkloadCompiler.
+
+Removed: resources/random-service.yaml, apps/random-app.yaml (standalone service
+demo). onStaleFailure changed to use-stale (external endpoint may blip; a stale
+number beats failing). random-deployment app + README updated; no port-forward.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

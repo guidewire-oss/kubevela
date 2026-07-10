@@ -109,63 +109,12 @@ data:
 
 ---
 
-# SourceDefinition Demo: polling an HTTP service (`get-random`)
-
-This example runs a tiny in-cluster service that returns a random integer in a
-range, and a `SourceDefinition` that polls it over HTTP via the CueX `http`
-provider. It shows source resolution that performs real network I/O, with the
-cache bounding how often the service is hit.
-
-## Files
-
-- `resources/random-service.yaml` — a `python:3-alpine` Deployment + Service
-  (and the handler ConfigMap). `GET /?min=&max=` returns `{"value": N, ...}`.
-- `definitions/get-random.yaml` — `SourceDefinition` `get-random`: takes `min`
-  and `max` properties, polls the service, and surfaces `value` (int),
-  `valueString`, `min`, `max`. Cached per range for a short TTL.
-- `apps/random-app.yaml` — `Application` `random-app`: binds `get-random` with
-  `min: 10, max: 20` and writes the value into a ConfigMap.
-
-## Apply
-
-```bash
-kubectl apply -f examples/source-definition-demo/resources/random-service.yaml
-kubectl -n source-demo rollout status deploy/random-service
-kubectl apply -f examples/source-definition-demo/definitions/get-random.yaml
-kubectl apply -f examples/source-definition-demo/apps/random-app.yaml
-```
-
-## Verify
-
-```bash
-kubectl get configmap random-result -n source-demo -o jsonpath='{.data.value}{"\n"}'
-# -> a number between 10 and 20
-```
-
-## What to notice
-
-- **Caching a volatile source.** The value is cached per `(min,max)` range for
-  `storageTTL: "30s"`. Within a window every consumer sees the same number; it
-  re-rolls on the next miss. This is the point of the cache: it bounds load on
-  the polled service. Force an immediate re-roll by deleting the cache entry:
-
-  ```bash
-  vela config delete get-random-10-20
-  ```
-
-- **`onStaleFailure: "fail"`.** If the service is unreachable, this source fails
-  the render rather than serving a stale number (a stale random value is
-  meaningless). Contrast with the `use-stale` default used elsewhere.
-- **int vs string.** The schema exposes both `value` (int) and `valueString`;
-  the ConfigMap consumes `valueString` because ConfigMap data must be strings.
-
----
-
 # SourceDefinition Demo: all sources → one Deployment (`random-deployment`)
 
 This ties every source together. A raw Deployment is created whose:
 
-- **replica count** is randomly 1–5, from `get-random`;
+- **replica count** is a random 1–5, from `get-random` (which polls
+  [random.org](https://www.random.org) over HTTPS);
 - **name** is `<region>-<zone>-<department>-<tenant>-<component>`, assembled by a
   chained `deployment-namer` source from `cluster-lookup` and `tenant-data`;
 - **labels** carry region, zone, department, tenant, and environment, each read
@@ -173,20 +122,27 @@ This ties every source together. A raw Deployment is created whose:
 
 ## Files
 
+- `definitions/get-random.yaml` — `SourceDefinition` `get-random`: takes `min`
+  and `max`, GETs a single integer from random.org via the CueX `http` provider,
+  and surfaces `value` (int) and `valueString`. No in-cluster service required.
 - `definitions/deployment-namer.yaml` — `SourceDefinition` `deployment-namer`: a
   chained source that takes region/zone/department/tenant as inputs and returns
   the joined, lowercased name (with the component name from `context.name`).
 - `apps/random-deployment.yaml` — `Application` `random-deployment`, using
   `get-random`, `cluster-lookup`, `tenant-data`, and `deployment-namer`.
 
-Requires the same fixtures as the earlier demos plus the random service:
+Uses the same fixtures as the earlier demos (namespace + cluster-info):
 
 ```bash
-kubectl apply -f examples/source-definition-demo/resources/          # namespace, cluster-info, random-service
-kubectl -n source-demo rollout status deploy/random-service
+kubectl apply -f examples/source-definition-demo/resources/          # namespace, cluster-info
 kubectl apply -f examples/source-definition-demo/definitions/        # all SourceDefinitions
 kubectl apply -f examples/source-definition-demo/apps/random-deployment.yaml
 ```
+
+> **Outbound network required.** `get-random` polls `https://www.random.org` from
+> the controller process, so the controller needs outbound internet access. This
+> avoids the in-cluster-DNS problem entirely — there is no service to run or port
+> to forward.
 
 ## Verify
 
@@ -208,5 +164,13 @@ kubectl get deploy -n source-demo -l example.com/tenant=acme \
 - **Forward-only ordering.** `deployment-namer` is declared after `cluster` and
   `tenant` in `spec.sources[]`; admission rejects a source that depends on one
   declared at or after its own position.
-- **int flows straight through.** `spec.replicas` reads `rng.value` (an int) with
-  no string conversion, unlike the ConfigMap demo above.
+- **int flows straight through.** `spec.replicas` reads `rng.value` (an int)
+  directly; `get-random` exposes `value` (int) and `valueString` for consumers
+  that need a string.
+- **Caching a volatile source.** `get-random` caches per `(min,max)` for its
+  `storageTTL` (1m), so the replica count is stable within a window and re-rolls
+  on the next miss — bounding calls to random.org. Force an immediate re-roll:
+
+  ```bash
+  vela config delete get-random-1-5
+  ```
