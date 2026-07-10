@@ -240,6 +240,31 @@ Fine for current KEP scope (fromSource consumed by components/traits); relevant
 if the future "fromSource in workflow steps/policies" enhancement wants
 sources-only apps.
 
+### default-rule made target-aware (matches KEP)
+
+Earlier the optional-field default check (from #6) was UNCONDITIONAL: any
+optional source field consumed without a default was rejected, regardless of the
+target. The KEP says a default is required only when an optional source field
+feeds a REQUIRED target. Reworked to match the KEP:
+- New `cueStruct.requiredAt(path)` -> (required, declared): required means the
+  target field is declared, non-optional, and has no default.
+- Moved the default check out of the main ValidateSources loop (which had no
+  target knowledge) into the two target-aware passes:
+  - `validateSourceInputs` (target = the source's own parameter: block)
+  - `validateFromSourceTargetTypes` (target = component/trait parameter: block)
+  Both now: reject only if source field optional AND no default AND
+  target.requiredAt(path).required.
+- Removed dead `fromSourceReference.HasDefault` field.
+- Tests: the 3 old default cases in TestValidateSources relied on a target with
+  no ComponentDefinition (fail-open) and were misleading; removed them. Added 4
+  target-aware cases to TestValidateFromSourceTargetTypes (optional->required no
+  default = reject; optional->required + default = accept; optional->optional no
+  default = accept; required->required no default = accept). Full webhook suite
+  green.
+- Example comments (apps/app.yaml, README) corrected: the demo's costCenter
+  feeds a free-form ConfigMap field (not a required parameter), so a default is
+  NOT mandatory there; it is supplied as good practice only.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

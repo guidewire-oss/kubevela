@@ -34,10 +34,6 @@ type fromSourceReference struct {
 	FieldPath        *field.Path
 	FromSourceObject bool
 	SourceIndex      int
-	// HasDefault records whether the fromSource selector supplied a default:
-	// value (only possible with the map form). Used to enforce that an optional
-	// schema field consumed without a default is rejected at admission.
-	HasDefault bool
 }
 
 type sourceSchemaValidator struct {
@@ -138,13 +134,12 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 				fmt.Sprintf("path %q is not declared in schema of SourceDefinition %q", ref.Path, sourceType)))
 			continue
 		}
-		// KEP-2.16: an optional schema field (field?:) consumed without a
-		// default: may be absent at runtime, leaving the target unresolvable.
-		// Reject unless the map form supplies a default:.
-		if validator.IsOptionalPath(ref.Path) && !ref.HasDefault {
-			errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
-				fmt.Sprintf("path %q is an optional field in schema of SourceDefinition %q; a default must be supplied via the fromSource map form", ref.Path, sourceType)))
-		}
+		// The "optional source field consumed without a default" check is
+		// target-aware (KEP: a default is required only when the optional field
+		// feeds a REQUIRED target parameter). It is enforced in the target-aware
+		// passes below (validateSourceInputs for source-property targets,
+		// validateFromSourceTargetTypes for component/trait targets), which know
+		// the target parameter's optional/required marker.
 	}
 
 	// Input contract: validate each source's properties against that
@@ -215,6 +210,15 @@ func (h *ValidatingHandler) validateFromSourceTargetTypes(ctx context.Context, a
 				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
 					fmt.Sprintf("type mismatch: fromSource %q.%s is %s but %s expects %s",
 						refName, refPath, kindName(srcKind), targetDesc, kindName(dstKind))))
+			}
+			// KEP: a default is required only when an optional source field
+			// feeds a required target parameter.
+			if !selectorHasDefault(lf.fromSrc) && sv.IsOptionalPath(refPath) {
+				if required, _ := param.requiredAt(lf.path); required {
+					errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+						fmt.Sprintf("optional source field %q.%s feeds required %s; a default must be supplied via the fromSource map form",
+							refName, refPath, targetDesc)))
+				}
 			}
 		}
 	}
@@ -382,6 +386,15 @@ func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourc
 			return errs // path-not-in-schema already reported by the ref pass
 		}
 		srcKind = k
+		// KEP: a default is required only when an optional source field feeds a
+		// required target. Here the target is this SourceDefinition's parameter.
+		if hasDefault := selectorHasDefault(lf.fromSrc); !hasDefault && sv.IsOptionalPath(refPath) {
+			if required, _ := param.requiredAt(lf.path); required {
+				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+					fmt.Sprintf("optional source field %q.%s feeds required parameter %q of SourceDefinition %q; a default must be supplied via the fromSource map form",
+						refName, refPath, lf.path, sourceType)))
+			}
+		}
 	} else {
 		srcKind = jsonKind(lf.literal)
 	}
@@ -391,6 +404,17 @@ func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourc
 				lf.path, sourceType, kindName(dstKind), kindName(srcKind))))
 	}
 	return errs
+}
+
+// selectorHasDefault reports whether a fromSource selector (map form) carries a
+// default: key.
+func selectorHasDefault(selector interface{}) bool {
+	m, ok := selector.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, ok = m["default"]
+	return ok
 }
 
 func collectFromRawExtension(raw *runtime.RawExtension, basePath *field.Path, sourceIndex int) ([]fromSourceReference, field.ErrorList) {
@@ -411,7 +435,7 @@ func collectFromNode(node interface{}, path *field.Path, sourceIndex int) ([]fro
 	switch v := node.(type) {
 	case map[string]interface{}:
 		if selector, ok := v["fromSource"]; ok {
-			name, sourcePath, hasDefault, err := parseFromSourceSelector(selector)
+			name, sourcePath, _, err := parseFromSourceSelector(selector)
 			if err != nil {
 				errs = append(errs, field.Invalid(path.Child("fromSource"), selector, err.Error()))
 				return refs, errs
@@ -421,7 +445,6 @@ func collectFromNode(node interface{}, path *field.Path, sourceIndex int) ([]fro
 				Path:        sourcePath,
 				FieldPath:   path.Child("fromSource"),
 				SourceIndex: sourceIndex,
-				HasDefault:  hasDefault,
 			})
 			return refs, errs
 		}
@@ -530,6 +553,46 @@ func (c *cueStruct) kindAt(path string) (cue.Kind, bool) {
 		return cue.BottomKind, false
 	}
 	return v.IncompleteKind(), true
+}
+
+// requiredAt reports whether path names a field that the struct declares AND
+// requires (i.e. present and not optional). Returns (required, declared).
+// A field with a default is not required (it has a fallback value).
+func (c *cueStruct) requiredAt(path string) (required bool, declared bool) {
+	segs := strings.Split(path, ".")
+	if len(segs) == 0 || segs[len(segs)-1] == "" {
+		return false, false
+	}
+	leaf := segs[len(segs)-1]
+	if _, err := strconv.Atoi(leaf); err == nil {
+		return false, false // array index: not a named required field
+	}
+	parent := c.root
+	if len(segs) > 1 {
+		p, ok := c.lookup(strings.Join(segs[:len(segs)-1], "."))
+		if !ok {
+			return false, false
+		}
+		parent = p
+	}
+	iter, err := parent.Fields(cue.Optional(true), cue.Definitions(false))
+	if err != nil {
+		return false, false
+	}
+	for iter.Next() {
+		sel := iter.Selector()
+		if !sel.IsString() || sel.Unquoted() != leaf {
+			continue
+		}
+		if iter.IsOptional() {
+			return false, true
+		}
+		if _, hasDefault := iter.Value().Default(); hasDefault {
+			return false, true // defaulted -> not required
+		}
+		return true, true
+	}
+	return false, false
 }
 
 // kindName renders a CUE kind for user-facing error messages.
