@@ -287,7 +287,7 @@ A cache entry is **fresh** if the backing `Config` object exists and the time el
 
 The cache uses two layers with different scopes and lifetimes:
 
-**Layer 1: In-memory LRU** (per controller-process): Eliminates API server reads for the same key within a single busy reconcile window. Lost on controller restart. The TTL of this layer is a fixed implementation detail, not configurable by definition authors or application authors. Because it sits in front of the Config check, the worst-case staleness window for a running controller is `storageTTL + in-memory TTL`; operators should account for this when choosing `storageTTL` for time-sensitive sources. The reusable LRU abstraction from the Helm renderer feature is used here.
+**Layer 1: In-memory LRU** (per controller-process): a process-level singleton LRU keyed by the resolved `storage.key`, so entries are shared across all Applications resolving to the same key and survive across reconciles. Eliminates API server reads for the same key within the in-memory freshness window. Lost on controller restart. The TTL of this layer is a fixed implementation detail (30s), not configurable by definition authors or application authors. Because it sits in front of the Config check, the worst-case staleness window for a running controller is `storageTTL + in-memory TTL`; operators should account for this when choosing `storageTTL` for time-sensitive sources. Stale Layer 2 values are never promoted into Layer 1, so a stale entry always flows through the `onStaleFailure` logic rather than being masked as an in-memory hit. (Implemented directly on `k8s.io/utils/lru`; the reusable LRU abstraction the Helm renderer feature is expected to introduce can replace this later with no behavioural change.)
 
 **Layer 2: Backing Config object** (persistent, in API server): A `Config` CRD instance (KEP-2.18) named by the resolved `key`. Survives controller restarts. `status.lastSyncAt` is the canonical timestamp of the last successful `template:` execution. This is what operators inspect to determine when data was last fetched. The controller reads it on every in-memory miss and writes it after every successful refresh.
 
@@ -389,7 +389,7 @@ If multiple components in the same Application reference the same `SourceDefinit
   type:        "source"
   description: "Reads platform metadata from the cluster-config ConfigMap in platform-data namespace"
   attributes: {
-    scope: "spoke"   // explicitly spoke - controller uses cluster gateway to read per-cluster ConfigMap
+    scope: "spoke"   // advisory: reads a per-cluster ConfigMap. The read below routes to the spoke via cluster: context.cluster
   }
 }
 
@@ -427,6 +427,7 @@ template: {
 
   _clusterConfig: ex.#Read & {
     $params: {
+      cluster:    context.cluster   // route to the spoke; omit for a hub-local read
       apiVersion: "v1"
       kind:       "ConfigMap"
       metadata: {
@@ -715,22 +716,56 @@ Errors from the admission pass surface immediately and block the apply. Errors f
 
 ## Resolution Scope: hub vs spoke
 
-The `ex.#Read` CueX provider executes against the cluster where the controller is running. For hub-side SourceDefinitions (e.g., a central service registry ConfigMap), resolution runs on the hub. For spoke-local SourceDefinitions (e.g., `cluster-config` which is per-cluster), resolution runs on the spoke component-controller.
+Source resolution executes the `template:` in the controller process. The target cluster for any I/O is **chosen by the definition author on the CueX read provider itself**, not by a separate controller code path. The KubeVela `kube` / `ex.#Read` providers accept a `cluster:` field and route the read to that cluster through the configured cluster gateway; when `cluster:` is empty they read the local (hub) cluster. This means hub-vs-spoke resolution is a property of how the definition is authored, and no special controller wiring is required.
 
-`scope` is declared in `attributes` inside the named root block, consistent with the standard Definition authoring model:
+**Reading from the hub (default).** Omit `cluster:` (or set it to the empty string / the hub cluster name). This is the right choice for central data such as a service registry ConfigMap on the hub. A single `Config` cache entry is shared across all consumers for the same key.
+
+```cue
+template: {
+  _clusterConfig: ex.#Read & {
+    $params: {
+      // no cluster: → reads the hub/local cluster
+      apiVersion: "v1"
+      kind:       "ConfigMap"
+      metadata: { name: "service-registry", namespace: "platform-data" }
+    }
+  }
+  output: { ... }
+}
+```
+
+**Reading from a spoke.** Set `cluster: context.cluster` (or an explicit cluster name) on the read. The provider routes the read to that spoke through the cluster gateway. Include `context.cluster` in the `storage.key` so each spoke gets its own cache entry and cross-spoke collisions are avoided.
+
+```cue
+storage: {
+  key: "cluster-config-reader-\(context.cluster)"   // per-spoke cache entry
+}
+
+template: {
+  _clusterConfig: ex.#Read & {
+    $params: {
+      cluster:    context.cluster                    // route to the spoke
+      apiVersion: "v1"
+      kind:       "ConfigMap"
+      metadata: { name: "cluster-config", namespace: "platform-data" }
+    }
+  }
+  output: { ... }
+}
+```
+
+**`attributes.scope` is advisory documentation.** It may still be declared in the named root block to communicate intent to platform reviewers, but the controller does not construct a spoke client from it; the effective cluster is whatever the read provider's `cluster:` field resolves to.
 
 ```cue
 "cluster-config-reader": {
   type: "source"
   attributes: {
-    scope: *"hub" | "spoke"   // default: hub
+    scope: *"hub" | "spoke"   // advisory: documents where this source reads from
   }
 }
 ```
 
-`scope: hub`: resolution executes on the hub application-controller using the hub's local client. A single `Config` object is shared across all spokes for the same key.
-
-`scope: spoke`: the controller must obtain a spoke-scoped client via the cluster gateway before executing CueX. The implementation checks `attributes.scope` at resolution time and, when `spoke` is set, constructs a client targeting the appropriate spoke cluster (identified by `context.cluster`) through the configured cluster gateway. Each spoke gets its own `Config` object (key should include `context.cluster` to prevent cross-spoke cache collisions).
+> **Note:** because the author controls the target cluster directly on the read, a single `SourceDefinition` can even read from different clusters across bindings (e.g. driven by `context.cluster`). Definition authors handling per-spoke data must key their cache by `context.cluster` as shown above.
 
 ## ApplicationRevision Snapshot
 
@@ -760,6 +795,8 @@ The snapshot guarantees three properties that together make renders deterministi
 
 ## Application Status
 
+> **Implementation note (direction change):** The design below describes a first-class `phase` field (`Resolved` / `Pending` / `Failed` / `Stale`) on each source status entry. During implementation this was **not** carried into the shipped API. A dedicated `phase` enum duplicated information already available from the Application's condition/message surface without adding signal, so it was dropped. In its place, each source status entry carries an `expiresAt` timestamp (RFC3339) plus a human-readable `message`. Freshness and staleness are read from `expiresAt` (when the currently served value stops being trusted) and the `message` (which states, e.g., that a refresh failed and a stale value is being served); hard failures surface through the Application's normal error/condition reporting. The `phase:` values referenced throughout this section and the Practical Operations scenarios below should be read as *logical states* the operator can infer from `expiresAt` + `message`, not as a literal status field. The shipped status shape is: `{ name, type, config, expiresAt, message, properties, resolvedFields }`.
+
 Source consumption is reported per component in `status.services[]`, alongside each component's existing health and trait information. This placement is intentional: the status records what each component consumed and from which cache entry, not a global view of all source activity. Each component entry gains a `sources:` sub-field listing the sources it consumed, the Config object backing the resolution, and the field values that were injected (top-level `// +sensitive` fields redacted, all others shown in full regardless of type).
 
 ```yaml
@@ -771,7 +808,7 @@ status:
       healthy: true
       sources:
         - name: cluster-info              # matches spec.sources[].name
-          definition: cluster-config-reader
+          type: cluster-config-reader     # the SourceDefinition (spec.sources[].type)
           phase: Resolved                 # Resolved | Pending | Failed | Stale
           config: cluster-config-reader-us-east-prod   # backing cache entry - inspect with: vela config list
           resolvedFields:
@@ -780,7 +817,7 @@ status:
             vpcId:       <redacted>       # // +sensitive
             accountId:   <redacted>       # // +sensitive
         - name: backstage-info
-          definition: backstage-component
+          type: backstage-component       # the SourceDefinition (spec.sources[].type)
           phase: Stale                    # template: refresh failed; prior data in use
           config: backstage-component-my-api
           resolvedFields:

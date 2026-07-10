@@ -72,10 +72,29 @@ self-contained LRU now; refactor to the shared abstraction later if it lands.
 - `pkg/appfile/dryrun` BeforeSuite fails on missing etcd binary (pre-existing env
   limitation, same as TestAPIs); unrelated to this change.
 
+### #5 hub/spoke scope + KEP doc reconciliation (DONE)
+- Rewrote "Resolution Scope: hub vs spoke" to reflect reality: the CueX kube/
+  ex.#Read provider already accepts a `cluster:` field (kube.go:49,74) and routes
+  to that cluster via the gateway; empty → hub/local. So spoke resolution is
+  author-driven (set `cluster: context.cluster` + key by context.cluster).
+  `attributes.scope` documented as advisory only; controller builds no spoke
+  client. Added hub and spoke read examples; fixed the full cluster-config-reader
+  example to include `cluster: context.cluster`.
+- Doc reconciliation with shipped code (user direction: document the change, keep
+  the KEP content):
+  - Fixed two stale `definition:` source bindings in the status example → `type:`
+    (the confirmed KEP mistake).
+  - Added an "Implementation note (direction change)" at the top of Application
+    Status: `phase` field was dropped in favour of `expiresAt` + `message`;
+    phase values in the doc are logical states inferable from those two. Shipped
+    status shape documented.
+  - Corrected the Layer 1 description: now accurately a shared process-level
+    singleton LRU on k8s.io/utils/lru (not the not-yet-existing Helm abstraction).
+
 ## TODOs
 - [x] #6 default: enforcement + unit tests
 - [x] #4 process-level LRU wrapper + wiring + tests
-- [ ] #5 docs in KEP README (spoke via cluster: param)
+- [x] #5 docs in KEP README (spoke via cluster: param) + phase/binding reconcile
 
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
