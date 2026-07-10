@@ -24,9 +24,14 @@ spec:
         // not fetched every reconcile; the cache bounds calls to random.org.
         // Within a window every consumer sees the same number; it re-rolls on
         // the next miss. Force a re-roll with: vela config delete <key>.
+        //
+        // NOTE: an in-memory LRU (~30s, fixed) sits in front of this store, so
+        // the effective floor on how often the value changes is roughly
+        // storageTTL + 30s within a running controller. Setting storageTTL below
+        // ~30s will not make it re-roll faster than the in-memory layer allows.
         storage: {
           key:            "get-random-\(parameter.min)-\(parameter.max)"
-          storageTTL:     "1m"
+          storageTTL:     "10s"
           onStaleFailure: "use-stale"
         }
 

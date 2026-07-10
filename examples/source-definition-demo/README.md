@@ -168,8 +168,10 @@ kubectl get deploy -n source-demo -l example.com/tenant=acme \
   directly; `get-random` exposes `value` (int) and `valueString` for consumers
   that need a string.
 - **Caching a volatile source.** `get-random` caches per `(min,max)` for its
-  `storageTTL` (1m), so the replica count is stable within a window and re-rolls
-  on the next miss — bounding calls to random.org. Force an immediate re-roll:
+  `storageTTL` (10s), so the replica count is stable within a window and re-rolls
+  on the next miss — bounding calls to random.org. A fixed ~30s in-memory LRU
+  sits in front of the store, so the effective re-roll floor is `storageTTL + ~30s`
+  in a running controller. Force an immediate re-roll:
 
   ```bash
   vela config delete get-random-1-5
