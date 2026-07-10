@@ -96,6 +96,40 @@ self-contained LRU now; refactor to the shared abstraction later if it lands.
 - [x] #4 process-level LRU wrapper + wiring + tests
 - [x] #5 docs in KEP README (spoke via cluster: param) + phase/binding reconcile
 
+### e2e run: admission-webhook bug (fromSource rejected at apply) — FIXED
+
+First real e2e run against a live cluster (from the user's Mac) surfaced 4
+failures. Root cause investigation:
+
+- 3 of 4 failed at ADMISSION with `parameter.image: conflicting values string
+  and {fromSource:"img.image"} (mismatched types string and struct)`.
+- Traced: webhook `ValidateCUESchematicAppfile` (`validate.go`) →
+  `EvalContext` → `workloadDef.Complete()` type-checks the component/trait CUE
+  template with the RAW `{fromSource: ...}` node still in params. CUE rejects it
+  against the declared type (`image: string`, `replicas: int`).
+- This is inherent: the KEP says admission validates fromSource PATHS only and
+  must NOT resolve (resolution needs I/O, done at reconcile). But schematic
+  validation was type-checking the unresolved node.
+- NOT a regression from my 3 commits (they don't touch validate.go). The e2e
+  suite is a manual/local gate that had never actually run green on this branch;
+  the admission path was simply never exercised before.
+
+Fix (user chose "skip param validation when fromSource present", matching the
+existing workflow-supplied-params skip precedent):
+- `validate.go`: new `hasFromSourceParams(params)` walks params for a fromSource
+  key at any depth. In `ValidateCUESchematicAppfile`:
+  - component with fromSource → skip `ValidateComponentParams` + the component
+    template eval + its traits (traits need the component's pCtx). `continue`.
+  - trait with fromSource → skip that trait's `EvalContext`.
+- Paths are still validated structurally by the webhook's ValidateSources stage
+  (my #6 work), so coverage is not lost — only the value type-check is deferred.
+- Tests: `TestHasFromSourceParams` (6 cases). Existing validation suites green.
+
+The 4th failure (`configTemplateRef not ready`, 60s timeout) is separate and
+likely a stale deployed image / SourceDefinition controller not running the new
+reconciler in-cluster — NOT reproducible from this container (cluster lives on
+the user's Mac). Left for the user to confirm against a freshly built image.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the
