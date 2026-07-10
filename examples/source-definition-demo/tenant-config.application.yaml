@@ -1,0 +1,45 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: tenant-config
+  namespace: source-demo
+spec:
+  sources:
+    - name: tenant
+      type: tenant-data
+    - name: cluster
+      type: cluster-lookup
+
+  components:
+    # Writes the resolved tenant and cluster data into a ConfigMap. Values are
+    # substituted via fromSource before the component renders, so the ConfigMap
+    # is created with concrete data.
+    - name: tenant-config
+      type: k8s-objects
+      properties:
+        objects:
+          - apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: tenant-config
+              namespace: source-demo
+            data:
+              tenantName:
+                fromSource: tenant.name
+              department:
+                fromSource: tenant.department
+              environment:
+                fromSource: tenant.environment
+              # costCenter is optional in the tenant-data schema, so the map form
+              # with a default is required (enforced at admission).
+              costCenter:
+                fromSource:
+                  name: tenant
+                  path: costCenter
+                  default: "unassigned"
+              region:
+                fromSource: cluster.region
+              zone:
+                fromSource: cluster.zone
+              provider:
+                fromSource: cluster.provider
