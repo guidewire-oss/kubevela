@@ -315,6 +315,34 @@ Removed: resources/random-service.yaml, apps/random-app.yaml (standalone service
 demo). onStaleFailure changed to use-stale (external endpoint may blip; a stale
 number beats failing). random-deployment app + README updated; no port-forward.
 
+### FOLLOW-UP BUG: fromSource re-resolution not detected for healthy components
+
+Traced while wiring the random-deployment demo. When a source re-resolves to a
+NEW value (e.g. get-random rolls a different number), a HEALTHY component is not
+re-dispatched, so the new value never reaches the cluster.
+
+Root cause (pkg/controller/.../application/dispatcher.go):
+- Dispatch gate (~:167): requiresDispatch = !isHealth || err || propertiesChanged
+  || (!SkipApplyWorkload && isAutoUpdateEnabled).
+- componentPropertiesChanged (:272) compares comp.Params against the snapshot's
+  raw Properties. But comp.Params still holds the RAW {fromSource: "..."}
+  directive: Complete() (template.go:143-149) resolves fromSource into a LOCAL
+  paramFile for rendering and never writes resolved values back into comp.Params.
+- So the raw directive == snapshot raw directive => propertiesChanged=false, and
+  a healthy component only re-dispatches if autoUpdate="true".
+
+Workaround in the demo: app.oam.dev/autoUpdate: "true" (forces dispatch every
+reconcile). This is a side effect of autoUpdate (documented as "auto update when
+it finds DEFINITION changes"), not a purpose-built trigger.
+
+Proper fix (deferred): make change detection fromSource-aware -- compare the
+RESOLVED values (or a hash of them) rather than the raw directive -- so a
+re-resolved source value re-dispatches without autoUpdate. Touches the dispatch
+path + tests.
+
+Also note: even with autoUpdate, cadence is gated by the reconcile resync (5m
+default) and the storageTTL + ~30s LRU floor.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

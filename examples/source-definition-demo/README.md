@@ -176,3 +176,16 @@ kubectl get deploy -n source-demo -l example.com/tenant=acme \
   ```bash
   vela config delete get-random-1-5
   ```
+
+- **`autoUpdate` is required to pick up a new value.** The app carries
+  `app.oam.dev/autoUpdate: "true"`. Without it, a *healthy* component is not
+  re-dispatched when a source re-resolves to a new value: change detection
+  compares the raw `fromSource` directive (which never changes), not the
+  resolved number, so the new replica count would resolve during render but
+  never be applied. `autoUpdate` forces dispatch on every reconcile so the
+  resolved value takes effect. (This leverages `autoUpdate`'s force-dispatch
+  behaviour; making change detection `fromSource`-aware is a known follow-up.)
+- **Reconcile cadence still applies.** Even with `autoUpdate`, re-dispatch only
+  happens when the Application reconciles — every ~5m by default (the
+  controller's resync period), unless nudged (e.g. re-apply, or
+  `kubectl annotate app random-deployment demo/nudge=$(date +%s) --overwrite`).

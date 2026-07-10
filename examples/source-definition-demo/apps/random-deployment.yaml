@@ -3,6 +3,13 @@ kind: Application
 metadata:
   name: random-deployment
   namespace: source-demo
+  annotations:
+    # Required for a healthy component to pick up a re-resolved fromSource value.
+    # Change detection compares the RAW fromSource directive (unchanged across
+    # reconciles), so a new random number is not treated as a spec change and a
+    # healthy component would not be re-dispatched. autoUpdate forces dispatch on
+    # every reconcile, so the freshly resolved replica count is applied.
+    app.oam.dev/autoUpdate: "true"
 spec:
   # Declaration order matters: deployment-namer chains off cluster and tenant,
   # so they must be declared before it (forward-only dependency rule).
