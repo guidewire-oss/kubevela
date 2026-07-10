@@ -265,6 +265,20 @@ feeds a REQUIRED target. Reworked to match the KEP:
   feeds a free-form ConfigMap field (not a required parameter), so a default is
   NOT mandatory there; it is supplied as good practice only.
 
+### Example: get-random (HTTP-polling source)
+
+Added a demo where a SourceDefinition polls an in-cluster HTTP service:
+- `resources/random-service.yaml`: python:3-alpine Deployment+Service, handler
+  from a ConfigMap; GET /?min=&max= -> {"value":N}. No image build.
+- `definitions/get-random.yaml`: uses vela/http #Get + encoding/json Unmarshal +
+  strconv; min/max as parameters passed as query params; exposes value(int),
+  valueString, min, max. storageTTL 30s, onStaleFailure "fail" (stale random is
+  meaningless). Verified compiling under WorkloadCompiler.
+- `apps/random-app.yaml`: binds get-random {min:10,max:20}, writes valueString
+  into a ConfigMap (data must be strings; hence valueString not value).
+Demonstrates caching a volatile source (bounds polling; re-roll via
+`vela config delete get-random-10-20`).
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

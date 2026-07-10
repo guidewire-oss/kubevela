@@ -1,0 +1,29 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: random-app
+  namespace: source-demo
+spec:
+  sources:
+    - name: rng
+      type: get-random
+      properties:
+        min: 10
+        max: 20
+
+  components:
+    # Writes the polled random value into a ConfigMap. valueString is used
+    # because ConfigMap data values must be strings.
+    - name: random-result
+      type: k8s-objects
+      properties:
+        objects:
+          - apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: random-result
+              namespace: source-demo
+            data:
+              # valueString (not value) because ConfigMap data must be strings.
+              value:
+                fromSource: rng.valueString

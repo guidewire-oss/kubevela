@@ -106,3 +106,55 @@ data:
 - **Required inputs enforced by consumption.** Removing a required label
   (`kubectl label ns source-demo tenant.example.com/name-`) leaves the value
   incomplete, so the source reports `Failed`.
+
+---
+
+# SourceDefinition Demo: polling an HTTP service (`get-random`)
+
+This example runs a tiny in-cluster service that returns a random integer in a
+range, and a `SourceDefinition` that polls it over HTTP via the CueX `http`
+provider. It shows source resolution that performs real network I/O, with the
+cache bounding how often the service is hit.
+
+## Files
+
+- `resources/random-service.yaml` — a `python:3-alpine` Deployment + Service
+  (and the handler ConfigMap). `GET /?min=&max=` returns `{"value": N, ...}`.
+- `definitions/get-random.yaml` — `SourceDefinition` `get-random`: takes `min`
+  and `max` properties, polls the service, and surfaces `value` (int),
+  `valueString`, `min`, `max`. Cached per range for a short TTL.
+- `apps/random-app.yaml` — `Application` `random-app`: binds `get-random` with
+  `min: 10, max: 20` and writes the value into a ConfigMap.
+
+## Apply
+
+```bash
+kubectl apply -f examples/source-definition-demo/resources/random-service.yaml
+kubectl -n source-demo rollout status deploy/random-service
+kubectl apply -f examples/source-definition-demo/definitions/get-random.yaml
+kubectl apply -f examples/source-definition-demo/apps/random-app.yaml
+```
+
+## Verify
+
+```bash
+kubectl get configmap random-result -n source-demo -o jsonpath='{.data.value}{"\n"}'
+# -> a number between 10 and 20
+```
+
+## What to notice
+
+- **Caching a volatile source.** The value is cached per `(min,max)` range for
+  `storageTTL: "30s"`. Within a window every consumer sees the same number; it
+  re-rolls on the next miss. This is the point of the cache: it bounds load on
+  the polled service. Force an immediate re-roll by deleting the cache entry:
+
+  ```bash
+  vela config delete get-random-10-20
+  ```
+
+- **`onStaleFailure: "fail"`.** If the service is unreachable, this source fails
+  the render rather than serving a stale number (a stale random value is
+  meaningless). Contrast with the `use-stale` default used elsewhere.
+- **int vs string.** The schema exposes both `value` (int) and `valueString`;
+  the ConfigMap consumes `valueString` because ConfigMap data must be strings.

@@ -1,0 +1,57 @@
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: get-random
+  namespace: source-demo
+spec:
+  schematic:
+    cue:
+      template: |
+        import (
+          "vela/http"
+          "encoding/json"
+          "strconv"
+        )
+
+        // Output contract. valueString is the same number rendered as a string,
+        // convenient for targets that only accept strings (e.g. ConfigMap data).
+        schema: {
+          value:       int
+          valueString: string
+          min:         int
+          max:         int
+        }
+
+        // The resolved value is cached per (min,max) range for storageTTL. A
+        // random source is intentionally not something to read every reconcile;
+        // the cache bounds how often the service is polled. Within a TTL window
+        // every consumer sees the same number; it re-rolls on the next miss.
+        // Force an immediate re-roll with: vela config delete <key>.
+        storage: {
+          key:            "get-random-\(parameter.min)-\(parameter.max)"
+          storageTTL:     "30s"
+          onStaleFailure: "fail"
+        }
+
+        parameter: {
+          // +usage=Inclusive lower bound
+          min: *1 | int
+          // +usage=Inclusive upper bound
+          max: *100 | int
+        }
+
+        // Poll the in-cluster random-service, passing the range as query params.
+        _resp: http.#Get & {
+          $params: {
+            url: "http://random-service.source-demo.svc.cluster.local?min=\(strconv.FormatInt(parameter.min, 10))&max=\(strconv.FormatInt(parameter.max, 10))"
+          }
+        }
+
+        _body: json.Unmarshal(_resp.$returns.body)
+
+        output: {
+          value:       _body.value
+          valueString: strconv.FormatInt(_body.value, 10)
+          min:         _body.min
+          max:         _body.max
+        }
