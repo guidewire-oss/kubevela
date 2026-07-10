@@ -794,6 +794,10 @@ func GenerateContextDataFromAppFile(appfile *Appfile, wlName string) velaprocess
 	if data.SourceCacheStore == nil {
 		data.SourceCacheStore = definition.NewSecretSourceCacheStore(appfile.KubeClient)
 	}
+	// Front the persistent store (Layer 2) with the shared process-level LRU
+	// (Layer 1) so cache entries are shared across Applications and survive
+	// across reconciles. Keyed by the resolved storage.key.
+	data.SourceCacheStore = definition.NewLRUSourceCacheStore(data.SourceCacheStore)
 	for _, source := range appfile.Sources {
 		props := map[string]interface{}{}
 		if source.Properties != nil && len(source.Properties.Raw) > 0 {

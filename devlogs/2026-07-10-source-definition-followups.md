@@ -52,9 +52,29 @@ self-contained LRU now; refactor to the shared abstraction later if it lands.
 - Tests: added 3 cases (optional-without-default rejected; optional-with-default
   accepted; required-without-default accepted). All `TestValidateSources` pass.
 
+### #4 shared process-level LRU (DONE)
+- New `pkg/cue/definition/source_cache_lru.go`: `lruSourceCacheStore` wraps any
+  `SourceCacheStore` with a package-level singleton `k8s.io/utils/lru` cache
+  (size 512), keyed by the resolved `storage.key`. Fixed 30s in-memory TTL
+  (Layer 1), independent of per-source `storageTTL` (Layer 2).
+  - Read: Layer 1 hit within TTL served fresh; miss falls to delegate; only
+    fresh (non-stale) delegate hits are promoted (stale values keep flowing
+    through the resolver's onStaleFailure path).
+  - Write: persists via delegate, then populates Layer 1.
+- Wired in `pkg/appfile/appfile.go` right after the store fallback, so BOTH the
+  controller's Config-API store and the Secret fallback are fronted by the LRU.
+- Because the LRU is a process singleton keyed by storage.key, entries are
+  shared across Applications and survive across reconciles (KEP requirement).
+- Tests: `source_cache_lru_test.go` (5 cases incl. cross-store sharing). Pass.
+- Note: the KEP-referenced "reusable LRU abstraction from the Helm renderer"
+  still does not exist; this is self-contained per decision. `k8s.io/utils/lru`
+  chosen (already vendored) — no new dependency.
+- `pkg/appfile/dryrun` BeforeSuite fails on missing etcd binary (pre-existing env
+  limitation, same as TestAPIs); unrelated to this change.
+
 ## TODOs
 - [x] #6 default: enforcement + unit tests
-- [ ] #4 process-level LRU wrapper + wiring + tests
+- [x] #4 process-level LRU wrapper + wiring + tests
 - [ ] #5 docs in KEP README (spoke via cluster: param)
 
 ## Lessons Learned
