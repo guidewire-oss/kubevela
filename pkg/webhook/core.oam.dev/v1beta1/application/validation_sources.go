@@ -28,6 +28,10 @@ type fromSourceReference struct {
 	FieldPath        *field.Path
 	FromSourceObject bool
 	SourceIndex      int
+	// HasDefault records whether the fromSource selector supplied a default:
+	// value (only possible with the map form). Used to enforce that an optional
+	// schema field consumed without a default is rejected at admission.
+	HasDefault bool
 }
 
 type sourceSchemaValidator struct {
@@ -126,6 +130,14 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 		if !validator.HasPath(ref.Path) {
 			errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
 				fmt.Sprintf("path %q is not declared in schema of SourceDefinition %q", ref.Path, sourceType)))
+			continue
+		}
+		// KEP-2.16: an optional schema field (field?:) consumed without a
+		// default: may be absent at runtime, leaving the target unresolvable.
+		// Reject unless the map form supplies a default:.
+		if validator.IsOptionalPath(ref.Path) && !ref.HasDefault {
+			errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
+				fmt.Sprintf("path %q is an optional field in schema of SourceDefinition %q; a default must be supplied via the fromSource map form", ref.Path, sourceType)))
 		}
 	}
 
@@ -150,7 +162,7 @@ func collectFromNode(node interface{}, path *field.Path, sourceIndex int) ([]fro
 	switch v := node.(type) {
 	case map[string]interface{}:
 		if selector, ok := v["fromSource"]; ok {
-			name, sourcePath, err := parseFromSourceSelector(selector)
+			name, sourcePath, hasDefault, err := parseFromSourceSelector(selector)
 			if err != nil {
 				errs = append(errs, field.Invalid(path.Child("fromSource"), selector, err.Error()))
 				return refs, errs
@@ -160,6 +172,7 @@ func collectFromNode(node interface{}, path *field.Path, sourceIndex int) ([]fro
 				Path:        sourcePath,
 				FieldPath:   path.Child("fromSource"),
 				SourceIndex: sourceIndex,
+				HasDefault:  hasDefault,
 			})
 			return refs, errs
 		}
@@ -178,23 +191,24 @@ func collectFromNode(node interface{}, path *field.Path, sourceIndex int) ([]fro
 	return refs, errs
 }
 
-func parseFromSourceSelector(selector interface{}) (string, string, error) {
+func parseFromSourceSelector(selector interface{}) (name string, path string, hasDefault bool, err error) {
 	switch v := selector.(type) {
 	case string:
 		parts := strings.SplitN(v, ".", 2)
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", "", fmt.Errorf("invalid fromSource reference %q", v)
+			return "", "", false, fmt.Errorf("invalid fromSource reference %q", v)
 		}
-		return parts[0], parts[1], nil
+		return parts[0], parts[1], false, nil
 	case map[string]interface{}:
 		name, _ := v["name"].(string)
 		path, _ := v["path"].(string)
 		if name == "" || path == "" {
-			return "", "", fmt.Errorf("fromSource requires both name and path")
+			return "", "", false, fmt.Errorf("fromSource requires both name and path")
 		}
-		return name, path, nil
+		_, hasDefault := v["default"]
+		return name, path, hasDefault, nil
 	default:
-		return "", "", fmt.Errorf("invalid fromSource selector type %T", selector)
+		return "", "", false, fmt.Errorf("invalid fromSource selector type %T", selector)
 	}
 }
 
@@ -242,21 +256,94 @@ func (h *ValidatingHandler) getSourceDefinition(ctx context.Context, appNamespac
 }
 
 func (v *sourceSchemaValidator) HasPath(path string) bool {
+	cur, ok := v.lookup(path)
+	return ok && cur.Exists()
+}
+
+// IsOptionalPath reports whether the final segment of path is declared optional
+// (e.g. `field?:`) in the schema. Returns false if the path does not resolve or
+// the final segment is an array index. LookupPath strips the optional marker
+// from the returned value, so optionality is detected by iterating the parent
+// struct's fields and matching the leaf label.
+func (v *sourceSchemaValidator) IsOptionalPath(path string) bool {
+	segs := strings.Split(path, ".")
+	if len(segs) == 0 {
+		return false
+	}
+	parentPath := strings.Join(segs[:len(segs)-1], ".")
+	leaf := segs[len(segs)-1]
+	if leaf == "" {
+		return false
+	}
+	if _, err := strconv.Atoi(leaf); err == nil {
+		// array element: optionality is not a meaningful concept here
+		return false
+	}
+	parent := v.schema
+	if parentPath != "" {
+		p, ok := v.lookup(parentPath)
+		if !ok {
+			return false
+		}
+		parent = p
+	}
+	iter, err := parent.Fields(cue.Optional(true), cue.Definitions(false))
+	if err != nil {
+		return false
+	}
+	for iter.Next() {
+		sel := iter.Selector()
+		if sel.IsString() && sel.Unquoted() == leaf {
+			return iter.IsOptional()
+		}
+	}
+	return false
+}
+
+// lookup walks the dotted path through the schema value and returns the reached
+// value plus whether every segment resolved. Optional fields (field?:) are not
+// returned by LookupPath, so a failed struct lookup falls back to iterating the
+// parent's fields (including optionals) to locate the segment.
+func (v *sourceSchemaValidator) lookup(path string) (cue.Value, bool) {
 	cur := v.schema
 	for _, seg := range strings.Split(path, ".") {
 		if seg == "" {
-			return false
+			return cur, false
 		}
 		if idx, err := strconv.Atoi(seg); err == nil {
 			cur = cur.LookupPath(cue.MakePath(cue.Index(idx)))
-		} else {
-			cur = cur.LookupPath(cue.MakePath(cue.Str(seg)))
+			if !cur.Exists() {
+				return cur, false
+			}
+			continue
 		}
-		if !cur.Exists() {
-			return false
+		next := cur.LookupPath(cue.MakePath(cue.Str(seg)))
+		if !next.Exists() {
+			if opt, ok := lookupOptionalField(cur, seg); ok {
+				cur = opt
+				continue
+			}
+			return next, false
+		}
+		cur = next
+	}
+	return cur, true
+}
+
+// lookupOptionalField finds a field by label in parent (including optional
+// fields) and returns its value.
+func lookupOptionalField(parent cue.Value, label string) (cue.Value, bool) {
+	iter, err := parent.Fields(cue.Optional(true), cue.Definitions(false))
+	if err != nil {
+		return cue.Value{}, false
+	}
+	for iter.Next() {
+		sel := iter.Selector()
+		if sel.IsString() && sel.Unquoted() == label {
+			return iter.Value(), true
 		}
 	}
-	return true
+	return cue.Value{}, false
 }
 
 func extractSourceSchemaExprForAdmission(template string) (string, error) {

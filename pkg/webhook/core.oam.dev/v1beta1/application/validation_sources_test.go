@@ -62,6 +62,27 @@ parameter: {
 				},
 			},
 		},
+		&v1beta1.SourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: "source-opt", Namespace: "default"},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &common.Schematic{
+					CUE: &common.CUE{
+						Template: `
+schema: {
+  region:  string
+  vpcId?:  string
+}
+output: {
+  region: parameter.region
+}
+parameter: {
+  region: string
+}
+`,
+					},
+				},
+			},
+		},
 	}
 
 	tests := []struct {
@@ -159,6 +180,64 @@ parameter: {
 			},
 			expectedErrs:  1,
 			expectedField: "spec.sources[0].properties.image.fromSource",
+		},
+		{
+			name: "reject optional schema field consumed without default",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "clusterInfo", Type: "source-opt", Properties: rawJSON(`{"region":"us-east-1"}`)},
+					},
+					Components: []common.ApplicationComponent{
+						{
+							Name:       "web",
+							Type:       "webservice",
+							Properties: rawJSON(`{"vpcId":{"fromSource":"clusterInfo.vpcId"}}`),
+						},
+					},
+				},
+			},
+			expectedErrs:  1,
+			expectedField: "spec.components[0].properties.vpcId.fromSource",
+		},
+		{
+			name: "accept optional schema field consumed with default",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "clusterInfo", Type: "source-opt", Properties: rawJSON(`{"region":"us-east-1"}`)},
+					},
+					Components: []common.ApplicationComponent{
+						{
+							Name:       "web",
+							Type:       "webservice",
+							Properties: rawJSON(`{"vpcId":{"fromSource":{"name":"clusterInfo","path":"vpcId","default":""}}}`),
+						},
+					},
+				},
+			},
+			expectedErrs: 0,
+		},
+		{
+			name: "accept required schema field without default",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "clusterInfo", Type: "source-opt", Properties: rawJSON(`{"region":"us-east-1"}`)},
+					},
+					Components: []common.ApplicationComponent{
+						{
+							Name:       "web",
+							Type:       "webservice",
+							Properties: rawJSON(`{"region":{"fromSource":"clusterInfo.region"}}`),
+						},
+					},
+				},
+			},
+			expectedErrs: 0,
 		},
 		{
 			name: "reject duplicate source names",
