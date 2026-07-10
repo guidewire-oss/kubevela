@@ -32,7 +32,7 @@ template: {
 	parameter: {
 		// Addon name; defaults to the component name.
 		addon: *context.name | string
-		// Exact version or semver constraint; empty means latest.
+		// Exact version; empty means latest stable version.
 		version: *"" | string
 		// Registry name; empty means the configured default.
 		registry: *"" | string
