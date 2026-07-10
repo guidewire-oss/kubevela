@@ -494,4 +494,97 @@ parameter: {
 			return *deploy.Spec.Replicas, nil
 		}, 90*time.Second, time.Second).Should(Equal(int32(3)))
 	})
+
+	// Negative cases: verify the admission webhook is wired and rejects known-bad
+	// source usage at kubectl apply time, with an intelligible message. These
+	// complement the unit tests in pkg/webhook (which test the logic directly) by
+	// proving the deny path reaches the client end-to-end.
+	Context("rejects invalid source usage at admission", func() {
+		// A SourceDefinition with a required string field, an optional field, and
+		// an int parameter, used by the negative cases below.
+		applyTypedSource := func() {
+			sourceDef := &v1beta1.SourceDefinition{
+				ObjectMeta: metav1.ObjectMeta{Name: "typed-source", Namespace: namespaceName},
+				Spec: v1beta1.SourceDefinitionSpec{
+					Schematic: &oamcomm.Schematic{CUE: &oamcomm.CUE{Template: `
+schema: {
+  image:  string
+  vpcId?: string
+}
+output: {
+  image: parameter.image
+}
+parameter: {
+  image:    string
+  replicas: int
+}
+`}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sourceDef)).Should(Succeed())
+		}
+
+		newApp := func(name string, sources []v1beta1.ApplicationSource, comps []oamcomm.ApplicationComponent) *v1beta1.Application {
+			return &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespaceName},
+				Spec:       v1beta1.ApplicationSpec{Sources: sources, Components: comps},
+			}
+		}
+
+		It("denies a fromSource path not declared in the source schema", func() {
+			applyTypedSource()
+			app := newApp("bad-path", []v1beta1.ApplicationSource{
+				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1}`)}},
+			}, []oamcomm.ApplicationComponent{
+				{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":{"fromSource":"s.doesNotExist"},"port":80}`)}},
+			})
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("is not declared in schema of SourceDefinition"))
+		})
+
+		It("denies an optional schema field consumed without a default", func() {
+			applyTypedSource()
+			app := newApp("no-default", []v1beta1.ApplicationSource{
+				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1}`)}},
+			}, []oamcomm.ApplicationComponent{
+				{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":{"fromSource":"s.vpcId"},"port":80}`)}},
+			})
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("a default must be supplied via the fromSource map form"))
+		})
+
+		It("denies a forward source dependency", func() {
+			applyTypedSource()
+			// source at index 0 references a source declared at index 1.
+			app := newApp("forward-ref", []v1beta1.ApplicationSource{
+				{Name: "first", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":{"fromSource":"second.image"},"replicas":1}`)}},
+				{Name: "second", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1}`)}},
+			}, nil)
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("can only depend on prior sources"))
+		})
+
+		It("denies an undeclared source property", func() {
+			applyTypedSource()
+			app := newApp("unknown-prop", []v1beta1.ApplicationSource{
+				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1,"bogus":"x"}`)}},
+			}, nil)
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("is not declared in the parameter schema of SourceDefinition"))
+		})
+
+		It("denies a source property with an incompatible type", func() {
+			applyTypedSource()
+			app := newApp("bad-type", []v1beta1.ApplicationSource{
+				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":"three"}`)}},
+			}, nil)
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("type mismatch for parameter"))
+		})
+	})
 })

@@ -203,6 +203,27 @@ Caveat noted: WorkloadCompiler tries to load external CUE packages (network call
 to apiserver) during static compile; unreachable => logged, non-fatal, fail-open.
 Same compiler admission already uses, so no new dependency profile.
 
+### Negative-path e2e coverage (admission deny path)
+
+The source e2e suite was entirely happy-path (all Should(Succeed())). Added a
+`Context("rejects invalid source usage at admission")` with 5 focused negative
+cases asserting `HaveOccurred()` + `ContainSubstring(<stable message fragment>)`,
+following the existing requiredparam_validation_test.go pattern:
+1. fromSource path not in schema
+2. optional schema field consumed without default
+3. forward source dependency
+4. undeclared source property (Step A)
+5. incompatible source property type (Step A)
+
+Purpose: prove the webhook is WIRED and the deny path reaches the client
+end-to-end — the class of bug that unit tests structurally cannot catch (the
+earlier schematic-validation bug only surfaced via e2e). Logic per-branch stays
+unit-tested; e2e adds one representative each.
+
+Status: compiles (`go vet ./test/e2e-test` clean). NOT yet run against a live
+cluster — requires the user to rebuild+redeploy the image (this container cannot
+reach the k3d cluster). Marked unverified-against-live until the user runs it.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the
