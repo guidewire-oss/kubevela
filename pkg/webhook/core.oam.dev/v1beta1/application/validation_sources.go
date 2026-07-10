@@ -16,10 +16,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	upstreamcuex "github.com/kubevela/pkg/cue/cuex"
+
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	velacue "github.com/oam-dev/kubevela/pkg/cue"
+	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
 type fromSourceReference struct {
@@ -145,6 +151,87 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 	// SourceDefinition's parameter: block (unknown fields + type compatibility).
 	errs = append(errs, h.validateSourceInputs(ctx, app, sourceNameToType, schemaValidators)...)
 
+	// Target contract: each fromSource output field's type must be compatible
+	// with the consuming component/trait parameter it is substituted into.
+	errs = append(errs, h.validateFromSourceTargetTypes(ctx, app, sourceNameToType, schemaValidators)...)
+
+	return errs
+}
+
+// validateFromSourceTargetTypes type-checks each fromSource reference in
+// component and trait properties against the target parameter it feeds: the
+// source's schema output field kind must be compatible with the component/trait
+// parameter field kind at the same property path. Purely static (CUE AST); no
+// rendering. Best-effort per target: if the target parameter type cannot be
+// determined, the check is skipped for that target (fail open).
+func (h *ValidatingHandler) validateFromSourceTargetTypes(ctx context.Context, app *v1beta1.Application, sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) field.ErrorList {
+	var errs field.ErrorList
+	targetParams := map[string]*cueStruct{} // key: "component/<type>" or "trait/<type>"
+
+	load := func(kind, defType string) *cueStruct {
+		key := kind + "/" + defType
+		if pv, ok := targetParams[key]; ok {
+			return pv
+		}
+		pv, _ := h.loadTargetParameter(ctx, app.Namespace, kind, defType)
+		targetParams[key] = pv
+		return pv
+	}
+
+	check := func(leaves []inputLeaf, param *cueStruct, targetDesc string) {
+		if param == nil {
+			return
+		}
+		for _, lf := range leaves {
+			if lf.fromSrc == nil || lf.path == "" {
+				continue
+			}
+			dstKind, declared := param.kindAt(lf.path)
+			if !declared {
+				continue // consuming template may accept it via open struct; don't over-report
+			}
+			refName, refPath, _, err := parseFromSourceSelector(lf.fromSrc)
+			if err != nil {
+				continue
+			}
+			refType, ok := sourceNameToType[refName]
+			if !ok || refType == "" {
+				continue
+			}
+			sv := schemaValidators[refType]
+			if sv == nil {
+				var loadErr error
+				sv, loadErr = h.loadSourceSchemaValidator(ctx, app.Namespace, refType)
+				if loadErr != nil || sv == nil {
+					continue
+				}
+				schemaValidators[refType] = sv
+			}
+			srcKind, ok := sv.KindAt(refPath)
+			if !ok {
+				continue
+			}
+			if !kindsCompatible(srcKind, dstKind) {
+				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+					fmt.Sprintf("type mismatch: fromSource %q.%s is %s but %s expects %s",
+						refName, refPath, kindName(srcKind), targetDesc, kindName(dstKind))))
+			}
+		}
+	}
+
+	for i, comp := range app.Spec.Components {
+		if comp.Properties != nil && len(comp.Properties.Raw) > 0 {
+			base := field.NewPath("spec", "components").Index(i).Child("properties")
+			check(flattenLeafPaths(comp.Properties.Raw, base), load("component", comp.Type), fmt.Sprintf("component %q parameter", comp.Type))
+		}
+		for j, tr := range comp.Traits {
+			if tr.Properties == nil || len(tr.Properties.Raw) == 0 {
+				continue
+			}
+			base := field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties")
+			check(flattenLeafPaths(tr.Properties.Raw, base), load("trait", tr.Type), fmt.Sprintf("trait %q parameter", tr.Type))
+		}
+	}
 	return errs
 }
 
@@ -218,7 +305,6 @@ func flattenLeafPaths(raw []byte, basePath *field.Path) []inputLeaf {
 				return
 			}
 			for k, child := range v {
-				child := child
 				next := k
 				if dotted != "" {
 					next = dotted + "." + k
@@ -436,12 +522,6 @@ func (c *cueStruct) lookup(path string) (cue.Value, bool) {
 	return cur, true
 }
 
-// has reports whether path resolves to a declared field.
-func (c *cueStruct) has(path string) bool {
-	v, ok := c.lookup(path)
-	return ok && v.Exists()
-}
-
 // kindAt returns the declared CUE kind at path (e.g. StringKind, IntKind,
 // StructKind). Returns (BottomKind, false) if the path does not resolve.
 func (c *cueStruct) kindAt(path string) (cue.Kind, bool) {
@@ -521,6 +601,59 @@ func (h *ValidatingHandler) loadSourceParameter(ctx context.Context, appNamespac
 		return nil, nil
 	}
 	return &cueStruct{root: param}, nil
+}
+
+// loadTargetParameter returns a validator over the parameter: block of a
+// ComponentDefinition (kind "component") or TraitDefinition (kind "trait"),
+// used to type-check fromSource-fed values against the consuming parameter.
+// This is best-effort: any failure (definition not found, template does not
+// compile statically, no parameter block) yields (nil, nil) so validation
+// fails open rather than blocking a legitimate apply.
+func (h *ValidatingHandler) loadTargetParameter(ctx context.Context, appNamespace, kind, defName string) (*cueStruct, error) {
+	tmpl, ok := h.getDefinitionTemplate(ctx, appNamespace, kind, defName)
+	if !ok || strings.TrimSpace(tmpl) == "" {
+		return nil, nil
+	}
+	// Compile statically with provider imports available but provider functions
+	// disabled (we only need declared types, no rendering / I/O).
+	val, err := velacuex.WorkloadCompiler.Get().CompileStringWithOptions(
+		ctx, tmpl+velacue.BaseTemplate, upstreamcuex.DisableResolveProviderFunctions{})
+	if err != nil || val.Err() != nil {
+		klog.V(4).Infof("skip target parameter type check for %s %q: template did not compile statically", kind, defName)
+		return nil, nil
+	}
+	param := val.LookupPath(cue.ParsePath("parameter"))
+	if !param.Exists() {
+		return nil, nil
+	}
+	return &cueStruct{root: param}, nil
+}
+
+// getDefinitionTemplate fetches a Component/Trait definition (app namespace with
+// system-namespace fallback) and returns its CUE template string.
+func (h *ValidatingHandler) getDefinitionTemplate(ctx context.Context, appNamespace, kind, defName string) (string, bool) {
+	lookupCtx := oamutil.SetNamespaceInCtx(ctx, appNamespace)
+	switch kind {
+	case "component":
+		def := &v1beta1.ComponentDefinition{}
+		if err := oamutil.GetDefinition(lookupCtx, h.Client, def, defName); err != nil {
+			return "", false
+		}
+		if def.Spec.Schematic == nil || def.Spec.Schematic.CUE == nil {
+			return "", false
+		}
+		return def.Spec.Schematic.CUE.Template, true
+	case "trait":
+		def := &v1beta1.TraitDefinition{}
+		if err := oamutil.GetDefinition(lookupCtx, h.Client, def, defName); err != nil {
+			return "", false
+		}
+		if def.Spec.Schematic == nil || def.Spec.Schematic.CUE == nil {
+			return "", false
+		}
+		return def.Spec.Schematic.CUE.Template, true
+	}
+	return "", false
 }
 
 func (h *ValidatingHandler) getSourceDefinition(ctx context.Context, appNamespace, sourceType string) (*v1beta1.SourceDefinition, error) {

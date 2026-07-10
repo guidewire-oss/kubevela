@@ -181,7 +181,27 @@ Step A (source properties -> source parameter: block), all in validation_sources
 - Tests: `TestValidateSourceInputs` (6 cases). Existing `TestValidateSources`
   still green (open param blocks, matching types).
 
-TODO: Step B - component/trait target parameter type check for fromSource output.
+### Input-contract validation — Step B DONE (component/trait target types)
+
+`validateFromSourceTargetTypes`: for each fromSource in a component/trait's
+properties, the source's schema OUTPUT field kind must be compatible with the
+consuming component/trait PARAMETER field kind at the same property path.
+- `loadTargetParameter(ctx, ns, kind, defType)` fetches the Component/Trait
+  definition (oamutil.GetDefinition, ns fallback), compiles the template with
+  `WorkloadCompiler.CompileStringWithOptions(..., DisableResolveProviderFunctions{})`
+  + BaseTemplate (static, no rendering/I/O), and returns the `parameter:` block
+  as a cueStruct. FAIL-OPEN: any failure (def missing, template won't compile
+  statically, no parameter block) -> nil -> check skipped for that target.
+- kind-compatibility reused from Step A (`kindsCompatible`, `KindAt`).
+- Schema-less sources skip the check (no output type known) — this is why the
+  e2e trait test (scale-source has no schema:) is not falsely flagged.
+- Tests: `TestValidateFromSourceTargetTypes` (4: string->string ok, string->int
+  component fail, int->int trait ok, string->int trait fail). Full webhook suite
+  green (excluding etcd TestAPIs).
+
+Caveat noted: WorkloadCompiler tries to load external CUE packages (network call
+to apiserver) during static compile; unreachable => logged, non-fatal, fail-open.
+Same compiler admission already uses, so no new dependency profile.
 
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77

@@ -418,3 +418,126 @@ output: {
 		})
 	}
 }
+
+// TestValidateFromSourceTargetTypes covers the target contract: a fromSource
+// output field type must be compatible with the consuming component/trait
+// parameter type.
+func TestValidateFromSourceTargetTypes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1beta1.AddToScheme(scheme)
+
+	srcStr := &v1beta1.SourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "str-source", Namespace: "default"},
+		Spec: v1beta1.SourceDefinitionSpec{Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {
+  image: string
+  count: int
+}
+output: {
+  image: "nginx"
+  count: 3
+}
+parameter: {}
+`}}},
+	}
+	compDef := &v1beta1.ComponentDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "webservice", Namespace: "default"},
+		Spec: v1beta1.ComponentDefinitionSpec{Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+output: {}
+parameter: {
+  image:    string
+  replicas: int
+}
+`}}},
+	}
+	traitDef := &v1beta1.TraitDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "scaler", Namespace: "default"},
+		Spec: v1beta1.TraitDefinitionSpec{Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+outputs: {}
+parameter: {
+  replicas: int
+}
+`}}},
+	}
+	defs := []runtime.Object{srcStr, compDef, traitDef}
+
+	tests := []struct {
+		name         string
+		app          *v1beta1.Application
+		expectedErrs int
+	}{
+		{
+			name: "compatible: string schema into string param",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{{Name: "s", Type: "str-source", Properties: rawJSON(`{}`)}},
+					Components: []common.ApplicationComponent{{
+						Name: "web", Type: "webservice",
+						Properties: rawJSON(`{"image":{"fromSource":"s.image"}}`),
+					}},
+				},
+			},
+			expectedErrs: 0,
+		},
+		{
+			name: "incompatible: string schema into int component param",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{{Name: "s", Type: "str-source", Properties: rawJSON(`{}`)}},
+					Components: []common.ApplicationComponent{{
+						Name: "web", Type: "webservice",
+						Properties: rawJSON(`{"replicas":{"fromSource":"s.image"}}`),
+					}},
+				},
+			},
+			expectedErrs: 1,
+		},
+		{
+			name: "compatible: int schema into int trait param",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{{Name: "s", Type: "str-source", Properties: rawJSON(`{}`)}},
+					Components: []common.ApplicationComponent{{
+						Name: "web", Type: "webservice",
+						Properties: rawJSON(`{"image":"nginx"}`),
+						Traits: []common.ApplicationTrait{{
+							Type:       "scaler",
+							Properties: rawJSON(`{"replicas":{"fromSource":"s.count"}}`),
+						}},
+					}},
+				},
+			},
+			expectedErrs: 0,
+		},
+		{
+			name: "incompatible: string schema into int trait param",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{{Name: "s", Type: "str-source", Properties: rawJSON(`{}`)}},
+					Components: []common.ApplicationComponent{{
+						Name: "web", Type: "webservice",
+						Properties: rawJSON(`{"image":"nginx"}`),
+						Traits: []common.ApplicationTrait{{
+							Type:       "scaler",
+							Properties: rawJSON(`{"replicas":{"fromSource":"s.image"}}`),
+						}},
+					}},
+				},
+			},
+			expectedErrs: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cli := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(defs...).Build()
+			handler := &ValidatingHandler{Client: cli}
+			errs := handler.ValidateSources(context.Background(), tt.app)
+			assert.Len(t, errs, tt.expectedErrs, "errors: %v", errs)
+		})
+	}
+}
