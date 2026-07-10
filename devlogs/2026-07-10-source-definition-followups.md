@@ -159,6 +159,30 @@ missing skip) + nil-inputs. Pass.
 - [x] Live ConfigTemplateRef lookup for cache label (run 3)
 - [ ] User: rebuild image + redeploy, re-run e2e to confirm all 4 specs green
 
+### Input-contract validation (CUE-AST) — Step A DONE
+
+User: comparing source properties against the definition's parameter: schema is
+essential; use CUE AST to check input type compatibility. Scope agreed:
+per-field errors (not raw CUE errors); reject unknown fields; extend to
+component/trait targets too (Step B).
+
+Step A (source properties -> source parameter: block), all in validation_sources.go:
+- `extractTopLevelBlock(template, name)` generalises schema extraction; new
+  `loadSourceParameter` compiles the parameter: block to a `cueStruct`.
+- `cueStruct` (lookup/has/kindAt) + `sourceSchemaValidator.KindAt` expose the
+  declared CUE kind at a dotted path (optional-aware).
+- `kindsCompatible` = kind-intersection (int<:number), permissive on constraints
+  to avoid false positives, still catches string-vs-int. `kindName` for messages.
+- `validateSourceInputs`: per source, flatten properties to leaf paths
+  (`flattenLeafPaths`), and `checkInputLeaf` each: undeclared field -> per-field
+  error; type mismatch -> per-field error. Literals use `jsonKind`; fromSource
+  leaves take the referenced source schema output field's kind (chained type
+  check WITHOUT resolving). Parameterless definition + any property -> error.
+- Tests: `TestValidateSourceInputs` (6 cases). Existing `TestValidateSources`
+  still green (open param blocks, matching types).
+
+TODO: Step B - component/trait target parameter type check for fromSource output.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

@@ -141,6 +141,169 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 		}
 	}
 
+	// Input contract: validate each source's properties against that
+	// SourceDefinition's parameter: block (unknown fields + type compatibility).
+	errs = append(errs, h.validateSourceInputs(ctx, app, sourceNameToType, schemaValidators)...)
+
+	return errs
+}
+
+// validateSourceInputs checks that every source binding's properties conform to
+// the referenced SourceDefinition's parameter: block: no undeclared fields, and
+// each provided value's type is compatible with the declared parameter type.
+// Values fed by fromSource take their type from the referenced source's schema:
+// output field, so a chained value's type is checked without resolving it.
+func (h *ValidatingHandler) validateSourceInputs(ctx context.Context, app *v1beta1.Application, sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) field.ErrorList {
+	var errs field.ErrorList
+	paramValidators := map[string]*cueStruct{}
+	for i, src := range app.Spec.Sources {
+		if src.Type == "" || src.Properties == nil || len(src.Properties.Raw) == 0 {
+			continue
+		}
+		basePath := field.NewPath("spec", "sources").Index(i).Child("properties")
+		pv, cached := paramValidators[src.Type]
+		if !cached {
+			var err error
+			pv, err = h.loadSourceParameter(ctx, app.Namespace, src.Type)
+			if err != nil {
+				errs = append(errs, field.Invalid(basePath, src.Type, fmt.Sprintf("failed to load SourceDefinition %q parameter schema: %v", src.Type, err)))
+				paramValidators[src.Type] = nil
+				continue
+			}
+			paramValidators[src.Type] = pv
+		}
+		if pv == nil {
+			// Definition declares no parameter block; any provided property is
+			// undeclared. Only flag when properties are actually supplied.
+			leaves := flattenLeafPaths(src.Properties.Raw, basePath)
+			for _, lf := range leaves {
+				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+					fmt.Sprintf("SourceDefinition %q declares no parameters, but property %q was supplied", src.Type, lf.path)))
+			}
+			continue
+		}
+		for _, lf := range flattenLeafPaths(src.Properties.Raw, basePath) {
+			errs = append(errs, h.checkInputLeaf(lf, pv, src.Type, sourceNameToType, schemaValidators, ctx, app.Namespace)...)
+		}
+	}
+	return errs
+}
+
+// inputLeaf is a single scalar or fromSource value within a source's
+// properties, addressed by its dotted path relative to the parameter block.
+type inputLeaf struct {
+	path      string     // dotted path into the parameter block, e.g. "region"
+	fieldPath *field.Path // full field path for error reporting
+	literal   interface{} // the scalar value, when not a fromSource
+	fromSrc   interface{} // the fromSource selector, when present
+}
+
+// flattenLeafPaths walks a properties JSON blob and returns one inputLeaf per
+// scalar or fromSource node, keyed by dotted path. A fromSource node is treated
+// as a leaf (its name/path/default are not recursed into). Array elements are
+// addressed by index. Returns nothing on unparseable input (the fromSource
+// collection pass already reports JSON errors).
+func flattenLeafPaths(raw []byte, basePath *field.Path) []inputLeaf {
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil
+	}
+	var out []inputLeaf
+	var walk func(node interface{}, dotted string, fp *field.Path)
+	walk = func(node interface{}, dotted string, fp *field.Path) {
+		switch v := node.(type) {
+		case map[string]interface{}:
+			if sel, ok := v["fromSource"]; ok {
+				out = append(out, inputLeaf{path: dotted, fieldPath: fp.Child("fromSource"), fromSrc: sel})
+				return
+			}
+			for k, child := range v {
+				child := child
+				next := k
+				if dotted != "" {
+					next = dotted + "." + k
+				}
+				walk(child, next, fp.Child(k))
+			}
+		case []interface{}:
+			for idx, child := range v {
+				walk(child, fmt.Sprintf("%s.%d", dotted, idx), fp.Index(idx))
+			}
+		default:
+			out = append(out, inputLeaf{path: dotted, fieldPath: fp, literal: node})
+		}
+	}
+	walk(decoded, "", basePath)
+	return out
+}
+
+// jsonKind maps a decoded JSON scalar to the CUE kind it would satisfy.
+func jsonKind(v interface{}) cue.Kind {
+	switch n := v.(type) {
+	case string:
+		return cue.StringKind
+	case bool:
+		return cue.BoolKind
+	case float64:
+		// JSON numbers decode to float64; treat integral values as int-compatible.
+		if n == float64(int64(n)) {
+			return cue.IntKind
+		}
+		return cue.NumberKind
+	case nil:
+		return cue.NullKind
+	}
+	return cue.BottomKind
+}
+
+// checkInputLeaf validates one properties leaf against the target parameter
+// block: the field must be declared, and its type must be compatible with the
+// declared parameter type. fromSource-fed leaves take their type from the
+// referenced source's schema output field.
+func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourceType string, sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator, ctx context.Context, appNamespace string) field.ErrorList {
+	var errs field.ErrorList
+	if lf.path == "" {
+		return errs
+	}
+	dstKind, declared := param.kindAt(lf.path)
+	if !declared {
+		errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+			fmt.Sprintf("property %q is not declared in the parameter schema of SourceDefinition %q", lf.path, sourceType)))
+		return errs
+	}
+	// Determine the incoming value's type.
+	var srcKind cue.Kind
+	if lf.fromSrc != nil {
+		refName, refPath, _, err := parseFromSourceSelector(lf.fromSrc)
+		if err != nil {
+			return errs // the collection pass already reported this
+		}
+		refType, ok := sourceNameToType[refName]
+		if !ok || refType == "" {
+			return errs // unknown source already reported by the ref pass
+		}
+		sv := schemaValidators[refType]
+		if sv == nil {
+			var loadErr error
+			sv, loadErr = h.loadSourceSchemaValidator(ctx, appNamespace, refType)
+			if loadErr != nil || sv == nil {
+				return errs
+			}
+			schemaValidators[refType] = sv
+		}
+		k, ok := sv.KindAt(refPath)
+		if !ok {
+			return errs // path-not-in-schema already reported by the ref pass
+		}
+		srcKind = k
+	} else {
+		srcKind = jsonKind(lf.literal)
+	}
+	if !kindsCompatible(srcKind, dstKind) {
+		errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+			fmt.Sprintf("type mismatch for parameter %q of SourceDefinition %q: expected %s, got %s",
+				lf.path, sourceType, kindName(dstKind), kindName(srcKind))))
+	}
 	return errs
 }
 
@@ -238,6 +401,128 @@ func (h *ValidatingHandler) loadSourceSchemaValidator(ctx context.Context, appNa
 	return &sourceSchemaValidator{schema: schema}, nil
 }
 
+// cueStruct wraps a struct cue.Value with dotted-path lookup helpers. It backs
+// both the source schema (output contract) and the source/target parameter
+// (input contract) validators; the path/type helpers are identical for both.
+type cueStruct struct {
+	root cue.Value
+}
+
+// lookup walks a dotted path through the struct, resolving optional fields the
+// same way sourceSchemaValidator does.
+func (c *cueStruct) lookup(path string) (cue.Value, bool) {
+	cur := c.root
+	for _, seg := range strings.Split(path, ".") {
+		if seg == "" {
+			return cur, false
+		}
+		if idx, err := strconv.Atoi(seg); err == nil {
+			cur = cur.LookupPath(cue.MakePath(cue.Index(idx)))
+			if !cur.Exists() {
+				return cur, false
+			}
+			continue
+		}
+		next := cur.LookupPath(cue.MakePath(cue.Str(seg)))
+		if !next.Exists() {
+			if opt, ok := lookupOptionalField(cur, seg); ok {
+				cur = opt
+				continue
+			}
+			return next, false
+		}
+		cur = next
+	}
+	return cur, true
+}
+
+// has reports whether path resolves to a declared field.
+func (c *cueStruct) has(path string) bool {
+	v, ok := c.lookup(path)
+	return ok && v.Exists()
+}
+
+// kindAt returns the declared CUE kind at path (e.g. StringKind, IntKind,
+// StructKind). Returns (BottomKind, false) if the path does not resolve.
+func (c *cueStruct) kindAt(path string) (cue.Kind, bool) {
+	v, ok := c.lookup(path)
+	if !ok || !v.Exists() {
+		return cue.BottomKind, false
+	}
+	return v.IncompleteKind(), true
+}
+
+// kindName renders a CUE kind for user-facing error messages.
+func kindName(k cue.Kind) string {
+	switch k {
+	case cue.StringKind:
+		return "string"
+	case cue.IntKind:
+		return "int"
+	case cue.NumberKind, cue.FloatKind:
+		return "number"
+	case cue.BoolKind:
+		return "bool"
+	case cue.StructKind:
+		return "object"
+	case cue.ListKind:
+		return "list"
+	case cue.NullKind:
+		return "null"
+	}
+	return k.String()
+}
+
+// kindsCompatible reports whether a value of kind src can satisfy a target of
+// kind dst. Compatibility is by kind intersection, which is permissive enough
+// to avoid false positives from value-level constraints (enums, bounds) while
+// still catching genuine mismatches such as string into int. int is accepted
+// where number is expected.
+func kindsCompatible(src, dst cue.Kind) bool {
+	if src == cue.BottomKind || dst == cue.BottomKind {
+		return true // unknown on either side: do not block
+	}
+	if src&dst != 0 {
+		return true
+	}
+	// int is a subset of number/float.
+	if src == cue.IntKind && dst&(cue.NumberKind|cue.FloatKind) != 0 {
+		return true
+	}
+	if dst == cue.IntKind && src&(cue.NumberKind|cue.FloatKind) != 0 {
+		return true
+	}
+	return false
+}
+
+// loadSourceParameter returns a validator over the SourceDefinition's top-level
+// parameter: block, or nil if the definition declares no parameter block.
+func (h *ValidatingHandler) loadSourceParameter(ctx context.Context, appNamespace, sourceType string) (*cueStruct, error) {
+	def, err := h.getSourceDefinition(ctx, appNamespace, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	if def.Spec.Schematic == nil || def.Spec.Schematic.CUE == nil {
+		return nil, nil
+	}
+	paramExpr, err := extractTopLevelBlock(def.Spec.Schematic.CUE.Template, "parameter")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(paramExpr) == "" {
+		return nil, nil
+	}
+	v := cuecontext.New().CompileString("parameter: " + paramExpr)
+	if v.Err() != nil {
+		return nil, v.Err()
+	}
+	param := v.LookupPath(cue.ParsePath("parameter"))
+	if !param.Exists() {
+		return nil, nil
+	}
+	return &cueStruct{root: param}, nil
+}
+
 func (h *ValidatingHandler) getSourceDefinition(ctx context.Context, appNamespace, sourceType string) (*v1beta1.SourceDefinition, error) {
 	def := &v1beta1.SourceDefinition{}
 	if err := h.Client.Get(ctx, client.ObjectKey{Namespace: appNamespace, Name: sourceType}, def); err == nil {
@@ -258,6 +543,15 @@ func (h *ValidatingHandler) getSourceDefinition(ctx context.Context, appNamespac
 func (v *sourceSchemaValidator) HasPath(path string) bool {
 	cur, ok := v.lookup(path)
 	return ok && cur.Exists()
+}
+
+// KindAt returns the declared CUE kind of the schema output field at path.
+func (v *sourceSchemaValidator) KindAt(path string) (cue.Kind, bool) {
+	cur, ok := v.lookup(path)
+	if !ok || !cur.Exists() {
+		return cue.BottomKind, false
+	}
+	return cur.IncompleteKind(), true
 }
 
 // IsOptionalPath reports whether the final segment of path is declared optional
@@ -347,6 +641,13 @@ func lookupOptionalField(parent cue.Value, label string) (cue.Value, bool) {
 }
 
 func extractSourceSchemaExprForAdmission(template string) (string, error) {
+	return extractTopLevelBlock(template, "schema")
+}
+
+// extractTopLevelBlock returns the CUE source of the top-level field named
+// blockName (e.g. "schema" or "parameter") from a SourceDefinition template, or
+// "" if absent. Static parse only; no evaluation.
+func extractTopLevelBlock(template, blockName string) (string, error) {
 	file, err := cueparser.ParseFile("-", template, cueparser.ParseComments)
 	if err != nil {
 		return "", err
@@ -357,7 +658,7 @@ func extractSourceSchemaExprForAdmission(template string) (string, error) {
 			continue
 		}
 		name, _, err := ast.LabelName(field.Label)
-		if err != nil || name != "schema" {
+		if err != nil || name != blockName {
 			continue
 		}
 		bt, err := cueformat.Node(field.Value)

@@ -271,3 +271,150 @@ parameter: {
 func rawJSON(s string) *runtime.RawExtension {
 	return &runtime.RawExtension{Raw: []byte(s)}
 }
+
+// TestValidateSourceInputs covers the input contract: source properties must
+// conform to the referenced SourceDefinition's parameter: block.
+func TestValidateSourceInputs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1beta1.AddToScheme(scheme)
+
+	defs := []runtime.Object{
+		// param: image is string; also an int field for type tests
+		&v1beta1.SourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: "typed-source", Namespace: "default"},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {
+  image: string
+}
+output: {
+  image: parameter.image
+}
+parameter: {
+  image:    string
+  replicas: int
+}
+`}},
+			},
+		},
+		// upstream source whose schema output "region" is a string
+		&v1beta1.SourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: "region-source", Namespace: "default"},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {
+  region: string
+}
+output: {
+  region: "us-east-1"
+}
+parameter: {}
+`}},
+			},
+		},
+		// source that declares no parameter block
+		&v1beta1.SourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: "noparam-source", Namespace: "default"},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {
+  value: string
+}
+output: {
+  value: "x"
+}
+`}},
+			},
+		},
+	}
+
+	tests := []struct {
+		name         string
+		app          *v1beta1.Application
+		expectedErrs int
+	}{
+		{
+			name: "valid literal properties",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "s", Type: "typed-source", Properties: rawJSON(`{"image":"nginx:1.25","replicas":3}`)},
+					},
+				},
+			},
+			expectedErrs: 0,
+		},
+		{
+			name: "reject unknown property field",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "s", Type: "typed-source", Properties: rawJSON(`{"image":"nginx","bogus":"x"}`)},
+					},
+				},
+			},
+			expectedErrs: 1,
+		},
+		{
+			name: "reject type mismatch: string into int param",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "s", Type: "typed-source", Properties: rawJSON(`{"image":"nginx","replicas":"three"}`)},
+					},
+				},
+			},
+			expectedErrs: 1,
+		},
+		{
+			name: "valid fromSource-fed property type",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "up", Type: "region-source", Properties: rawJSON(`{}`)},
+						{Name: "s", Type: "typed-source", Properties: rawJSON(`{"image":{"fromSource":"up.region"},"replicas":1}`)},
+					},
+				},
+			},
+			expectedErrs: 0,
+		},
+		{
+			name: "reject fromSource-fed type mismatch: string schema into int param",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "up", Type: "region-source", Properties: rawJSON(`{}`)},
+						{Name: "s", Type: "typed-source", Properties: rawJSON(`{"image":"nginx","replicas":{"fromSource":"up.region"}}`)},
+					},
+				},
+			},
+			expectedErrs: 1,
+		},
+		{
+			name: "reject property supplied to parameterless definition",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{
+						{Name: "s", Type: "noparam-source", Properties: rawJSON(`{"unexpected":"x"}`)},
+					},
+				},
+			},
+			expectedErrs: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cli := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(defs...).Build()
+			handler := &ValidatingHandler{Client: cli}
+			errs := handler.ValidateSources(context.Background(), tt.app)
+			assert.Len(t, errs, tt.expectedErrs, "errors: %v", errs)
+		})
+	}
+}
