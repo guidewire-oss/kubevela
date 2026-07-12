@@ -32,6 +32,8 @@ import (
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
+var cmGVK = schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}
+
 func compWithConsumed(consumed map[string]map[string]interface{}) *appfile.Component {
 	comp := &appfile.Component{Name: "web"}
 	comp.Ctx = appfile.NewBasicContext(velaprocess.ContextData{
@@ -49,63 +51,96 @@ func compWithConsumed(consumed map[string]map[string]interface{}) *appfile.Compo
 	return comp
 }
 
-func TestResolvedSourceHash(t *testing.T) {
+func TestResolvedSourceHashes(t *testing.T) {
 	t.Run("no source context -> not consumed", func(t *testing.T) {
-		_, ok := resolvedSourceHash(&appfile.Component{Name: "web"})
+		_, ok := resolvedSourceHashes(&appfile.Component{Name: "web"})
 		assert.False(t, ok)
 	})
 
 	t.Run("statuses present but nothing consumed -> not consumed", func(t *testing.T) {
-		comp := compWithConsumed(map[string]map[string]interface{}{"rng": {}})
-		_, ok := resolvedSourceHash(comp)
+		_, ok := resolvedSourceHashes(compWithConsumed(map[string]map[string]interface{}{"rng": {}}))
 		assert.False(t, ok)
 	})
 
-	t.Run("consumed values produce a stable hash", func(t *testing.T) {
-		comp := compWithConsumed(map[string]map[string]interface{}{"rng": {"value": 3}})
-		h1, ok := resolvedSourceHash(comp)
+	t.Run("per-source hashes are stable and value-sensitive", func(t *testing.T) {
+		h1, ok := resolvedSourceHashes(compWithConsumed(map[string]map[string]interface{}{
+			"rng": {"value": 3}, "tenant": {"name": "acme"},
+		}))
 		assert.True(t, ok)
-		assert.NotEmpty(t, h1)
-		// Same input -> same hash.
-		h2, _ := resolvedSourceHash(compWithConsumed(map[string]map[string]interface{}{"rng": {"value": 3}}))
+		assert.Len(t, h1, 2)
+
+		// Same inputs -> identical per-source hashes.
+		h2, _ := resolvedSourceHashes(compWithConsumed(map[string]map[string]interface{}{
+			"rng": {"value": 3}, "tenant": {"name": "acme"},
+		}))
 		assert.Equal(t, h1, h2)
-	})
 
-	t.Run("different resolved value -> different hash", func(t *testing.T) {
-		h3, _ := resolvedSourceHash(compWithConsumed(map[string]map[string]interface{}{"rng": {"value": 3}}))
-		h4, _ := resolvedSourceHash(compWithConsumed(map[string]map[string]interface{}{"rng": {"value": 4}}))
-		assert.NotEqual(t, h3, h4, "a re-resolved value must change the hash")
+		// Change only rng -> only rng's hash changes.
+		h3, _ := resolvedSourceHashes(compWithConsumed(map[string]map[string]interface{}{
+			"rng": {"value": 4}, "tenant": {"name": "acme"},
+		}))
+		assert.NotEqual(t, h1["rng"], h3["rng"])
+		assert.Equal(t, h1["tenant"], h3["tenant"])
 	})
 }
 
-func TestStampResolvedSourceHash(t *testing.T) {
+func TestChangedSources(t *testing.T) {
+	current := map[string]string{"rng": "a", "tenant": "b"}
+	assert.ElementsMatch(t, []string{}, changedSources(current, map[string]string{"rng": "a", "tenant": "b"}))
+	assert.ElementsMatch(t, []string{"rng"}, changedSources(current, map[string]string{"rng": "x", "tenant": "b"}))
+	// Missing from live (first apply / new source) counts as changed.
+	assert.ElementsMatch(t, []string{"rng", "tenant"}, changedSources(current, nil))
+}
+
+func TestSourceAutoUpdateSelector(t *testing.T) {
+	all := func(m map[string]string) bool { a, _, e := sourceAutoUpdateSelector(m); return a && e }
+	off := func(m map[string]string) bool { _, _, e := sourceAutoUpdateSelector(m); return !e }
+
+	assert.True(t, off(map[string]string{}), "no annotations -> disabled")
+	assert.True(t, all(map[string]string{oam.AnnotationAutoUpdate: "true"}), "autoUpdate enables all")
+	assert.True(t, all(map[string]string{oam.AnnotationAutoUpdateSources: "true"}))
+	assert.True(t, all(map[string]string{oam.AnnotationAutoUpdateSources: "*"}))
+	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: ""}), "empty -> disabled")
+	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: " , "}), "only separators -> disabled")
+
+	matchAll, set, enabled := sourceAutoUpdateSelector(map[string]string{oam.AnnotationAutoUpdateSources: "rng, tenant"})
+	assert.True(t, enabled)
+	assert.False(t, matchAll)
+	assert.Contains(t, set, "rng")
+	assert.Contains(t, set, "tenant")
+	assert.NotContains(t, set, "cluster")
+}
+
+func TestStampAndLiveResolvedSourceHashes(t *testing.T) {
 	wl := &unstructured.Unstructured{}
-	wl.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-	stampResolvedSourceHash(wl, "abc123")
-	assert.Equal(t, "abc123", wl.GetAnnotations()[oam.AnnotationSourceResolvedHash])
+	wl.SetGroupVersionKind(cmGVK)
+	wl.SetNamespace("default")
+	wl.SetName("web")
+	stampResolvedSourceHashes(wl, map[string]string{"rng": "aaa", "tenant": "bbb"})
+	assert.NotEmpty(t, wl.GetAnnotations()[oam.AnnotationSourceResolvedHash])
 
-	// nil / empty hash is a no-op (no panic, no annotation).
-	stampResolvedSourceHash(nil, "x")
+	// no-op cases
+	stampResolvedSourceHashes(nil, map[string]string{"x": "y"})
 	wl2 := &unstructured.Unstructured{}
-	stampResolvedSourceHash(wl2, "")
+	stampResolvedSourceHashes(wl2, nil)
 	assert.Empty(t, wl2.GetAnnotations()[oam.AnnotationSourceResolvedHash])
-}
 
-func TestLiveResolvedSourceHash(t *testing.T) {
-	desired := &unstructured.Unstructured{}
-	desired.SetGroupVersionKind(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"})
-	desired.SetNamespace("default")
-	desired.SetName("web")
-
-	t.Run("absent workload -> empty (treated as changed)", func(t *testing.T) {
-		cli := fake.NewClientBuilder().Build()
-		assert.Equal(t, "", liveResolvedSourceHash(context.Background(), cli, "", desired))
+	t.Run("live read round-trips the stamped map", func(t *testing.T) {
+		cli := fake.NewClientBuilder().WithObjects(wl.DeepCopy()).Build()
+		desired := &unstructured.Unstructured{}
+		desired.SetGroupVersionKind(cmGVK)
+		desired.SetNamespace("default")
+		desired.SetName("web")
+		got := liveResolvedSourceHashes(context.Background(), cli, "", desired)
+		assert.Equal(t, map[string]string{"rng": "aaa", "tenant": "bbb"}, got)
 	})
 
-	t.Run("reads the stamped annotation from the live object", func(t *testing.T) {
-		live := desired.DeepCopy()
-		live.SetAnnotations(map[string]string{oam.AnnotationSourceResolvedHash: "deadbeef"})
-		cli := fake.NewClientBuilder().WithObjects(live).Build()
-		assert.Equal(t, "deadbeef", liveResolvedSourceHash(context.Background(), cli, "", desired))
+	t.Run("absent workload -> nil (everything counts as changed)", func(t *testing.T) {
+		cli := fake.NewClientBuilder().Build()
+		desired := &unstructured.Unstructured{}
+		desired.SetGroupVersionKind(cmGVK)
+		desired.SetNamespace("default")
+		desired.SetName("missing")
+		assert.Nil(t, liveResolvedSourceHashes(context.Background(), cli, "", desired))
 	})
 }

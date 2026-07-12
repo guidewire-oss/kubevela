@@ -343,23 +343,32 @@ path + tests.
 Also note: even with autoUpdate, cadence is gated by the reconcile resync (5m
 default) and the storageTTL + ~30s LRU floor.
 
-FIXED (this pass): change detection is now fromSource-aware.
-- New oam.AnnotationSourceResolvedHash = "source.oam.dev/resolved-hash".
-- dispatcher.go: resolvedSourceHash(comp) hashes the consumed fromSource values
-  read from comp.Ctx[SourceResolutionStatus].ConsumedFields (populated by
-  Complete() during render, which runs before the dispatch gate -- confirmed via
-  applyComponentFunc: prepareWorkloadAndManifests renders the SAME wl passed to
-  dispatcher.run). stampResolvedSourceHash writes the hash onto the workload
-  manifest before Dispatch; liveResolvedSourceHash reads it back from the live
-  object (multicluster-aware). Gate adds sourceValuesChanged =
-  hash != liveHash, OR'd into requiresDispatch.
-- Correct + stable: no over-dispatch (only re-dispatches when the resolved value
-  actually changes), unlike the always-dispatch autoUpdate workaround.
-- Only active under the MultiStageComponentApply feature gate (the gate-off path
+FIXED (this pass): change detection is now fromSource-aware, OPT-IN and per-source.
+- New oam.AnnotationSourceResolvedHash = "source.oam.dev/resolved-hash" (stores a
+  JSON map source-name -> hash) and oam.AnnotationAutoUpdateSources =
+  "app.oam.dev/autoUpdateSources".
+- Opt-in: source-change re-dispatch fires only when autoUpdate=="true" OR
+  autoUpdateSources is present. autoUpdateSources values: "true"/"*" = any
+  consumed source; comma-list of source names = only those; absent/empty = off.
+  (sourceAutoUpdateSelector parses this into matchAll/set/enabled.)
+- Per-source: resolvedSourceHashes(comp) hashes each consumed source's
+  ConsumedFields separately (read from comp.Ctx[SourceResolutionStatus],
+  populated by Complete() before the dispatch gate -- confirmed via
+  applyComponentFunc rendering the SAME wl passed to dispatcher.run).
+  changedSources() diffs current vs the map read back from the live workload
+  (liveResolvedSourceHashes); a source missing from live counts as changed.
+  stampResolvedSourceHashes writes the JSON map before Dispatch.
+- Gate: sourceValuesChanged = any CHANGED source that is also SELECTED (matchAll
+  or in set), OR'd into requiresDispatch. Stable (no over-dispatch). The hash is
+  stamped whenever the component consumes sources so a baseline exists even
+  before opt-in.
+- Only active under the MultiStageComponentApply feature gate (gate-off path
   dispatches unconditionally anyway).
-- Demo: removed the autoUpdate annotation from random-deployment; updated README.
-- Tests: source_hash_test.go (plain Go, no envtest): stable hash, value-change
-  -> hash-change, stamp, live-read via fake client. All pass.
+- Demo: random-deployment carries app.oam.dev/autoUpdateSources: "true"; README
+  documents the values.
+- Tests: source_hash_test.go (plain Go, no envtest): per-source stable +
+  value-sensitive hashes, changedSources, selector grammar (true/*/list/empty),
+  stamp + live round-trip. All pass.
 
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77

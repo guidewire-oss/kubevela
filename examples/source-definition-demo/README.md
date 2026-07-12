@@ -177,11 +177,15 @@ kubectl get deploy -n source-demo -l example.com/tenant=acme \
   vela config delete get-random-1-5
   ```
 
-- **Re-resolved values are picked up automatically.** When a source re-resolves
-  to a new value, the component is re-dispatched even though its raw spec is
-  unchanged: the controller stamps a hash of the consumed `fromSource` values on
-  the workload (`source.oam.dev/resolved-hash`) and re-dispatches when the newly
-  resolved hash differs from the live one. No `autoUpdate` annotation is needed.
+- **Re-resolved values are picked up (opt-in).** The app sets
+  `app.oam.dev/autoUpdateSources: "true"`. With it, when a source re-resolves to
+  a new value the component is re-dispatched even though its raw spec is
+  unchanged: the controller stamps per-source hashes of the consumed values on
+  the workload (`source.oam.dev/resolved-hash`) and re-dispatches when a selected
+  source's hash differs from the live one. Values: `"true"`/`"*"` for any source,
+  or a comma list of source names (e.g. `"rng"`) to scope it. `app.oam.dev/autoUpdate: "true"`
+  also enables it. Without any of these, a healthy component keeps its
+  last-applied resolved values.
 - **Reconcile cadence still applies.** Re-dispatch only happens when the
   Application reconciles — every ~5m by default (the controller's resync
   period), unless nudged (e.g. re-apply, or

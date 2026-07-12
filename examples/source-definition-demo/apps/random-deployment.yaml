@@ -3,6 +3,11 @@ kind: Application
 metadata:
   name: random-deployment
   namespace: source-demo
+  annotations:
+    # Opt in to re-dispatch when a consumed source re-resolves to a new value.
+    # "true"/"*" = any source; or a comma list of source names, e.g. "rng".
+    # Without this, a healthy component keeps its last-applied resolved values.
+    app.oam.dev/autoUpdateSources: "true"
 spec:
   # Declaration order matters: deployment-namer chains off cluster and tenant,
   # so they must be declared before it (forward-only dependency rule).

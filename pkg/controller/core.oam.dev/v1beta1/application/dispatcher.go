@@ -168,13 +168,25 @@ func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, pre
 
 			// fromSource values are resolved at render time and are invisible to
 			// the raw spec comparison above (comp.Params still holds the
-			// unresolved directive). Detect a re-resolved value by comparing a
-			// hash of the consumed values against the one stamped on the live
-			// workload; re-dispatch on a difference.
-			resolvedHash, consumesSource := resolvedSourceHash(comp)
+			// unresolved directive). When opted in via autoUpdate /
+			// autoUpdateSources, detect a re-resolved value by comparing
+			// per-source hashes against those stamped on the live workload, and
+			// re-dispatch when a selected source changed.
+			resolvedHashes, consumesSource := resolvedSourceHashes(comp)
+			matchAll, selected, sourceUpdateEnabled := sourceAutoUpdateSelector(annotations)
 			sourceValuesChanged := false
-			if isHealth && err == nil && consumesSource && !skipWorkload && options.Workload != nil {
-				sourceValuesChanged = resolvedHash != liveResolvedSourceHash(ctx, h.Client, clusterName, options.Workload)
+			if isHealth && err == nil && consumesSource && sourceUpdateEnabled && !skipWorkload && options.Workload != nil {
+				live := liveResolvedSourceHashes(ctx, h.Client, clusterName, options.Workload)
+				for _, name := range changedSources(resolvedHashes, live) {
+					if matchAll {
+						sourceValuesChanged = true
+						break
+					}
+					if _, ok := selected[name]; ok {
+						sourceValuesChanged = true
+						break
+					}
+				}
 			}
 
 			// Dispatch if: unhealthy, health error, properties changed, source
@@ -182,10 +194,11 @@ func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, pre
 			requiresDispatch := !isHealth || err != nil || propertiesChanged || sourceValuesChanged || (!comp.SkipApplyWorkload && isAutoUpdateEnabled)
 
 			if requiresDispatch {
-				// Record the resolved-source hash so the next reconcile can
-				// detect a subsequent change.
+				// Record the resolved-source hashes so the next reconcile can
+				// detect a subsequent change. Stamp whenever the component
+				// consumes sources, so the baseline exists even before opt-in.
 				if consumesSource {
-					stampResolvedSourceHash(options.Workload, resolvedHash)
+					stampResolvedSourceHashes(options.Workload, resolvedHashes)
 				}
 				if err := h.Dispatch(ctx, h.Client, clusterName, common.WorkflowResourceCreator, dispatchManifests...); err != nil {
 					return false, errors.WithMessage(err, "Dispatch")
@@ -329,59 +342,78 @@ func componentPropertiesChanged(comp *appfile.Component, appRev *v1beta1.Applica
 	return !equality.Semantic.DeepEqual(currentJSON, revJSON)
 }
 
-// resolvedSourceHash returns a stable hash of the fromSource values a component
-// consumed during its most recent render, and whether it consumed any. The
-// resolved values live on comp.Ctx (populated by Complete() before dispatch);
-// the raw spec comparison in componentPropertiesChanged cannot see them because
-// comp.Params still holds the unresolved {fromSource: ...} directive. Returns
-// ("", false) when the component consumed no source values.
-func resolvedSourceHash(comp *appfile.Component) (string, bool) {
+// resolvedSourceHashes returns a per-source hash of the fromSource values a
+// component consumed during its most recent render (source name -> hash), and
+// whether it consumed any. The resolved values live on comp.Ctx (populated by
+// Complete() before dispatch); the raw spec comparison in
+// componentPropertiesChanged cannot see them because comp.Params still holds the
+// unresolved {fromSource: ...} directive.
+func resolvedSourceHashes(comp *appfile.Component) (map[string]string, bool) {
 	if comp == nil || comp.Ctx == nil {
-		return "", false
+		return nil, false
 	}
 	statuses, _ := comp.Ctx.GetData(definition.SourceResolutionStatusKey).(map[string]definition.SourceResolutionStatus)
 	if len(statuses) == 0 {
-		return "", false
+		return nil, false
 	}
-	// Deterministic map[source]map[path]value of everything actually consumed.
-	consumed := map[string]map[string]interface{}{}
+	hashes := map[string]string{}
 	for name, st := range statuses {
 		if len(st.ConsumedFields) == 0 {
 			continue
 		}
-		consumed[name] = st.ConsumedFields
+		raw, err := json.Marshal(st.ConsumedFields) // json.Marshal sorts map keys
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(raw)
+		hashes[name] = hex.EncodeToString(sum[:])
 	}
-	if len(consumed) == 0 {
-		return "", false
+	if len(hashes) == 0 {
+		return nil, false
 	}
-	raw, err := json.Marshal(consumed) // json.Marshal sorts map keys
-	if err != nil {
-		return "", false
-	}
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:]), true
+	return hashes, true
 }
 
-// stampResolvedSourceHash records the resolved-source hash as an annotation on
-// the workload manifest so a later reconcile can detect a re-resolved value.
-func stampResolvedSourceHash(workload *unstructured.Unstructured, hash string) {
-	if workload == nil || hash == "" {
+// changedSources returns the names of consumed sources whose resolved value
+// differs from what was last stamped on the live workload. A source missing
+// from the live annotation (e.g. first apply, or a newly added source) counts
+// as changed.
+func changedSources(current map[string]string, live map[string]string) []string {
+	var changed []string
+	for name, h := range current {
+		if live[name] != h {
+			changed = append(changed, name)
+		}
+	}
+	return changed
+}
+
+// stampResolvedSourceHashes records the per-source resolved hashes as a JSON
+// annotation on the workload manifest so a later reconcile can detect a
+// re-resolved value.
+func stampResolvedSourceHashes(workload *unstructured.Unstructured, hashes map[string]string) {
+	if workload == nil || len(hashes) == 0 {
+		return
+	}
+	raw, err := json.Marshal(hashes)
+	if err != nil {
 		return
 	}
 	anns := workload.GetAnnotations()
 	if anns == nil {
 		anns = map[string]string{}
 	}
-	anns[oam.AnnotationSourceResolvedHash] = hash
+	anns[oam.AnnotationSourceResolvedHash] = string(raw)
 	workload.SetAnnotations(anns)
 }
 
-// liveResolvedSourceHash reads the resolved-source hash previously stamped on
-// the live workload in the target cluster. Returns "" when the workload is
-// absent or carries no such annotation (treated as "changed", forcing dispatch).
-func liveResolvedSourceHash(ctx context.Context, cli client.Client, clusterName string, workload *unstructured.Unstructured) string {
+// liveResolvedSourceHashes reads the per-source resolved hashes previously
+// stamped on the live workload in the target cluster. Returns an empty map when
+// the workload is absent or carries no such annotation (so every current source
+// counts as changed).
+func liveResolvedSourceHashes(ctx context.Context, cli client.Client, clusterName string, workload *unstructured.Unstructured) map[string]string {
 	if cli == nil || workload == nil {
-		return ""
+		return nil
 	}
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(workload.GroupVersionKind())
@@ -390,7 +422,46 @@ func liveResolvedSourceHash(ctx context.Context, cli client.Client, clusterName 
 		getCtx = pkgmulticluster.WithCluster(ctx, clusterName)
 	}
 	if err := cli.Get(getCtx, client.ObjectKey{Namespace: workload.GetNamespace(), Name: workload.GetName()}, live); err != nil {
-		return ""
+		return nil
 	}
-	return live.GetAnnotations()[oam.AnnotationSourceResolvedHash]
+	raw := live.GetAnnotations()[oam.AnnotationSourceResolvedHash]
+	if raw == "" {
+		return nil
+	}
+	hashes := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &hashes); err != nil {
+		return nil
+	}
+	return hashes
+}
+
+// sourceAutoUpdateSelector interprets the autoUpdate / autoUpdateSources
+// annotations into a predicate over source names. Returns (matchAll, set,
+// enabled): enabled=false means source-change re-dispatch is off; matchAll=true
+// means any consumed source triggers it; otherwise only names in set do.
+func sourceAutoUpdateSelector(annotations map[string]string) (matchAll bool, set map[string]struct{}, enabled bool) {
+	if annotations[oam.AnnotationAutoUpdate] == "true" {
+		return true, nil, true
+	}
+	raw, ok := annotations[oam.AnnotationAutoUpdateSources]
+	if !ok {
+		return false, nil, false
+	}
+	raw = strings.TrimSpace(raw)
+	switch raw {
+	case "":
+		return false, nil, false
+	case "true", "*":
+		return true, nil, true
+	}
+	set = map[string]struct{}{}
+	for _, name := range strings.Split(raw, ",") {
+		if n := strings.TrimSpace(name); n != "" {
+			set[n] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return false, nil, false
+	}
+	return false, set, true
 }
