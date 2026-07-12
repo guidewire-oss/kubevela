@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/crossplane/crossplane-runtime/pkg/event"
@@ -334,6 +335,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.endWithNegativeCondition(logCtx, app, condition.ReconcileError(err), phase)
 	}
 
+	// Re-resolve fromSource values and refresh the ResourceTracker for opted-in
+	// components whose sources changed. The workflow does not re-run once it has
+	// succeeded, so without this a re-resolved source value never reaches the
+	// stored manifest and StateKeep below would keep re-applying the stale one.
+	r.refreshSourceDrivenComponents(logCtx, handler, appParser, appFile, app)
+
 	r.stateKeep(logCtx, handler, app)
 
 	opts := []resourcekeeper.GCOption{
@@ -361,6 +368,75 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	r.Recorder.Event(app, event.Normal(velatypes.ReasonDeployed, velatypes.MessageDeployed))
 	// Use Update instead of Patch when components were removed to properly clear status arrays
 	return r.gcResourceTrackers(logCtx, handler, phase, true, componentsRemoved)
+}
+
+// refreshSourceDrivenComponents re-resolves fromSource values and re-dispatches
+// components whose consumed source values changed, so the ResourceTracker holds
+// the current desired state before StateKeep enforces it. This is a no-op unless
+// the Application declares sources AND is opted in via autoUpdate /
+// autoUpdateSources; the per-source-hash gate inside the component dispatcher
+// then suppresses re-apply when nothing actually changed.
+func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context, handler *AppHandler, appParser *appfile.Parser, af *appfile.Appfile, app *v1beta1.Application) {
+	if len(app.Spec.Sources) == 0 {
+		return
+	}
+	if _, _, enabled := sourceAutoUpdateSelector(app.GetAnnotations()); !enabled {
+		return
+	}
+	// Which components consume fromSource (by name).
+	compByName := make(map[string]common.ApplicationComponent, len(app.Spec.Components))
+	for _, comp := range app.Spec.Components {
+		if componentConsumesFromSource(comp) {
+			compByName[comp.Name] = comp
+		}
+	}
+	if len(compByName) == 0 {
+		return
+	}
+	apply := handler.applyComponentFunc(appParser, af)
+	// Re-apply per placed instance: status.Services carries the resolved cluster
+	// and namespace for each component (honouring topology / override policies).
+	// The per-source-hash gate in the dispatcher makes this a no-op unless a
+	// consumed value actually changed.
+	seen := map[string]struct{}{}
+	for _, svc := range app.Status.Services {
+		comp, ok := compByName[svc.Name]
+		if !ok {
+			continue
+		}
+		key := svc.Name + "/" + svc.Cluster + "/" + svc.Namespace
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		if _, _, _, err := apply(logCtx, comp, nil, svc.Cluster, svc.Namespace); err != nil {
+			logCtx.Error(err, "failed to refresh source-driven component", "component", comp.Name, "cluster", svc.Cluster)
+			r.Recorder.Event(app, event.Warning(velatypes.ReasonFailedApply, err))
+		}
+	}
+}
+
+// componentConsumesFromSource reports whether a component or any of its traits
+// reference fromSource in their properties.
+func componentConsumesFromSource(comp common.ApplicationComponent) bool {
+	if rawContainsFromSource(comp.Properties) {
+		return true
+	}
+	for _, tr := range comp.Traits {
+		if rawContainsFromSource(tr.Properties) {
+			return true
+		}
+	}
+	return false
+}
+
+func rawContainsFromSource(raw *runtime.RawExtension) bool {
+	if raw == nil || len(raw.Raw) == 0 {
+		return false
+	}
+	// Structural, but a substring check is a cheap and safe pre-filter: the
+	// literal key can only appear when a fromSource directive is present.
+	return strings.Contains(string(raw.Raw), "\"fromSource\"")
 }
 
 func (r *Reconciler) stateKeep(logCtx monitorContext.Context, handler *AppHandler, app *v1beta1.Application) {

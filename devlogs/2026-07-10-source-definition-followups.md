@@ -370,6 +370,39 @@ FIXED (this pass): change detection is now fromSource-aware, OPT-IN and per-sour
   value-sensitive hashes, changedSources, selector grammar (true/*/list/empty),
   stamp + live round-trip. All pass.
 
+### ROOT CAUSE (debugged live): succeeded workflow never re-applies
+
+Symptom: get-random re-rolls (Config Secret changes, confirmed) but the
+Deployment's replicas stay at the first value; autoUpdateSources present.
+
+Debugger (dlv, user): generator.go:307 (applyComponentFunc FACTORY) hits, :308
+(the returned closure body) does NOT -> the apply-component workflow runner is
+never executed on resync. Cause: workflow.go:128 `if allRunnersSucceeded return
+Succeeded` -- a succeeded workflow short-circuits, so the component never
+re-renders and resourceKeeper.Dispatch never re-records the manifest into the
+ResourceTracker. StateKeep (the continuous drift loop) then faithfully re-applies
+the STALE manifest stored in the RT (mr.Data), not a freshly-resolved value.
+=> the earlier dispatcher-gate fix sits inside a layer that never runs post-success.
+
+FIX (this pass): re-resolve + refresh the RT before StateKeep, so drift
+enforcement carries the current value.
+- application_controller.go: refreshSourceDrivenComponents() runs in the
+  WorkflowStateSucceeded path, before r.stateKeep. For opted-in
+  (autoUpdate/autoUpdateSources) apps with sources, it re-invokes
+  handler.applyComponentFunc for each component that consumes fromSource, per
+  placed instance from status.Services (svc.Cluster/svc.Namespace -> honours
+  topology/override). apply() = render (fresh resolve) + resourceKeeper.Dispatch
+  (re-records RT + applies). The per-source-hash gate in the dispatcher makes it
+  a no-op when nothing changed. componentConsumesFromSource / rawContainsFromSource
+  detect fromSource in component/trait properties.
+- LRU masking fix: the shared 30s in-memory LRU could hide a changed Config value
+  for up to 30s, defeating a short storageTTL. lruSourceCacheStore.Read now caps
+  the in-memory entry lifetime at min(LRU ttl, storageTTL) via effectiveTTL, so a
+  10s storageTTL is honoured. Tests: TTL-capped fall-through + TestEffectiveTTL.
+- Kept the dispatcher-gate + per-source hashing/stamping (still correct and does
+  the work when the workflow DOES run and inside the refresh re-apply).
+- Removed the temporary klog debug line.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

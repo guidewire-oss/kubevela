@@ -100,6 +100,29 @@ func TestLRUSourceCacheInMemoryExpiryFallsThrough(t *testing.T) {
 	assert.Equal(t, 2, delegate.reads, "expired Layer 1 entry must fall through to delegate")
 }
 
+func TestLRUSourceCacheTTLCappedByStorageTTL(t *testing.T) {
+	sharedSourceLRU.Clear()
+	delegate := &fakeSourceCacheStore{
+		data:    map[string]interface{}{"value": 1},
+		found:   true,
+		expires: time.Now().Add(time.Hour),
+	}
+	// Long in-memory window, but a tiny storageTTL passed by the caller: the
+	// entry must expire per the storageTTL so a short-TTL source is not masked.
+	store := newTestLRUStore(delegate, time.Hour)
+	_, _, _, _, _ = store.Read(context.Background(), "key-c", time.Nanosecond)
+	time.Sleep(time.Millisecond)
+	_, _, _, _, _ = store.Read(context.Background(), "key-c", time.Nanosecond)
+	assert.Equal(t, 2, delegate.reads, "storageTTL must cap the in-memory window")
+}
+
+func TestEffectiveTTL(t *testing.T) {
+	s := &lruSourceCacheStore{ttl: 30 * time.Second}
+	assert.Equal(t, 10*time.Second, s.effectiveTTL(10*time.Second), "shorter storageTTL wins")
+	assert.Equal(t, 30*time.Second, s.effectiveTTL(time.Minute), "longer storageTTL capped at LRU ttl")
+	assert.Equal(t, 30*time.Second, s.effectiveTTL(0), "zero storageTTL falls back to LRU ttl")
+}
+
 func TestLRUSourceCacheDoesNotPromoteStale(t *testing.T) {
 	sharedSourceLRU.Clear()
 	delegate := &fakeSourceCacheStore{

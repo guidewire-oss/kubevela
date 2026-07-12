@@ -96,7 +96,7 @@ func (s *lruSourceCacheStore) Read(ctx context.Context, cacheKey string, ttl tim
 	// must keep flowing through the resolver's refresh/onStaleFailure logic
 	// rather than being masked as an in-memory hit.
 	if found && !stale {
-		s.store(cacheKey, data, expiresAt)
+		s.store(cacheKey, data, expiresAt, s.effectiveTTL(ttl))
 	}
 	return data, stale, found, expiresAt, err
 }
@@ -110,8 +110,18 @@ func (s *lruSourceCacheStore) Write(ctx context.Context, cacheKey, sourceType st
 	if err := s.delegate.Write(ctx, cacheKey, sourceType, data); err != nil {
 		return err
 	}
-	s.store(cacheKey, data, time.Time{})
+	// A just-written value is fresh for the whole in-memory window.
+	s.store(cacheKey, data, time.Time{}, s.ttl)
 	return nil
+}
+
+// effectiveTTL caps the in-memory freshness window at the caller's storageTTL so
+// a short per-source TTL is not masked by the longer default Layer 1 window.
+func (s *lruSourceCacheStore) effectiveTTL(storageTTL time.Duration) time.Duration {
+	if storageTTL > 0 && storageTTL < s.ttl {
+		return storageTTL
+	}
+	return s.ttl
 }
 
 func (s *lruSourceCacheStore) load(cacheKey string) (sourceLRUEntry, bool) {
@@ -133,13 +143,16 @@ func (s *lruSourceCacheStore) load(cacheKey string) (sourceLRUEntry, bool) {
 	return entry, true
 }
 
-func (s *lruSourceCacheStore) store(cacheKey string, data map[string]interface{}, storeExpiresAt time.Time) {
+func (s *lruSourceCacheStore) store(cacheKey string, data map[string]interface{}, storeExpiresAt time.Time, ttl time.Duration) {
+	if ttl <= 0 {
+		ttl = s.ttl
+	}
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cache.Add(cacheKey, sourceLRUEntry{
 		data:           data,
-		expiresAt:      now.Add(s.ttl),
+		expiresAt:      now.Add(ttl),
 		storeExpiresAt: storeExpiresAt,
 		storedAt:       now,
 	})
