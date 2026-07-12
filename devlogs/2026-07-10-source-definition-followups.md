@@ -343,6 +343,24 @@ path + tests.
 Also note: even with autoUpdate, cadence is gated by the reconcile resync (5m
 default) and the storageTTL + ~30s LRU floor.
 
+FIXED (this pass): change detection is now fromSource-aware.
+- New oam.AnnotationSourceResolvedHash = "source.oam.dev/resolved-hash".
+- dispatcher.go: resolvedSourceHash(comp) hashes the consumed fromSource values
+  read from comp.Ctx[SourceResolutionStatus].ConsumedFields (populated by
+  Complete() during render, which runs before the dispatch gate -- confirmed via
+  applyComponentFunc: prepareWorkloadAndManifests renders the SAME wl passed to
+  dispatcher.run). stampResolvedSourceHash writes the hash onto the workload
+  manifest before Dispatch; liveResolvedSourceHash reads it back from the live
+  object (multicluster-aware). Gate adds sourceValuesChanged =
+  hash != liveHash, OR'd into requiresDispatch.
+- Correct + stable: no over-dispatch (only re-dispatches when the resolved value
+  actually changes), unlike the always-dispatch autoUpdate workaround.
+- Only active under the MultiStageComponentApply feature gate (the gate-off path
+  dispatches unconditionally anyway).
+- Demo: removed the autoUpdate annotation from random-deployment; updated README.
+- Tests: source_hash_test.go (plain Go, no envtest): stable hash, value-change
+  -> hash-change, stamp, live-read via fake client. All pass.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

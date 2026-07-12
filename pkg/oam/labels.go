@@ -166,6 +166,12 @@ const (
 	// This is orthogonal to AnnotationAutoUpdate which controls definition version updates.
 	AnnotationAutoRevision = "policy.oam.dev/auto-revision"
 
+	// AnnotationSourceResolvedHash records a hash of the fromSource values a
+	// component consumed at dispatch time. It is stamped on the dispatched
+	// workload so a later reconcile can detect that a source re-resolved to a
+	// different value (which the raw spec comparison cannot see) and re-dispatch.
+	AnnotationSourceResolvedHash = "source.oam.dev/resolved-hash"
+
 	// AnnotationSkipGlobalPolicies controls whether global (vela-system) policies are skipped for an Application.
 	// When set to "true", only explicitly declared spec.policies are evaluated.
 	AnnotationSkipGlobalPolicies = "policy.oam.dev/skip-global"

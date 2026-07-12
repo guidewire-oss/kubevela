@@ -18,10 +18,13 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"strings"
 
+	pkgmulticluster "github.com/kubevela/pkg/multicluster"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -163,10 +166,27 @@ func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, pre
 				propertiesChanged = componentPropertiesChanged(comp, comparisonRev)
 			}
 
-			// Dispatch if: unhealthy, health error, properties changed, or auto-update enabled
-			requiresDispatch := !isHealth || err != nil || propertiesChanged || (!comp.SkipApplyWorkload && isAutoUpdateEnabled)
+			// fromSource values are resolved at render time and are invisible to
+			// the raw spec comparison above (comp.Params still holds the
+			// unresolved directive). Detect a re-resolved value by comparing a
+			// hash of the consumed values against the one stamped on the live
+			// workload; re-dispatch on a difference.
+			resolvedHash, consumesSource := resolvedSourceHash(comp)
+			sourceValuesChanged := false
+			if isHealth && err == nil && consumesSource && !skipWorkload && options.Workload != nil {
+				sourceValuesChanged = resolvedHash != liveResolvedSourceHash(ctx, h.Client, clusterName, options.Workload)
+			}
+
+			// Dispatch if: unhealthy, health error, properties changed, source
+			// values changed, or auto-update enabled
+			requiresDispatch := !isHealth || err != nil || propertiesChanged || sourceValuesChanged || (!comp.SkipApplyWorkload && isAutoUpdateEnabled)
 
 			if requiresDispatch {
+				// Record the resolved-source hash so the next reconcile can
+				// detect a subsequent change.
+				if consumesSource {
+					stampResolvedSourceHash(options.Workload, resolvedHash)
+				}
 				if err := h.Dispatch(ctx, h.Client, clusterName, common.WorkflowResourceCreator, dispatchManifests...); err != nil {
 					return false, errors.WithMessage(err, "Dispatch")
 				}
@@ -307,4 +327,70 @@ func componentPropertiesChanged(comp *appfile.Component, appRev *v1beta1.Applica
 	}
 
 	return !equality.Semantic.DeepEqual(currentJSON, revJSON)
+}
+
+// resolvedSourceHash returns a stable hash of the fromSource values a component
+// consumed during its most recent render, and whether it consumed any. The
+// resolved values live on comp.Ctx (populated by Complete() before dispatch);
+// the raw spec comparison in componentPropertiesChanged cannot see them because
+// comp.Params still holds the unresolved {fromSource: ...} directive. Returns
+// ("", false) when the component consumed no source values.
+func resolvedSourceHash(comp *appfile.Component) (string, bool) {
+	if comp == nil || comp.Ctx == nil {
+		return "", false
+	}
+	statuses, _ := comp.Ctx.GetData(definition.SourceResolutionStatusKey).(map[string]definition.SourceResolutionStatus)
+	if len(statuses) == 0 {
+		return "", false
+	}
+	// Deterministic map[source]map[path]value of everything actually consumed.
+	consumed := map[string]map[string]interface{}{}
+	for name, st := range statuses {
+		if len(st.ConsumedFields) == 0 {
+			continue
+		}
+		consumed[name] = st.ConsumedFields
+	}
+	if len(consumed) == 0 {
+		return "", false
+	}
+	raw, err := json.Marshal(consumed) // json.Marshal sorts map keys
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), true
+}
+
+// stampResolvedSourceHash records the resolved-source hash as an annotation on
+// the workload manifest so a later reconcile can detect a re-resolved value.
+func stampResolvedSourceHash(workload *unstructured.Unstructured, hash string) {
+	if workload == nil || hash == "" {
+		return
+	}
+	anns := workload.GetAnnotations()
+	if anns == nil {
+		anns = map[string]string{}
+	}
+	anns[oam.AnnotationSourceResolvedHash] = hash
+	workload.SetAnnotations(anns)
+}
+
+// liveResolvedSourceHash reads the resolved-source hash previously stamped on
+// the live workload in the target cluster. Returns "" when the workload is
+// absent or carries no such annotation (treated as "changed", forcing dispatch).
+func liveResolvedSourceHash(ctx context.Context, cli client.Client, clusterName string, workload *unstructured.Unstructured) string {
+	if cli == nil || workload == nil {
+		return ""
+	}
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(workload.GroupVersionKind())
+	getCtx := ctx
+	if clusterName != "" {
+		getCtx = pkgmulticluster.WithCluster(ctx, clusterName)
+	}
+	if err := cli.Get(getCtx, client.ObjectKey{Namespace: workload.GetNamespace(), Name: workload.GetName()}, live); err != nil {
+		return ""
+	}
+	return live.GetAnnotations()[oam.AnnotationSourceResolvedHash]
 }
