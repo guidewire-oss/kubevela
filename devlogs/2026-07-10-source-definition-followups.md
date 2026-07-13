@@ -5,13 +5,28 @@ Branch: feature/source-definitions
 
 ## HANDOFF / STATUS (read this first)
 
-Branch `feature/source-definitions`, working tree CLEAN. My session's commits sit
-on top of `a1f26b01a` (first source commit is `779268de6`). Latest: `b042c27ab`.
+Branch `feature/source-definitions`, working tree CLEAN (only untracked cruft:
+.tmp/, cli, test.cue, etc. - ignore). First source commit `779268de6`.
+Latest: `84b4f9cce`. Recent session commits (newest first):
+- `84b4f9cce` docs(devlog): def show/get/list work
+- `83171c382` feat(cli): SourceDefinition in vela def show/get/list (+ Outputs/Cache tables)
+- `f85f4d07b` docs(examples): demo defs converted YAML -> vela def CUE
+- `72fb8525e` feat: evaluate SourceDefinition errs: field in resolver
+- `b042c27ab` fix: root-cause re-dispatch (UNVERIFIED live - see open items)
+
+**Build/run env:** dev container is **linux/arm64**; USER IS ON macOS
+(Apple Silicon, Mach-O). NEVER hand the user a binary built here (ELF ->
+"exec format error"); they rebuild locally with
+`CGO_ENABLED=0 go build -o bin/vela ./references/cmd/cli/`. Their local binary
+goes stale silently - "invalid type X"/"could not find" is often just that.
 
 **Environment note:** pre-existing vendoring drift (go.mod pins kubevela/pkg
 v1.11.0 & workflow v0.7.0; vendor has v1.11.1 & v0.7.2). NOT from this branch.
 Build/test with `-mod=mod`. Unit test cmd: `CGO_ENABLED=0 go test -mod=mod ./pkg/...`.
 Exclude etcd suite with `-run 'Test[^A]|TestA[^P]|TestAP[^I]'` (TestAPIs needs etcd).
+docgen tests: run targeted (`-run 'TestExtractSource|TestExtractStorage'`) to skip
+the ginkgo envtest suite; that suite also deletes testdata/ref/*.md - git checkout
+-- them before committing.
 User runs the controller locally via `make run` with flags:
 `--feature-gates=MultiStageComponentApply=true --feature-gates=EnableCueValidation=false
 --application-re-sync-period=30s --use-webhook=true --webhook-port=9445
@@ -49,7 +64,12 @@ This container CANNOT reach the user's k3d cluster; user runs cluster checks.
    App random-deployment ties them together, replicas from get-random, opted in
    with autoUpdateSources:"true".
 
-**OPEN / NEXT:**
+**OPEN / NEXT** (top = most actionable for a fresh context):
+- [ ] `def show ./local.cue` does NOT show Outputs/Cache (ParseLocalFile uses a
+      generic pkgdef.Definition path, not GetCapabilityBySourceDefinitionObject).
+      Only the cluster lookup path is enriched. Extend ParseLocalFile if wanted.
+- [ ] Pre-PR housekeeping: `make manifests generate` (sanity-check no unexpected
+      diff); consider squashing autoUpdate add/remove churn (51a20ede1 vs 3803a9155).
 - [ ] USER to verify live: after rebuild+restart `make run`, the demo
       Deployment replicas should re-roll each ~reconcile window (storageTTL 10s,
       resync 30s). Last root-cause fix (`b042c27ab`) is UNVERIFIED against a live
