@@ -521,6 +521,41 @@ enforcement carries the current value.
   spec.schematic.cue.template with schema/output, description round-trips to the
   annotation. `cue fmt` applied (canonical spacing). Full pkg/definition suite green.
 
+### 2026-07-13 - `vela def show/get/list` support for SourceDefinition (commit 83171c382)
+- Symptom: `vela def show deployment-namer` -> "could not find ... in namespace
+  default, or vela-system". def apply worked; show/untyped-get did not.
+- Root cause: references/docgen/cluster.go GetCapabilityByName had a hardcoded
+  lookup chain (component/trait/wfstep) with NO SourceDefinition (and no Policy!)
+  block. def list and `def get --type source` already worked because they go
+  through pkg/definition SearchDefinition, which iterates the source-inclusive
+  DefinitionTypeToKind registry.
+- Fix (cluster.go): added SourceDefinition + PolicyDefinition lookup blocks to
+  GetCapabilityByName; added PolicyType + SourceType cases to
+  GetCapabilityFromDefinitionRevision; new GetCapabilityBySourceDefinitionObject
+  (SourceDefinitionSpec has NO Reference field, so crdName = "") and GetSources,
+  wired into GetCapabilitiesFromCluster + GetNamespacedCapabilitiesFromCluster.
+- Enrichment for `def show`: user wanted to see the OUTPUT contract and the CACHE
+  key. Added types.Capability.SourceOutputs ([]Parameter) and SourceStorage
+  ([]SourceStorageField). extractSourceOutputs relabels the `schema:` block as
+  `parameter:` and reuses cue.GetParameters. extractStorageFields walks the
+  `storage:` StructLit into ordered name/value pairs, keeping CUE interpolations
+  VERBATIM (quotes stripped). console.go Show renders Outputs + Cache as
+  tablewriter tables (gated on Type==TypeSource), matching the inputs table;
+  added "Value" i18n key. Tests: references/docgen/source_test.go (plain
+  testing.T, avoids the ginkgo envtest BeforeSuite - run with
+  `-run 'TestExtractSource|TestExtractStorage'`).
+- GOTCHAs for next time: (1) The dev container is linux/arm64; the user is on
+  macOS (Mach-O). Binaries I build here (bin/vela) are ELF and give
+  "exec format error" on their Mac - the user must rebuild locally with
+  `CGO_ENABLED=0 go build -o bin/vela ./references/cmd/cli/`. Do NOT ship them a
+  binary. (2) Their `vela-dev`/`bin/vela` were STALE (Jul 9) - the whole
+  "invalid type source" / "could not find" saga was partly old binaries. (3)
+  Running the docgen ginkgo suite deletes/regenerates testdata/ref/*.md; restore
+  with `git checkout --` before committing so those deletions don't leak in.
+- KNOWN LIMITATION (not done): `def show ./local.cue` goes through
+  ParseLocalFile (generic pkgdef.Definition path), which does NOT populate
+  SourceOutputs/SourceStorage - only the cluster path (GetCapabilityByName) does.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the
