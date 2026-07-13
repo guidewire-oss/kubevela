@@ -1,7 +1,72 @@
 # DevLog: SourceDefinition (KEP-2.16) follow-ups
 
-Date: 2026-07-10
+Date: 2026-07-10 (updated 2026-07-13)
 Branch: feature/source-definitions
+
+## HANDOFF / STATUS (read this first)
+
+Branch `feature/source-definitions`, working tree CLEAN. My session's commits sit
+on top of `a1f26b01a` (first source commit is `779268de6`). Latest: `b042c27ab`.
+
+**Environment note:** pre-existing vendoring drift (go.mod pins kubevela/pkg
+v1.11.0 & workflow v0.7.0; vendor has v1.11.1 & v0.7.2). NOT from this branch.
+Build/test with `-mod=mod`. Unit test cmd: `CGO_ENABLED=0 go test -mod=mod ./pkg/...`.
+Exclude etcd suite with `-run 'Test[^A]|TestA[^P]|TestAP[^I]'` (TestAPIs needs etcd).
+User runs the controller locally via `make run` with flags:
+`--feature-gates=MultiStageComponentApply=true --feature-gates=EnableCueValidation=false
+--application-re-sync-period=30s --use-webhook=true --webhook-port=9445
+--webhook-cert-dir=./k8s-webhook-server/serving-certs --leader-elect=false`.
+This container CANNOT reach the user's k3d cluster; user runs cluster checks.
+
+**What's DONE & committed this session (all with unit tests, all green):**
+1. Admission validation of source contracts (paths vs schema, forward-only order,
+   RBAC SAR) + `default:` required only when optional source field feeds a
+   REQUIRED target (target-aware, `e672a77f7`).
+2. Input-contract validation: source `properties` vs the definition's
+   `parameter:` block, per-field errors, + `fromSource` output-type vs
+   component/trait target-parameter type, via CUE AST (`680e393a5`, `389de0475`).
+3. Shared process-level LRU (Layer 1) keyed by storage.key; TTL capped at
+   min(LRU 30s, storageTTL) so short TTLs aren't masked (`0dd69bc12` + `b042c27ab`).
+4. Cache Config label = live ConfigTemplateRef name (`8932a496b`).
+5. Skip schematic validation for fromSource params at admission (`7bbe53da9`).
+6. Source-change re-dispatch, OPT-IN via `app.oam.dev/autoUpdate:"true"` OR
+   `app.oam.dev/autoUpdateSources` ("true"/"*"/comma-list of source names).
+   Per-source hash stamped on workload (`source.oam.dev/resolved-hash`);
+   dispatcher gate re-dispatches when a selected source's hash changed
+   (`3803a9155`, `d8b598532`).
+7. ROOT-CAUSE fix (`b042c27ab`): a succeeded workflow short-circuits
+   (workflow.go allRunnersSucceeded) so the apply-component step never re-runs;
+   StateKeep re-applied the stale RT manifest. `refreshSourceDrivenComponents`
+   (application_controller.go, in the WorkflowStateSucceeded path, before
+   stateKeep) re-invokes applyComponentFunc per placed instance
+   (status.Services -> cluster/ns) for opted-in fromSource components; the
+   per-source-hash gate makes it a no-op when unchanged. Uses RT upsert-by-key
+   (idempotent, confirmed no RT-concept impact).
+8. Examples: `examples/source-definition-demo/{definitions,apps,resources}/` +
+   README. Sources: cluster-lookup (reads cluster-info CM), tenant-data (ns
+   labels), get-random (polls random.org over HTTPS, plain-text int),
+   deployment-namer (chained: assembles <region>-<zone>-<dept>-<tenant>-<comp>).
+   App random-deployment ties them together, replicas from get-random, opted in
+   with autoUpdateSources:"true".
+
+**OPEN / NEXT:**
+- [ ] USER to verify live: after rebuild+restart `make run`, the demo
+      Deployment replicas should re-roll each ~reconcile window (storageTTL 10s,
+      resync 30s). Last root-cause fix (`b042c27ab`) is UNVERIFIED against a live
+      cluster. If still stuck, next dlv breakpoint: inside
+      refreshSourceDrivenComponents -> does apply() reach generator.go:308 now?
+- [ ] FOLLOW-UP BUG (not started): `errs:` field is NOT evaluated by the source
+      resolver (pkg/cue/definition/template.go resolve()) despite the KEP
+      documenting it for SourceDefinitions. Needs the resolver to read+surface
+      `errs:` like workloadDef.Complete() does (template.go:174).
+- [ ] Minor: refreshSourceDrivenComponents re-renders all fromSource components
+      when enabled; the per-source LIST scoping is enforced only at the dispatch
+      gate (correct, but a wasted render for non-selected sources). User said
+      "fine as-is."
+- [ ] KEP prose still references a `phase` status field and (in a couple of
+      spots) may lag the shipped model; direction-change note added, kept per
+      user request. Pre-PR: `make manifests generate` sanity check; consider
+      squashing the autoUpdate add/remove churn (51a20ede1 vs 3803a9155).
 
 ## Objective
 
