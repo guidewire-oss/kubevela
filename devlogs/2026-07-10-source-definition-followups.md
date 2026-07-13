@@ -64,17 +64,24 @@ This container CANNOT reach the user's k3d cluster; user runs cluster checks.
    App random-deployment ties them together, replicas from get-random, opted in
    with autoUpdateSources:"true".
 
-**OPEN / NEXT** (top = most actionable for a fresh context):
-- [ ] `def show ./local.cue` does NOT show Outputs/Cache (ParseLocalFile uses a
-      generic pkgdef.Definition path, not GetCapabilityBySourceDefinitionObject).
-      Only the cluster lookup path is enriched. Extend ParseLocalFile if wanted.
+**FEATURE STATUS: functionally COMPLETE.** All KEP-2.16 review gaps closed,
+`errs:` implemented, demo migrated to `vela def` CUE, CLI (`def apply/show/get/
+list`) fully supports SourceDefinition, and the live re-dispatch behavior
+(root-cause fix `b042c27ab`) is VERIFIED working against the user's k3d cluster
+(2026-07-13): demo Deployment replicas re-roll each reconcile window. What
+remains is a short punch list the user is bringing next (see below).
+
+**OPEN / NEXT** (awaiting user's remaining punch-list items):
+- [ ] User has a final set of items to hand off - capture them here when given.
 - [ ] Pre-PR housekeeping: `make manifests generate` (sanity-check no unexpected
       diff); consider squashing autoUpdate add/remove churn (51a20ede1 vs 3803a9155).
-- [ ] USER to verify live: after rebuild+restart `make run`, the demo
-      Deployment replicas should re-roll each ~reconcile window (storageTTL 10s,
-      resync 30s). Last root-cause fix (`b042c27ab`) is UNVERIFIED against a live
-      cluster. If still stuck, next dlv breakpoint: inside
-      refreshSourceDrivenComponents -> does apply() reach generator.go:308 now?
+- [ ] NICE-TO-HAVE (deferred, not requested): `def show ./local.cue` does NOT show
+      Outputs/Cache (ParseLocalFile uses a generic pkgdef.Definition path, not
+      GetCapabilityBySourceDefinitionObject). Only the cluster lookup path is
+      enriched. Extend ParseLocalFile only if it comes up.
+- [x] VERIFIED LIVE (2026-07-13): root-cause re-dispatch fix `b042c27ab` confirmed
+      on the user's cluster - demo Deployment replicas re-roll each reconcile
+      window as intended.
 - [x] FOLLOW-UP BUG (DONE, `errs:` resolver support): source resolver now
       evaluates the authored `errs:` field. Extracted a shared
       `extractUserErrors(val, entityType, entityName)` helper (dedups the
