@@ -494,6 +494,33 @@ enforcement carries the current value.
   TestResolveSourceErrsFieldEmptyIsIgnored (blank-only errs => success). Full
   pkg/cue/definition suite green (`CGO_ENABLED=0 go test -mod=mod ./pkg/cue/definition/`).
 
+### 2026-07-13 - demo SourceDefinitions converted to `vela def` CUE format
+- Question raised: does `vela def apply` parse CUE into a SourceDefinition like the
+  other X-Definitions? Verified YES, no code changes needed. `pkg/definition`
+  registers `source` in every table (DefinitionTypeToKind etc., definition.go:87)
+  and the parse path (def apply -> FromCUEString -> FromCUE -> SetType) is generic.
+  Only `vela def init` has SourceDefinition gaps (generateGoDefinition switch in
+  references/cli/def.go:438 has no source case; GetDefinitionDefaultSpec
+  definition.go:649 only has component/trait) - neither affects apply.
+- Converted the four demo defs from raw K8s YAML (kind: SourceDefinition) to the
+  `vela def` CUE shorthand under examples/source-definition-demo/definitions/*.cue,
+  deleted the .yaml originals. Format: top-level `"<name>": {type:"source", ...}`
+  metadata block + `template: {schema/storage/parameter/output}` (template maps to
+  spec.schematic.cue.template via DefinitionTemplateKeys).
+- GOTCHA: imports must be at FILE TOP, not inside `template: {}`. FromCUEString
+  (definition.go:441) only lifts top-level ImportDecl nodes; imports nested in the
+  template struct fail with "expected label or ':', found 'STRING'". Matched the
+  built-in registry defs (e.g. vela-templates/definitions/registry/autoscale.cue).
+- No `namespace:` field in the CUE format; `vela def apply` defaults to vela-system
+  (types.DefaultKubeVelaNS) and SetNamespace overrides the file. The old YAMLs
+  pinned source-demo; moving defs to vela-system is the standard/correct place
+  (controller reads them cluster-wide). README apply steps updated to
+  `vela def apply .../definitions/` with a note.
+- Verified via a throwaway test driving the real FromCUEString on each file: all
+  four -> kind=SourceDefinition, correct names, template lands in
+  spec.schematic.cue.template with schema/output, description round-trips to the
+  annotation. `cue fmt` applied (canonical spacing). Full pkg/definition suite green.
+
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
   is the `sourceCacheTTL` const. Always verify agent file:line claims against the

@@ -48,11 +48,11 @@ values into a ConfigMap. One manifest per file.
 
 ## Files
 
-- `definitions/cluster-lookup.yaml` — `SourceDefinition` `cluster-lookup`: reads
+- `definitions/cluster-lookup.cue` — `SourceDefinition` `cluster-lookup`: reads
   the `cluster-info` ConfigMap in `kube-system` and surfaces `region`, `zone`,
   `provider`. Keyed per cluster, so its cache entry is shared across all
   Applications on the cluster.
-- `definitions/tenant-data.yaml` — `SourceDefinition` `tenant-data`: reads the
+- `definitions/tenant-data.cue` — `SourceDefinition` `tenant-data`: reads the
   current namespace's labels and surfaces tenant `name`, `department`,
   `environment`, and an optional `costCenter`. Keyed per cluster + namespace.
 - `apps/app.yaml` — `Application` `tenant-config`: binds both sources and writes
@@ -68,9 +68,14 @@ the definitions, then the app:
 
 ```bash
 kubectl apply -f examples/source-definition-demo/resources/
-kubectl apply -f examples/source-definition-demo/definitions/
+vela def apply examples/source-definition-demo/definitions/   # applies every .cue to vela-system
 kubectl apply -f examples/source-definition-demo/apps/
 ```
+
+The definitions are authored in the `vela def` CUE format, so they are applied
+with `vela def apply` rather than `kubectl apply`. With no `-n` flag they install
+to the `vela-system` namespace (the standard location for X-Definitions); the
+controller reads them cluster-wide regardless of the Application's namespace.
 
 ## Verify
 
@@ -122,10 +127,10 @@ This ties every source together. A raw Deployment is created whose:
 
 ## Files
 
-- `definitions/get-random.yaml` — `SourceDefinition` `get-random`: takes `min`
+- `definitions/get-random.cue` — `SourceDefinition` `get-random`: takes `min`
   and `max`, GETs a single integer from random.org via the CueX `http` provider,
   and surfaces `value` (int) and `valueString`. No in-cluster service required.
-- `definitions/deployment-namer.yaml` — `SourceDefinition` `deployment-namer`: a
+- `definitions/deployment-namer.cue` — `SourceDefinition` `deployment-namer`: a
   chained source that takes region/zone/department/tenant as inputs and returns
   the joined, lowercased name (with the component name from `context.name`).
 - `apps/random-deployment.yaml` — `Application` `random-deployment`, using
@@ -135,7 +140,7 @@ Uses the same fixtures as the earlier demos (namespace + cluster-info):
 
 ```bash
 kubectl apply -f examples/source-definition-demo/resources/          # namespace, cluster-info
-kubectl apply -f examples/source-definition-demo/definitions/        # all SourceDefinitions
+vela def apply examples/source-definition-demo/definitions/          # all SourceDefinitions -> vela-system
 kubectl apply -f examples/source-definition-demo/apps/random-deployment.yaml
 ```
 
