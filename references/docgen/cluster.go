@@ -21,6 +21,9 @@ import (
 	"fmt"
 	"strings"
 
+	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/format"
+	"cuelang.org/go/cue/parser"
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -81,6 +84,15 @@ func GetCapabilitiesFromCluster(ctx context.Context, namespace string, c common.
 	}
 	caps = append(caps, wfs...)
 
+	srcs, erl, err := GetSources(ctx, namespace, c)
+	if err != nil {
+		return nil, err
+	}
+	for _, er := range erl {
+		klog.Infof("get source capability %v", er)
+	}
+	caps = append(caps, srcs...)
+
 	return caps, nil
 }
 
@@ -105,6 +117,10 @@ func GetNamespacedCapabilitiesFromCluster(ctx context.Context, namespace string,
 		capabilities = append(capabilities, policies...)
 	}
 
+	if sources, _, err := GetSources(ctx, namespace, c); err == nil {
+		capabilities = append(capabilities, sources...)
+	}
+
 	if namespace != types.DefaultKubeVelaNS {
 		// get components from default namespace
 		if workloads, _, err := GetComponentsFromClusterWithValidateOption(ctx, types.DefaultKubeVelaNS, c, selector, false); err == nil {
@@ -123,12 +139,16 @@ func GetNamespacedCapabilitiesFromCluster(ctx context.Context, namespace string,
 		if policies, _, err := GetPolicies(ctx, types.DefaultKubeVelaNS, c); err == nil {
 			capabilities = append(capabilities, policies...)
 		}
+
+		if sources, _, err := GetSources(ctx, types.DefaultKubeVelaNS, c); err == nil {
+			capabilities = append(capabilities, sources...)
+		}
 	}
 
 	if len(capabilities) > 0 {
 		return capabilities, nil
 	}
-	return nil, fmt.Errorf("could not find any components, traits or workflowSteps from namespace %s and %s", namespace, types.DefaultKubeVelaNS)
+	return nil, fmt.Errorf("could not find any components, traits, workflowSteps, policies or sources from namespace %s and %s", namespace, types.DefaultKubeVelaNS)
 }
 
 // GetComponentsFromCluster will get capability from K8s cluster
@@ -263,6 +283,32 @@ func GetPolicies(ctx context.Context, namespace string, c common.Args) ([]types.
 	var templateErrors []error
 	for _, def := range defs.Items {
 		tmp, err := GetCapabilityByPolicyDefinitionObject(def)
+		if err != nil {
+			templateErrors = append(templateErrors, err)
+			continue
+		}
+		templates = append(templates, *tmp)
+	}
+	return templates, templateErrors, nil
+}
+
+// GetSources gets SourceDefinitions from cluster
+func GetSources(ctx context.Context, namespace string, c common.Args) ([]types.Capability, []error, error) {
+	newClient, err := c.GetClient()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var templates []types.Capability
+	var defs v1beta1.SourceDefinitionList
+	err = newClient.List(ctx, &defs, &client.ListOptions{Namespace: namespace})
+	if err != nil {
+		return nil, nil, fmt.Errorf("list SourceDefinition err: %w", err)
+	}
+
+	var templateErrors []error
+	for _, def := range defs.Items {
+		tmp, err := GetCapabilityBySourceDefinitionObject(def)
 		if err != nil {
 			templateErrors = append(templateErrors, err)
 			continue
@@ -463,6 +509,42 @@ func GetCapabilityByName(ctx context.Context, c common.Args, capabilityName stri
 		return capability, nil
 	}
 
+	var policyDef v1beta1.PolicyDefinition
+	err = newClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: capabilityName}, &policyDef)
+	if err == nil {
+		foundCapability = true
+	} else if kerrors.IsNotFound(err) {
+		err = newClient.Get(ctx, client.ObjectKey{Namespace: types.DefaultKubeVelaNS, Name: capabilityName}, &policyDef)
+		if err == nil {
+			foundCapability = true
+		}
+	}
+	if foundCapability {
+		capability, err = GetCapabilityByPolicyDefinitionObject(policyDef)
+		if err != nil {
+			return nil, err
+		}
+		return capability, nil
+	}
+
+	var sourceDef v1beta1.SourceDefinition
+	err = newClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: capabilityName}, &sourceDef)
+	if err == nil {
+		foundCapability = true
+	} else if kerrors.IsNotFound(err) {
+		err = newClient.Get(ctx, client.ObjectKey{Namespace: types.DefaultKubeVelaNS, Name: capabilityName}, &sourceDef)
+		if err == nil {
+			foundCapability = true
+		}
+	}
+	if foundCapability {
+		capability, err = GetCapabilityBySourceDefinitionObject(sourceDef)
+		if err != nil {
+			return nil, err
+		}
+		return capability, nil
+	}
+
 	if ns == types.DefaultKubeVelaNS {
 		return nil, fmt.Errorf("could not find %s in namespace %s", capabilityName, ns)
 	}
@@ -516,6 +598,10 @@ func GetCapabilityFromDefinitionRevision(ctx context.Context, c common.Args, ns,
 		return GetCapabilityByTraitDefinitionObject(rev.Spec.TraitDefinition)
 	case commontypes.WorkflowStepType:
 		return GetCapabilityByWorkflowStepDefinitionObject(rev.Spec.WorkflowStepDefinition)
+	case commontypes.PolicyType:
+		return GetCapabilityByPolicyDefinitionObject(rev.Spec.PolicyDefinition)
+	case commontypes.SourceType:
+		return GetCapabilityBySourceDefinitionObject(rev.Spec.SourceDefinition)
 	default:
 		return nil, fmt.Errorf("unsupported type %s", rev.Spec.DefinitionType)
 	}
@@ -567,4 +653,121 @@ func GetCapabilityByPolicyDefinitionObject(def v1beta1.PolicyDefinition) (*types
 	}
 	capability.Namespace = def.Namespace
 	return &capability, nil
+}
+
+// GetCapabilityBySourceDefinitionObject gets capability by SourceDefinition object
+func GetCapabilityBySourceDefinitionObject(def v1beta1.SourceDefinition) (*types.Capability, error) {
+	// SourceDefinitionSpec has no Reference field, so the CRD reference name is empty.
+	capability, err := HandleDefinition(def.Name, "", def.Annotations, def.Labels,
+		nil, types.TypeSource, nil, def.Spec.Schematic)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to handle SourceDefinition")
+	}
+	capability.Namespace = def.Namespace
+	// Surface the source-specific output contract (schema:) and caching (storage:)
+	// so `vela def show` can tell users what data the source provides and how it
+	// is cached. Failures here are non-fatal: the capability is still usable.
+	if capability.CueTemplate != "" {
+		if outputs, err := extractSourceOutputs(capability.CueTemplate); err != nil {
+			klog.Warningf("parse source outputs for %s: %v", def.Name, err)
+		} else {
+			capability.SourceOutputs = outputs
+		}
+		if storage, err := extractStorageFields(capability.CueTemplate); err != nil {
+			klog.Warningf("parse source storage for %s: %v", def.Name, err)
+		} else {
+			capability.SourceStorage = storage
+		}
+	}
+	return &capability, nil
+}
+
+// extractSourceOutputs parses the `schema:` block of a SourceDefinition template
+// into displayable parameters. The schema block is a plain set of type
+// declarations (e.g. `value: int`), so it compiles standalone once relabeled as
+// a parameter block and reuses the same extractor as inputs.
+func extractSourceOutputs(template string) ([]types.Parameter, error) {
+	schema, err := extractTopLevelCUEBlock(template, "schema")
+	if err != nil || schema == "" {
+		return nil, err
+	}
+	params, err := cue.GetParameters("parameter: " + schema)
+	if err != nil {
+		if errors.Is(err, cue.ErrParameterNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return params, nil
+}
+
+// extractStorageFields parses the `storage:` block of a SourceDefinition
+// template into ordered name/value pairs (key, storageTTL, onStaleFailure, ...).
+// Values are the authored CUE expressions kept verbatim; interpolations like
+// \(parameter.min) are NOT evaluated.
+func extractStorageFields(template string) ([]types.SourceStorageField, error) {
+	file, err := parser.ParseFile("-", template, parser.ParseComments)
+	if err != nil {
+		return nil, err
+	}
+	for _, decl := range file.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
+		}
+		name, _, err := ast.LabelName(field.Label)
+		if err != nil || name != "storage" {
+			continue
+		}
+		lit, ok := field.Value.(*ast.StructLit)
+		if !ok {
+			return nil, nil
+		}
+		var fields []types.SourceStorageField
+		for _, el := range lit.Elts {
+			sub, ok := el.(*ast.Field)
+			if !ok {
+				continue
+			}
+			subName, _, err := ast.LabelName(sub.Label)
+			if err != nil {
+				continue
+			}
+			bt, err := format.Node(sub.Value)
+			if err != nil {
+				return nil, err
+			}
+			fields = append(fields, types.SourceStorageField{
+				Name:  subName,
+				Value: strings.Trim(string(bt), `"`),
+			})
+		}
+		return fields, nil
+	}
+	return nil, nil
+}
+
+// extractTopLevelCUEBlock returns the formatted value of the named top-level
+// field from a CUE template (e.g. "schema"), or "" if absent.
+func extractTopLevelCUEBlock(template, fieldName string) (string, error) {
+	file, err := parser.ParseFile("-", template, parser.ParseComments)
+	if err != nil {
+		return "", err
+	}
+	for _, decl := range file.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
+		}
+		name, _, err := ast.LabelName(field.Label)
+		if err != nil || name != fieldName {
+			continue
+		}
+		bt, err := format.Node(field.Value)
+		if err != nil {
+			return "", err
+		}
+		return string(bt), nil
+	}
+	return "", nil
 }

@@ -103,6 +103,11 @@ type Capability struct {
 	// trait only
 	AppliesTo []string `json:"appliesTo,omitempty"`
 
+	// source only: the output contract (schema: block) a SourceDefinition
+	// provides back to consumers, and its caching (storage: block) fields.
+	SourceOutputs []Parameter          `json:"sourceOutputs,omitempty"`
+	SourceStorage []SourceStorageField `json:"sourceStorage,omitempty"`
+
 	// Namespace represents it's a system-level or user-level capability.
 	Namespace string `json:"namespace,omitempty"`
 
@@ -113,4 +118,13 @@ type Capability struct {
 	TerraformConfiguration string `json:"terraformConfiguration,omitempty"`
 	ConfigurationType      string `json:"configurationType,omitempty"`
 	Path                   string `json:"path,omitempty"`
+}
+
+// SourceStorageField is one field of a SourceDefinition's storage: (caching)
+// block, e.g. {Name: "key", Value: "get-random-\(parameter.min)-..."}. The
+// value is the authored CUE expression, kept verbatim (interpolations are not
+// evaluated).
+type SourceStorageField struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }

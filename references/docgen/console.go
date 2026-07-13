@@ -19,6 +19,7 @@ package docgen
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/olekukonko/tablewriter"
 
@@ -153,6 +154,33 @@ func (ref *ConsoleReference) Show(ctx context.Context, c common.Args, ioStreams 
 		ioStreams.Info(p.TableName)
 		p.TableObject.Render()
 		ioStreams.Info("\n")
+	}
+
+	// For SourceDefinitions, also show what data the source returns (the output
+	// contract) and how it is cached, so users know what they can consume.
+	if capability.Type == types.TypeSource {
+		if len(capability.SourceOutputs) > 0 {
+			var outputs []ReferenceParameter
+			for _, o := range capability.SourceOutputs {
+				rp := ReferenceParameter{Parameter: o, PrintableType: o.Type.String()}
+				outputs = append(outputs, rp)
+			}
+			out := ref.prepareConsoleParameter("# Outputs", outputs, types.CUECategory)
+			ioStreams.Info(out.TableName)
+			out.TableObject.Render()
+			ioStreams.Info("\n")
+		}
+		if len(capability.SourceStorage) > 0 {
+			ioStreams.Info("# Cache")
+			table := tablewriter.NewWriter(os.Stdout)
+			table.SetColWidth(100)
+			table.SetHeader([]string{ref.I18N.Get("Name"), ref.I18N.Get("Value")})
+			for _, f := range capability.SourceStorage {
+				table.Append([]string{f.Name, f.Value})
+			}
+			table.Render()
+			ioStreams.Info("\n")
+		}
 	}
 	return nil
 }
