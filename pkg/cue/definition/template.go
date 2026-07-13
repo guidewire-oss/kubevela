@@ -170,12 +170,7 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 		return errors.WithMessagef(err, "failed to compile workload %s after merge parameter and context", wd.name)
 	}
 
-	var userErrors []string
-	if errs := val.LookupPath(value.FieldPath(ErrsFieldName)); errs.Exists() {
-		if err := errs.Decode(&userErrors); err != nil {
-			klog.Warningf("Workload definition '%s' has malformed 'errs' field (expected []string): %v. Custom error reporting will be skipped.", wd.name, err)
-		}
-	}
+	userErrors := extractUserErrors(val, "Workload definition", wd.name)
 
 	validationErr := val.Validate()
 
@@ -371,12 +366,7 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 		return errors.WithMessagef(err, "failed to compile trait %s after merge parameter and context", td.name)
 	}
 
-	var userErrors []string
-	if errs := val.LookupPath(value.FieldPath(ErrsFieldName)); errs.Exists() {
-		if err := errs.Decode(&userErrors); err != nil {
-			klog.Warningf("Trait definition '%s' has malformed 'errs' field (expected []string): %v. Custom error reporting will be skipped.", td.name, err)
-		}
-	}
+	userErrors := extractUserErrors(val, "Trait definition", td.name)
 
 	validationErr := val.Validate()
 
@@ -857,6 +847,28 @@ func newSourceResolver(ctx process.Context) *sourceResolver {
 	}
 }
 
+// extractUserErrors reads the authored `errs:` field ([]string) from a compiled
+// CUE value and returns its non-empty entries. A malformed `errs:` field is
+// logged and treated as empty so error reporting never masks the real result.
+func extractUserErrors(val cue.Value, entityType, entityName string) []string {
+	errs := val.LookupPath(value.FieldPath(ErrsFieldName))
+	if !errs.Exists() {
+		return nil
+	}
+	var userErrors []string
+	if err := errs.Decode(&userErrors); err != nil {
+		klog.Warningf("%s '%s' has malformed 'errs' field (expected []string): %v. Custom error reporting will be skipped.", entityType, entityName, err)
+		return nil
+	}
+	filtered := userErrors[:0]
+	for _, e := range userErrors {
+		if strings.TrimSpace(e) != "" {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
+}
+
 func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, error) {
 	if v, ok := r.resolved[sourceName]; ok {
 		return v, nil
@@ -930,6 +942,16 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 		}
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
 		return nil, errors.WithMessagef(err, "compile source definition %s", sourceType)
+	}
+	if userErrs := extractUserErrors(val, "source definition", sourceType); len(userErrs) > 0 {
+		errMsg := strings.Join(userErrs, "; ")
+		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.resolved[sourceName] = cached
+			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh reported errors; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
+			return cached, nil
+		}
+		r.setSourceStatus(sourceName, sourceType, "Failed", errMsg, cachePolicy.Key, "", nil)
+		return nil, fmt.Errorf("source definition %s reported errors: %s", sourceType, errMsg)
 	}
 	output := map[string]interface{}{}
 	if err := val.LookupPath(value.FieldPath(OutputFieldName)).Decode(&output); err != nil {

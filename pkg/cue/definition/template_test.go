@@ -2049,3 +2049,67 @@ parameter: {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "validate output against schema")
 }
+
+func TestResolveSourceErrsFieldFails(t *testing.T) {
+	ctx := process.NewContext(process.ContextData{})
+	resolver := newSourceResolver(ctx)
+	resolver.sourceTypes = map[string]string{"s": "t"}
+	resolver.sourceTemplates = map[string]string{
+		"t": `
+output: {
+  value: parameter.value
+}
+errs: [
+  if parameter.value < 0 {
+    "value must be non-negative, got \(parameter.value)"
+  },
+]
+parameter: {
+  value: int
+}
+`,
+	}
+	resolver.sourceProps = map[string]map[string]interface{}{
+		"s": {"value": -1},
+	}
+
+	_, err := resolver.resolve("s")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reported errors")
+	assert.Contains(t, err.Error(), "value must be non-negative, got -1")
+
+	// The authored error is surfaced on the per-source status too.
+	statuses, ok := ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
+	require.True(t, ok)
+	require.Contains(t, statuses, "s")
+	assert.Equal(t, "Failed", statuses["s"].Phase)
+	assert.Contains(t, statuses["s"].Message, "value must be non-negative")
+}
+
+func TestResolveSourceErrsFieldEmptyIsIgnored(t *testing.T) {
+	ctx := process.NewContext(process.ContextData{})
+	resolver := newSourceResolver(ctx)
+	resolver.sourceTypes = map[string]string{"s": "t"}
+	resolver.sourceTemplates = map[string]string{
+		"t": `
+output: {
+  value: parameter.value
+}
+errs: [
+  if parameter.value < 0 {
+    "value must be non-negative"
+  },
+]
+parameter: {
+  value: int
+}
+`,
+	}
+	resolver.sourceProps = map[string]map[string]interface{}{
+		"s": {"value": 5},
+	}
+
+	out, err := resolver.resolve("s")
+	require.NoError(t, err)
+	assert.EqualValues(t, 5, out["value"])
+}

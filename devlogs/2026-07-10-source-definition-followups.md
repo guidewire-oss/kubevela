@@ -55,10 +55,18 @@ This container CANNOT reach the user's k3d cluster; user runs cluster checks.
       resync 30s). Last root-cause fix (`b042c27ab`) is UNVERIFIED against a live
       cluster. If still stuck, next dlv breakpoint: inside
       refreshSourceDrivenComponents -> does apply() reach generator.go:308 now?
-- [ ] FOLLOW-UP BUG (not started): `errs:` field is NOT evaluated by the source
-      resolver (pkg/cue/definition/template.go resolve()) despite the KEP
-      documenting it for SourceDefinitions. Needs the resolver to read+surface
-      `errs:` like workloadDef.Complete() does (template.go:174).
+- [x] FOLLOW-UP BUG (DONE, `errs:` resolver support): source resolver now
+      evaluates the authored `errs:` field. Extracted a shared
+      `extractUserErrors(val, entityType, entityName)` helper (dedups the
+      workloadDef/traitDef `Complete()` decode blocks) that reads `errs: []string`,
+      warns+skips on malformed, and filters blank entries. In `resolve()`, after
+      the source template compiles and before decoding `output`, a non-empty
+      `errs:` is a hard failure ("source definition X reported errors: ...") set
+      on the per-source status, and is subject to the same stale-cache fallback
+      (UseStale policy serves the cached value with a "refresh reported errors"
+      message). Tests: TestResolveSourceErrsFieldFails,
+      TestResolveSourceErrsFieldEmptyIsIgnored (green). Full pkg/cue/definition
+      suite green.
 - [ ] Minor: refreshSourceDrivenComponents re-renders all fromSource components
       when enabled; the per-source LIST scoping is enforced only at the dispatch
       gate (correct, but a wasted render for non-selected sources). User said
@@ -467,6 +475,24 @@ enforcement carries the current value.
 - Kept the dispatcher-gate + per-source hashing/stamping (still correct and does
   the work when the workflow DOES run and inside the refresh re-apply).
 - Removed the temporary klog debug line.
+
+### 2026-07-13 - `errs:` resolver support (follow-up bug)
+- The KEP documents an authored `errs:` block for SourceDefinitions (same idea as
+  workloadDef/traitDef `Complete()`), but the source resolver never evaluated it,
+  so a definition could declare a resolution invalid and be silently ignored.
+- Added `extractUserErrors(val cue.Value, entityType, entityName string) []string`
+  (template.go, above `resolve()`): reads `errs: []string`, warns+skips on
+  malformed, drops blank entries. Refactored both `Complete()` decode blocks to
+  call it (removes duplication; behavior preserved, blanks now filtered).
+- `resolve()`: evaluate `errs:` immediately after the source template compiles and
+  BEFORE decoding `output`. Non-empty => hard failure
+  `source definition <type> reported errors: <joined>`, recorded on the per-source
+  status (Phase=Failed). Placed inside the stale-cache-fallback ladder: with
+  OnStaleFailure=UseStale + a stale cached value, serve the cache instead
+  (message "refresh reported errors; serving stale cached value").
+- Tests: TestResolveSourceErrsFieldFails (fails + asserts status message),
+  TestResolveSourceErrsFieldEmptyIsIgnored (blank-only errs => success). Full
+  pkg/cue/definition suite green (`CGO_ENABLED=0 go test -mod=mod ./pkg/cue/definition/`).
 
 ## Lessons Learned
 - The review's "forced Local pin at line 77" was a hallucinated citation; line 77
