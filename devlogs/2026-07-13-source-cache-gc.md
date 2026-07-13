@@ -1,5 +1,6 @@
 # DevLog: Source cache & ConfigTemplate garbage collection
 Date: 2026-07-13
+Commit: `675f133c9`
 
 ## Objective
 Auto-delete the two long-lived objects the SourceDefinition feature (KEP-2.16) leaves behind

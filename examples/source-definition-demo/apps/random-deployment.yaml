@@ -5,18 +5,13 @@ metadata:
   namespace: source-demo
   annotations:
     # Opt in to re-dispatch when a consumed source re-resolves to a new value.
-    # "true"/"*" = any source; or a comma list of source names, e.g. "rng".
+    # "true"/"*" = any source; or a comma list of source names, e.g. "random-deployment-replicas".
     # Without this, a healthy component keeps its last-applied resolved values.
     app.oam.dev/autoUpdateSources: "true"
 spec:
-  # Declaration order matters: deployment-namer chains off cluster and tenant,
-  # so they must be declared before it (forward-only dependency rule).
   sources:
-    - name: rng
+    - name: random-deployment-replicas
       type: get-random
-      properties:
-        min: 1
-        max: 5
 
     - name: cluster
       type: cluster-lookup
@@ -24,9 +19,9 @@ spec:
     - name: tenant
       type: tenant-data
 
-    # Chained: assembles the deployment name from the sources above plus the
-    # component name. Its inputs are fed via fromSource from earlier sources.
-    - name: namer
+    # Chained source: assembles the deployment name from the sources above plus
+    # the component name. Its inputs are fed via fromSource from earlier sources.
+    - name: deployment-name
       type: deployment-namer
       properties:
         region:
@@ -39,45 +34,20 @@ spec:
           fromSource: tenant.name
 
   components:
-    # Raw Deployment: name, replicas, and labels are all populated from the
-    # resolved sources before the object is applied. (webservice can't be used
-    # here because its Deployment name is fixed to the component name.)
     - name: web
-      type: k8s-objects
+      type: demo-deployment
       properties:
-        objects:
-          - apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              # Name assembled by the chained namer source:
-              # <region>-<zone>-<department>-<tenant>-<component>
-              name:
-                fromSource: namer.name
-              labels:
-                example.com/region:
-                  fromSource: cluster.region
-                example.com/zone:
-                  fromSource: cluster.zone
-                example.com/department:
-                  fromSource: tenant.department
-                example.com/tenant:
-                  fromSource: tenant.name
-                example.com/environment:
-                  fromSource: tenant.environment
-            spec:
-              # Random replica count between 1 and 5, from random.org.
-              replicas:
-                fromSource: rng.value
-              selector:
-                matchLabels:
-                  app: random-deployment
-              template:
-                metadata:
-                  labels:
-                    app: random-deployment
-                    example.com/tenant:
-                      fromSource: tenant.name
-                spec:
-                  containers:
-                    - name: app
-                      image: nginx:1.27-alpine
+        name:
+          fromSource: deployment-name.name
+        replicas: 
+          fromSource: random-deployment-replicas.value
+        region:
+          fromSource: cluster.region
+        zone:
+          fromSource: cluster.zone
+        department:
+          fromSource: tenant.department
+        tenant:
+          fromSource: tenant.name
+        environment:
+          fromSource: tenant.environment
