@@ -26,7 +26,6 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	apitypes "github.com/oam-dev/kubevela/apis/types"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 )
 
@@ -74,7 +73,7 @@ func (s *secretSourceCacheStore) Read(ctx context.Context, cacheKey string, ttl 
 	return properties, stale, true, expiresAt, nil
 }
 
-func (s *secretSourceCacheStore) Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}) error {
+func (s *secretSourceCacheStore) Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}, meta velaprocess.SourceCacheWriteMeta) error {
 	if s == nil || s.client == nil || cacheKey == "" {
 		return nil
 	}
@@ -93,12 +92,10 @@ func (s *secretSourceCacheStore) Write(ctx context.Context, cacheKey, sourceType
 		secret.Namespace = sourceCacheNamespace
 		secret.Name = cacheKey
 		secret.Type = corev1.SecretTypeOpaque
-		secret.Labels = map[string]string{
-			apitypes.LabelConfigCatalog: apitypes.VelaCoreConfig,
-			apitypes.LabelConfigType:    sourceType,
-		}
+		secret.Labels = map[string]string{}
 		secret.Annotations = map[string]string{}
 		secret.Data = map[string][]byte{}
+		ApplySourceCacheMetadata(secret, sourceType, meta)
 		secret.Annotations[sourceCacheSyncAtKey] = now
 		secret.Data[sourceCacheDataKey] = raw
 		return s.client.Create(ctx, secret)
@@ -112,9 +109,31 @@ func (s *secretSourceCacheStore) Write(ctx context.Context, cacheKey, sourceType
 	if secret.Labels == nil {
 		secret.Labels = map[string]string{}
 	}
-	secret.Labels[apitypes.LabelConfigCatalog] = apitypes.VelaCoreConfig
-	secret.Labels[apitypes.LabelConfigType] = sourceType
+	ApplySourceCacheMetadata(secret, sourceType, meta)
 	secret.Annotations[sourceCacheSyncAtKey] = now
 	secret.Data[sourceCacheDataKey] = raw
+	return s.client.Update(ctx, secret)
+}
+
+// Touch records that a stale cache entry was served, advancing the last-accessed
+// annotation so the GC sweep does not collect an entry that is still in use. It
+// is throttled: if the existing last-accessed marker is already recent relative
+// to the entry's own TTL, the update is skipped to bound write amplification on
+// the render path.
+func (s *secretSourceCacheStore) Touch(ctx context.Context, cacheKey string) error {
+	if s == nil || s.client == nil || cacheKey == "" {
+		return nil
+	}
+	secret := &corev1.Secret{}
+	if err := s.client.Get(ctx, ktypes.NamespacedName{Namespace: sourceCacheNamespace, Name: cacheKey}, secret); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !ShouldTouchSourceCache(secret.Annotations, time.Now()) {
+		return nil
+	}
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	secret.Annotations[sourceCacheAccessedKey] = time.Now().Format(time.RFC3339)
 	return s.client.Update(ctx, secret)
 }

@@ -103,15 +103,28 @@ func (s *lruSourceCacheStore) Read(ctx context.Context, cacheKey string, ttl tim
 
 // Write persists through the delegate and, on success, refreshes Layer 1 so the
 // new value is immediately visible in-process without a store round-trip.
-func (s *lruSourceCacheStore) Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}) error {
+func (s *lruSourceCacheStore) Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}, meta velaprocess.SourceCacheWriteMeta) error {
 	if s == nil || cacheKey == "" {
 		return nil
 	}
-	if err := s.delegate.Write(ctx, cacheKey, sourceType, data); err != nil {
+	if err := s.delegate.Write(ctx, cacheKey, sourceType, data, meta); err != nil {
 		return err
 	}
 	// A just-written value is fresh for the whole in-memory window.
 	s.store(cacheKey, data, time.Time{}, s.ttl)
+	return nil
+}
+
+// Touch forwards a stale-serve last-accessed stamp to the delegate if it
+// supports it. Layer 1 never holds stale entries (see Read), so there is no
+// in-memory state to update here.
+func (s *lruSourceCacheStore) Touch(ctx context.Context, cacheKey string) error {
+	if s == nil || cacheKey == "" {
+		return nil
+	}
+	if toucher, ok := s.delegate.(velaprocess.SourceCacheToucher); ok {
+		return toucher.Touch(ctx, cacheKey)
+	}
 	return nil
 }
 

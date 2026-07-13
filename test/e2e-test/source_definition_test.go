@@ -46,8 +46,46 @@ var _ = Describe("SourceDefinition fromSource e2e", func() {
 	})
 
 	AfterEach(func() {
+		// Delete the test namespace FIRST so its Applications and SourceDefinitions
+		// are gone before we clean vela-system. Otherwise a still-running
+		// Application would re-write its source cache entry on the next reconcile,
+		// racing (and defeating) the vela-system cleanup below.
 		By("Clean up source-definition e2e namespace")
 		Expect(k8sClient.Delete(ctx, &ns, client.PropagationPolicy(metav1.DeletePropagationBackground))).Should(BeNil())
+
+		// SourceDefinitions live in the test namespace, but the ConfigTemplates
+		// (config-template-source-* ConfigMaps) and source cache entries
+		// (source-cache-* Secrets) they generate live in vela-system and are only
+		// reclaimed asynchronously by the periodic GC sweep. Delete everything
+		// stamped with this test's namespace via the owning-SourceDefinition label
+		// so runs do not leak into vela-system. Retry: the label-carrying objects
+		// may still be settling as the namespace tears down.
+		By("Clean up ConfigTemplates and source cache entries created in vela-system")
+		nsLabel := client.MatchingLabels{"sourcedefinition.oam.dev/namespace": namespaceName}
+		Eventually(func() error {
+			if err := k8sClient.DeleteAllOf(ctx, &corev1.ConfigMap{},
+				client.InNamespace("vela-system"), nsLabel); err != nil {
+				return err
+			}
+			if err := k8sClient.DeleteAllOf(ctx, &corev1.Secret{},
+				client.InNamespace("vela-system"), nsLabel); err != nil {
+				return err
+			}
+			// Confirm nothing labelled for this namespace remains.
+			var cms corev1.ConfigMapList
+			if err := k8sClient.List(ctx, &cms, client.InNamespace("vela-system"), nsLabel); err != nil {
+				return err
+			}
+			var secrets corev1.SecretList
+			if err := k8sClient.List(ctx, &secrets, client.InNamespace("vela-system"), nsLabel); err != nil {
+				return err
+			}
+			if len(cms.Items)+len(secrets.Items) > 0 {
+				return fmt.Errorf("still %d configmaps and %d secrets labelled for %s in vela-system",
+					len(cms.Items), len(secrets.Items), namespaceName)
+			}
+			return nil
+		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
 	It("resolves fromSource and reconciles updated source properties", func() {

@@ -62,10 +62,31 @@ type ContextData struct {
 	Output         interface{}
 }
 
+// SourceCacheWriteMeta carries identity and lifetime metadata stamped onto a
+// persisted source cache entry so a context-free garbage-collection sweep can
+// reason about it without re-evaluating the source CUE.
+type SourceCacheWriteMeta struct {
+	// TTL is the effective cache TTL resolved for this entry.
+	TTL time.Duration
+	// SourceDefName / SourceDefNamespace identify the owning SourceDefinition.
+	SourceDefName      string
+	SourceDefNamespace string
+	// TemplateName is the ConfigTemplate the entry was rendered against, if any.
+	TemplateName string
+}
+
 // SourceCacheStore abstracts source cache persistence operations.
 type SourceCacheStore interface {
 	Read(ctx context.Context, cacheKey string, ttl time.Duration) (map[string]interface{}, bool, bool, time.Time, error)
-	Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}) error
+	Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}, meta SourceCacheWriteMeta) error
+}
+
+// SourceCacheToucher is optionally implemented by a SourceCacheStore to record
+// that a stale entry was served. It advances a last-accessed marker only while
+// an entry is still in use but no longer being refreshed, which is exactly the
+// window the GC sweep must respect. Stores that cannot record this may omit it.
+type SourceCacheToucher interface {
+	Touch(ctx context.Context, cacheKey string) error
 }
 
 // policyAdditionalContextKey is the shared Go context key for policy output.ctx data

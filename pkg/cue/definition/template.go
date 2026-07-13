@@ -43,6 +43,7 @@ import (
 	"github.com/kubevela/pkg/multicluster"
 
 	"github.com/pkg/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -51,6 +52,7 @@ import (
 	"github.com/kubevela/workflow/pkg/cue/model/value"
 	"github.com/kubevela/workflow/pkg/cue/process"
 
+	apitypes "github.com/oam-dev/kubevela/apis/types"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/cue/task"
 	"github.com/oam-dev/kubevela/pkg/cue/upgrade"
@@ -75,7 +77,10 @@ const (
 	SourceResolutionStatusKey = "sourceResolutionStatuses"
 	sourceCacheNamespace      = "vela-system"
 	sourceCacheTTL            = 15 * time.Minute
-	sourceCacheSyncAtKey      = "config.oam.dev/last-sync-at"
+	sourceCacheSyncAtKey      = apitypes.AnnotationConfigLastSyncAt
+	sourceCacheAccessedKey    = apitypes.AnnotationConfigLastAccessed
+	sourceCacheTTLKey         = apitypes.AnnotationConfigTTL
+	sourceCacheTemplateKey    = apitypes.AnnotationConfigTemplate
 	sourceCacheDataKey        = "input-properties"
 	sourceCachePolicyUseStale = "use-stale"
 	sourceCachePolicyFail     = "fail"
@@ -936,6 +941,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	}, "\n"))
 	if err != nil {
 		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.touchSourceCache(cachePolicy.Key)
 			r.resolved[sourceName] = cached
 			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh failed; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
 			return cached, nil
@@ -946,6 +952,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	if userErrs := extractUserErrors(val, "source definition", sourceType); len(userErrs) > 0 {
 		errMsg := strings.Join(userErrs, "; ")
 		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.touchSourceCache(cachePolicy.Key)
 			r.resolved[sourceName] = cached
 			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh reported errors; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
 			return cached, nil
@@ -956,6 +963,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	output := map[string]interface{}{}
 	if err := val.LookupPath(value.FieldPath(OutputFieldName)).Decode(&output); err != nil {
 		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.touchSourceCache(cachePolicy.Key)
 			r.resolved[sourceName] = cached
 			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh failed; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
 			return cached, nil
@@ -965,6 +973,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	}
 	if err := r.validateResolvedOutput(sourceType, sourceTemplate, output); err != nil {
 		if found && stale && cachePolicy.OnStaleFailure == sourceCachePolicyUseStale {
+			r.touchSourceCache(cachePolicy.Key)
 			r.resolved[sourceName] = cached
 			r.setSourceStatus(sourceName, sourceType, "Resolved", "refresh failed; serving stale cached value", cachePolicy.Key, cacheExpiresAt.Format(time.RFC3339), cached)
 			return cached, nil
@@ -974,7 +983,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	}
 	r.resolved[sourceName] = output
 	expiresAt := time.Now().Add(cachePolicy.TTL).Format(time.RFC3339)
-	if err := r.writeSourceCache(cachePolicy.Key, sourceType, output); err != nil {
+	if err := r.writeSourceCache(cachePolicy.Key, sourceType, output, cachePolicy.TTL); err != nil {
 		klog.Warningf("write source cache failed for %s: %v", sourceName, err)
 	}
 	r.setSourceStatus(sourceName, sourceType, "Resolved", "", cachePolicy.Key, expiresAt, output)
@@ -1102,11 +1111,148 @@ func (r *sourceResolver) readSourceCache(cacheKey string, ttl time.Duration) (ma
 	return r.cacheStore.Read(r.ctx.GetCtx(), cacheKey, ttl)
 }
 
-func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[string]interface{}) error {
+func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[string]interface{}, ttl time.Duration) error {
 	if r.cacheStore == nil || cacheKey == "" {
 		return nil
 	}
-	return r.cacheStore.Write(r.ctx.GetCtx(), cacheKey, sourceType, data)
+	namespace, _ := r.ctx.GetData(velaprocess.ContextNamespace).(string)
+	meta := velaprocess.SourceCacheWriteMeta{
+		TTL:                ttl,
+		SourceDefName:      sourceType,
+		SourceDefNamespace: namespace,
+		TemplateName:       sourceCacheTemplateName(sourceType, r.sourceSchemas[sourceType]),
+	}
+	return r.cacheStore.Write(r.ctx.GetCtx(), cacheKey, sourceType, data, meta)
+}
+
+// touchSourceCache advances the last-accessed marker for a stale entry that is
+// being served, if the backing store supports it. Failures are non-fatal: a
+// missed touch only risks the sweep collecting a still-used entry one cycle
+// early, which the next render re-creates.
+func (r *sourceResolver) touchSourceCache(cacheKey string) {
+	if r.cacheStore == nil || cacheKey == "" {
+		return
+	}
+	toucher, ok := r.cacheStore.(velaprocess.SourceCacheToucher)
+	if !ok {
+		return
+	}
+	if err := toucher.Touch(r.ctx.GetCtx(), cacheKey); err != nil {
+		klog.Warningf("touch source cache failed for %s: %v", cacheKey, err)
+	}
+}
+
+// sourceCacheTemplateName reproduces the ConfigTemplate name the SourceDefinition
+// controller derives from (sourceType, schema) so a cache entry can be stamped
+// with the template it was rendered against without a client round-trip. It must
+// stay in sync with buildSchemaTemplateName in the sourcedefinition controller.
+// Returns "" when there is no schema (no template is generated in that case).
+func sourceCacheTemplateName(sourceType, schemaExpr string) string {
+	if schemaExpr == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(schemaExpr))
+	shortHash := hex.EncodeToString(sum[:])[:8]
+	safeName := sanitizeSourceName(sourceType)
+	if safeName == "" {
+		safeName = "source"
+	}
+	const prefix = "source-"
+	suffix := "-" + shortHash
+	maxNameLen := 63 - len(prefix) - len(suffix)
+	if maxNameLen < 1 {
+		maxNameLen = 1
+	}
+	if len(safeName) > maxNameLen {
+		safeName = strings.Trim(safeName[:maxNameLen], "-")
+		if safeName == "" {
+			safeName = "source"
+		}
+	}
+	return prefix + safeName + suffix
+}
+
+func sanitizeSourceName(name string) string {
+	s := strings.ToLower(name)
+	var b strings.Builder
+	b.Grow(len(s))
+	lastDash := false
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// applySourceCacheMetadata stamps identity and lifetime metadata onto a source
+// cache object so a context-free GC sweep can reason about it. It is strictly
+// additive: it never overwrites the config.oam.dev/type label, which callers
+// (e.g. the config-API store via ParseConfig) set to the ConfigTemplate name and
+// which the config factory relies on for its change-template guard. The
+// ttl/template/sourcedefinition markers are new.
+func ApplySourceCacheMetadata(obj metav1.Object, sourceType string, meta velaprocess.SourceCacheWriteMeta) {
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[apitypes.LabelConfigCatalog] = apitypes.VelaCoreConfig
+	// Preserve an existing type (the template name set by ParseConfig); only fall
+	// back to the source type when nothing linked a template (the Secret-store
+	// path, which has no ConfigTemplate).
+	if labels[apitypes.LabelConfigType] == "" {
+		labels[apitypes.LabelConfigType] = sourceType
+	}
+	if meta.SourceDefName != "" {
+		labels[apitypes.LabelSourceDefinitionName] = meta.SourceDefName
+	}
+	if meta.SourceDefNamespace != "" {
+		labels[apitypes.LabelSourceDefinitionNamespace] = meta.SourceDefNamespace
+	}
+	obj.SetLabels(labels)
+
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	if meta.TTL > 0 {
+		annotations[sourceCacheTTLKey] = meta.TTL.String()
+	}
+	if meta.TemplateName != "" {
+		annotations[sourceCacheTemplateKey] = meta.TemplateName
+	}
+	obj.SetAnnotations(annotations)
+}
+
+// shouldTouchSourceCache throttles last-accessed updates: it returns true only
+// when no marker exists yet or the existing one is older than half the entry's
+// TTL, so a hot stale entry is not rewritten on every reconcile. The TTL is read
+// from the entry's own annotation, defaulting to sourceCacheTTL.
+func ShouldTouchSourceCache(annotations map[string]string, now time.Time) bool {
+	if annotations == nil {
+		return true
+	}
+	raw := annotations[sourceCacheAccessedKey]
+	if raw == "" {
+		return true
+	}
+	last, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return true
+	}
+	ttl := sourceCacheTTL
+	if t := annotations[sourceCacheTTLKey]; t != "" {
+		if parsed, perr := time.ParseDuration(t); perr == nil && parsed > 0 {
+			ttl = parsed
+		}
+	}
+	return now.Sub(last) >= ttl/2
 }
 
 func (r *sourceResolver) setSourceStatus(sourceName, sourceType, phase, message, config, expiresAt string, resolved map[string]interface{}) {

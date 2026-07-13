@@ -22,16 +22,22 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 )
 
 type fakeSourceCacheStore struct {
-	reads    int
-	writes   int
-	data     map[string]interface{}
-	stale    bool
-	found    bool
-	expires  time.Time
-	writeErr error
+	reads     int
+	writes    int
+	touches   int
+	data      map[string]interface{}
+	stale     bool
+	found     bool
+	expires   time.Time
+	writeErr  error
+	lastMeta  velaprocess.SourceCacheWriteMeta
+	touchErr  error
+	supportsT bool
 }
 
 func (f *fakeSourceCacheStore) Read(_ context.Context, _ string, _ time.Duration) (map[string]interface{}, bool, bool, time.Time, error) {
@@ -39,8 +45,9 @@ func (f *fakeSourceCacheStore) Read(_ context.Context, _ string, _ time.Duration
 	return f.data, f.stale, f.found, f.expires, nil
 }
 
-func (f *fakeSourceCacheStore) Write(_ context.Context, _, _ string, data map[string]interface{}) error {
+func (f *fakeSourceCacheStore) Write(_ context.Context, _, _ string, data map[string]interface{}, meta velaprocess.SourceCacheWriteMeta) error {
 	f.writes++
+	f.lastMeta = meta
 	if f.writeErr != nil {
 		return f.writeErr
 	}
@@ -147,9 +154,10 @@ func TestLRUSourceCacheWritePopulatesMemory(t *testing.T) {
 	delegate := &fakeSourceCacheStore{}
 	store := newTestLRUStore(delegate, time.Minute)
 
-	err := store.Write(context.Background(), "key-d", "source-x", map[string]interface{}{"region": "eu-west-1"})
+	err := store.Write(context.Background(), "key-d", "source-x", map[string]interface{}{"region": "eu-west-1"}, velaprocess.SourceCacheWriteMeta{TTL: time.Minute})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, delegate.writes)
+	assert.Equal(t, time.Minute, delegate.lastMeta.TTL)
 
 	// A subsequent read is served from Layer 1 without touching the delegate.
 	got, stale, found, _, err := store.Read(context.Background(), "key-d", time.Hour)

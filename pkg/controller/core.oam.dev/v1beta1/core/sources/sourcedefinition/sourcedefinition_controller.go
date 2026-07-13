@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"cuelang.org/go/cue/ast"
 	cueformat "cuelang.org/go/cue/format"
@@ -37,6 +38,7 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	apitypes "github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/config"
 	oamctrl "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	coredef "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1beta1/core"
@@ -53,7 +55,8 @@ const (
 
 // +kubebuilder:rbac:groups=core.oam.dev,resources=sourcedefinitions,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=core.oam.dev,resources=sourcedefinitions/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;update;delete
 
 // Reconciler reconciles a SourceDefinition object.
 type Reconciler struct {
@@ -67,7 +70,13 @@ type options struct {
 	concurrentReconciles int
 	ignoreDefNoCtrlReq   bool
 	controllerVersion    string
+	cacheGCInterval      time.Duration
+	cacheGCEnabled       bool
 }
+
+// defaultCacheGCInterval is how often the source cache/template GC sweep runs
+// when no explicit interval is configured.
+const defaultCacheGCInterval = 10 * time.Minute
 
 // Reconcile is the main logic for SourceDefinition controller.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -140,6 +149,19 @@ template: {
 	tmpl, err := factory.ParseTemplate(ctx, templateName, []byte(templateContent))
 	if err != nil {
 		return nil, err
+	}
+	// Stamp the owning SourceDefinition identity onto the ConfigTemplate as
+	// queryable labels so the cache GC sweep can determine whether a template is
+	// still referenced by a live SourceDefinition without parsing the CUE
+	// description. Additive to the labels ParseTemplate already sets.
+	if tmpl.ConfigMap != nil {
+		if tmpl.ConfigMap.Labels == nil {
+			tmpl.ConfigMap.Labels = map[string]string{}
+		}
+		tmpl.ConfigMap.Labels[apitypes.LabelSourceDefinitionName] = def.Name
+		if def.Namespace != "" {
+			tmpl.ConfigMap.Labels[apitypes.LabelSourceDefinitionNamespace] = def.Namespace
+		}
 	}
 	if err := factory.CreateOrUpdateConfigTemplate(ctx, sourceTemplateNamespace, tmpl); err != nil {
 		return nil, err
@@ -232,12 +254,46 @@ func (r *Reconciler) UpdateStatus(ctx context.Context, def *v1beta1.SourceDefini
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.record = event.NewAPIRecorder(mgr.GetEventRecorderFor("SourceDefinition")).
 		WithAnnotations("controller", "SourceDefinition")
+	if r.cacheGCEnabled {
+		interval := r.cacheGCInterval
+		if interval <= 0 {
+			interval = defaultCacheGCInterval
+		}
+		if err := mgr.Add(&cacheGCRunnable{reconciler: r, interval: interval}); err != nil {
+			return err
+		}
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.concurrentReconciles,
 		}).
 		For(&v1beta1.SourceDefinition{}).
 		Complete(r)
+}
+
+// cacheGCRunnable drives the periodic source cache/template GC sweep. It is a
+// manager Runnable rather than a reconcile hook so the sweep runs on a fixed
+// timer independent of individual SourceDefinition events, and stops cleanly
+// when the manager's context is cancelled.
+type cacheGCRunnable struct {
+	reconciler *Reconciler
+	interval   time.Duration
+}
+
+// Start runs the sweep on a ticker until ctx is done.
+func (g *cacheGCRunnable) Start(ctx context.Context) error {
+	ticker := time.NewTicker(g.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if _, err := g.reconciler.sweepSourceCache(ctx); err != nil {
+				klog.ErrorS(err, "source cache GC sweep failed")
+			}
+		}
+	}
 }
 
 // Setup adds a controller that reconciles SourceDefinition.
@@ -255,5 +311,7 @@ func parseOptions(args oamctrl.Args) options {
 		concurrentReconciles: args.ConcurrentReconciles,
 		ignoreDefNoCtrlReq:   args.IgnoreDefinitionWithoutControllerRequirement,
 		controllerVersion:    version.VelaVersion,
+		cacheGCInterval:      defaultCacheGCInterval,
+		cacheGCEnabled:       true,
 	}
 }

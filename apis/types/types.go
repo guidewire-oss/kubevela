@@ -98,6 +98,20 @@ const (
 	AnnotationConfigAlias = "config.oam.dev/alias"
 	// AnnotationConfigDistributionSpec is the annotation key of the application that distributes the configs
 	AnnotationConfigDistributionSpec = "config.oam.dev/distribution-spec"
+	// AnnotationConfigLastSyncAt is the annotation recording when a source cache entry was last refreshed (RFC3339).
+	AnnotationConfigLastSyncAt = "config.oam.dev/last-sync-at"
+	// AnnotationConfigLastAccessed is the annotation recording when a stale source cache entry was last served (RFC3339).
+	// It is stamped only on the stale-serve path, so it advances only while an entry is still in use but no longer being refreshed.
+	AnnotationConfigLastAccessed = "config.oam.dev/last-accessed"
+	// AnnotationConfigTTL is the annotation recording the effective cache TTL (a Go duration string) for a source cache entry.
+	// It is stamped at write time so a context-free sweeper can compute the collection deadline without re-evaluating the source CUE.
+	AnnotationConfigTTL = "config.oam.dev/ttl"
+	// AnnotationConfigTemplate is the annotation recording the ConfigTemplate name a source cache entry was rendered against.
+	AnnotationConfigTemplate = "config.oam.dev/template"
+	// LabelSourceDefinitionName is the label recording the name of the SourceDefinition that owns a ConfigTemplate or cache entry.
+	LabelSourceDefinitionName = "sourcedefinition.oam.dev/name"
+	// LabelSourceDefinitionNamespace is the label recording the namespace of the owning SourceDefinition.
+	LabelSourceDefinitionNamespace = "sourcedefinition.oam.dev/namespace"
 )
 
 const (

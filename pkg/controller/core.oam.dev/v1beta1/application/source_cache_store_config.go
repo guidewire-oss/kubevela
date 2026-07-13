@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -11,15 +12,19 @@ import (
 	apitypes "github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/config"
+	"github.com/oam-dev/kubevela/pkg/cue/definition"
+	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 const (
-	sourceCacheNamespace = "vela-system"
-	sourceCacheSyncAtKey = "config.oam.dev/last-sync-at"
+	sourceCacheNamespace   = "vela-system"
+	sourceCacheSyncAtKey   = apitypes.AnnotationConfigLastSyncAt
+	sourceCacheAccessedKey = apitypes.AnnotationConfigLastAccessed
 )
 
 type configAPISourceCacheStore struct {
+	client           client.Client
 	factory          config.Factory
 	templateBySource map[string]string
 }
@@ -29,6 +34,7 @@ func newConfigAPISourceCacheStore(cli client.Client, templateBySource map[string
 		templateBySource = map[string]string{}
 	}
 	return &configAPISourceCacheStore{
+		client:           cli,
 		factory:          config.NewConfigFactory(cli),
 		templateBySource: templateBySource,
 	}
@@ -88,8 +94,11 @@ func (s *configAPISourceCacheStore) Read(ctx context.Context, cacheKey string, t
 	return cfg.Properties, true, time.Now().After(expiresAt), expiresAt, nil
 }
 
-func (s *configAPISourceCacheStore) Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}) error {
+func (s *configAPISourceCacheStore) Write(ctx context.Context, cacheKey, sourceType string, data map[string]interface{}, meta velaprocess.SourceCacheWriteMeta) error {
 	templateName := s.templateBySource[sourceType]
+	if templateName == "" {
+		templateName = meta.TemplateName
+	}
 	template := config.NamespacedName{}
 	if templateName != "" {
 		template = config.NamespacedName{
@@ -110,13 +119,35 @@ func (s *configAPISourceCacheStore) Write(ctx context.Context, cacheKey, sourceT
 	if cfg.Secret.Annotations == nil {
 		cfg.Secret.Annotations = map[string]string{}
 	}
-	cfg.Secret.Annotations[sourceCacheSyncAtKey] = time.Now().UTC().Format(time.RFC3339)
 	if cfg.Secret.Labels == nil {
 		cfg.Secret.Labels = map[string]string{}
 	}
-	cfg.Secret.Labels[apitypes.LabelConfigCatalog] = apitypes.VelaCoreConfig
-	if templateName == "" {
-		cfg.Secret.Labels[apitypes.LabelConfigType] = sourceType
-	}
+	// Stamp identity + lifetime metadata for the GC sweep. sourceType is always
+	// recorded as the config type; the resolved template name (if any) is kept in
+	// its own annotation rather than overloading the type label.
+	stampMeta := meta
+	stampMeta.TemplateName = templateName
+	definition.ApplySourceCacheMetadata(cfg.Secret, sourceType, stampMeta)
+	cfg.Secret.Annotations[sourceCacheSyncAtKey] = time.Now().UTC().Format(time.RFC3339)
 	return s.factory.CreateOrUpdateConfig(ctx, cfg, sourceCacheNamespace)
+}
+
+// Touch advances the last-accessed marker on a stale cache entry that is being
+// served. It is throttled against the entry's TTL to bound write amplification.
+func (s *configAPISourceCacheStore) Touch(ctx context.Context, cacheKey string) error {
+	if s.client == nil {
+		return nil
+	}
+	secret := &corev1.Secret{}
+	if err := s.client.Get(ctx, client.ObjectKey{Namespace: sourceCacheNamespace, Name: cacheKey}, secret); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !definition.ShouldTouchSourceCache(secret.Annotations, time.Now()) {
+		return nil
+	}
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	secret.Annotations[sourceCacheAccessedKey] = time.Now().UTC().Format(time.RFC3339)
+	return s.client.Update(ctx, secret)
 }
