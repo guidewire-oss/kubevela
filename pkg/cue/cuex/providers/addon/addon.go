@@ -47,10 +47,9 @@ type RenderVars struct {
 
 // ResultVars is the $returns shape.
 type ResultVars struct {
-	ResolvedVersion string                   `json:"resolvedVersion"`
-	Registry        string                   `json:"registry"`
-	Application     map[string]interface{}   `json:"application"`
-	Resources       []map[string]interface{} `json:"resources"`
+	ResolvedVersion string                 `json:"resolvedVersion"`
+	Registry        string                 `json:"registry"`
+	Application     map[string]interface{} `json:"application"`
 }
 
 // RenderParams is the params for the render action.
@@ -80,7 +79,6 @@ func Render(ctx context.Context, params *RenderParams) (*RenderReturns, error) {
 		ResolvedVersion: res.ResolvedVersion,
 		Registry:        res.Registry,
 		Application:     res.Application,
-		Resources:       res.Resources,
 	}}, nil
 }
 

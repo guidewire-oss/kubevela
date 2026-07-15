@@ -5,7 +5,7 @@ import (
 "addon": {
 	annotations: {}
 	attributes: workload: type: "autodetects.core.oam.dev"
-	description: "Install an addon as a component; the addon's Application and auxiliaries are tracked by this Application."
+	description: "Install an addon as a component; the addon's Application (with its auxiliaries) is tracked by this Application."
 	labels: {}
 	type: "component"
 }
@@ -22,12 +22,6 @@ template: {
 	}
 
 	output: _render.$returns.application
-
-	outputs: {
-		for i, r in _render.$returns.resources {
-			"aux-\(i)": r
-		}
-	}
 
 	parameter: {
 		// Addon name; defaults to the component name.

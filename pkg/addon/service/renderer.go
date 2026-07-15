@@ -168,16 +168,13 @@ func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonReques
 		return nil, fmt.Errorf("render addon %q: %w", req.Name, err)
 	}
 
-	resources := make([]map[string]interface{}, 0, len(aux))
-	for _, o := range aux {
-		resources = append(resources, o.Object)
-	}
-
-	auxiliaries, err := r.renderAuxiliaries(ctx, installPkg, req.Properties)
+	groups, err := r.auxComponents(ctx, installPkg, req.Properties)
 	if err != nil {
 		return nil, fmt.Errorf("render auxiliaries for addon %q: %w", req.Name, err)
 	}
-	resources = append(resources, auxiliaries...)
+	// The addon template's own outputs (RenderApp's aux) have no fixed category,
+	// so they go into a catch-all component.
+	groups = append(groups, auxComponent{name: "addon-auxiliaries", objects: aux})
 
 	appMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(app)
 	if err != nil {
@@ -186,20 +183,13 @@ func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonReques
 	appMap["apiVersion"] = "core.oam.dev/v1beta1"
 	appMap["kind"] = "Application"
 
-	// Strip server-populated fields that break CUE completion when a manifest
-	// becomes a component output: metadata.creationTimestamp marshals to null,
-	// which CUE treats as an incomplete value ("_"), and status is not part of
-	// the desired state.
+	appendAuxComponents(appMap, groups)
 	sanitizeManifest(appMap)
-	for _, res := range resources {
-		sanitizeManifest(res)
-	}
 
 	return &api.AddonResult{
 		ResolvedVersion: resolved,
 		Registry:        registryName,
 		Application:     appMap,
-		Resources:       resources,
 	}, nil
 }
 
@@ -252,46 +242,75 @@ func (r *rendererImpl) fetchExactVersion(ctx context.Context, registryName, addo
 	return pkgaddon.GetAddonInstallPackageFromRegistry(ctx, r.client(), registryName, addonName, version)
 }
 
-// renderAuxiliaries renders the definition, config-template, schema, view and
-// args-secret objects the dispatcher normally applies alongside the addon
-// Application, converting each to a generic map for CUE consumption.
-func (r *rendererImpl) renderAuxiliaries(ctx context.Context, installPkg *pkgaddon.InstallPackage, properties map[string]interface{}) ([]map[string]interface{}, error) {
-	var objs []*unstructured.Unstructured
+// auxComponent is one k8s-objects component to append to the addon Application.
+// Each corresponds to a category of auxiliary the dispatcher normally applies
+// alongside the addon Application.
+type auxComponent struct {
+	name    string
+	objects []*unstructured.Unstructured
+}
 
+// auxComponents renders the addon's definition, config-template, schema, view
+// and args-secret objects and returns them grouped by category, in a
+// deterministic order.
+func (r *rendererImpl) auxComponents(ctx context.Context, installPkg *pkgaddon.InstallPackage, properties map[string]interface{}) ([]auxComponent, error) {
 	defs, err := pkgaddon.RenderDefinitions(installPkg, r.restConfig())
 	if err != nil {
 		return nil, err
 	}
-	objs = append(objs, defs...)
-
 	configTemplates, err := pkgaddon.RenderConfigTemplates(ctx, installPkg, r.client())
 	if err != nil {
 		return nil, err
 	}
-	objs = append(objs, configTemplates...)
-
 	schemas, err := pkgaddon.RenderDefinitionSchema(installPkg)
 	if err != nil {
 		return nil, err
 	}
-	objs = append(objs, schemas...)
-
 	views, err := pkgaddon.RenderViews(ctx, installPkg)
 	if err != nil {
 		return nil, err
 	}
-	objs = append(objs, views...)
-
+	var secretObjs []*unstructured.Unstructured
 	if secret := pkgaddon.RenderArgsSecret(installPkg, properties); secret != nil {
-		objs = append(objs, secret)
+		secretObjs = []*unstructured.Unstructured{secret}
 	}
+	return []auxComponent{
+		{name: "addon-definitions", objects: defs},
+		{name: "addon-config-templates", objects: configTemplates},
+		{name: "addon-schemas", objects: schemas},
+		{name: "addon-views", objects: views},
+		{name: "addon-secret", objects: secretObjs},
+	}, nil
+}
 
-	out := make([]map[string]interface{}, 0, len(objs))
-	for _, o := range objs {
-		if o == nil {
-			continue
-		}
-		out = append(out, o.Object)
+// appendAuxComponents wraps each non-empty group as a k8s-objects component and
+// appends it to the Application's spec.components. Each auxiliary object is
+// sanitized (status + creationTimestamp) before nesting so the manifest
+// completes cleanly as CUE.
+func appendAuxComponents(appMap map[string]interface{}, groups []auxComponent) {
+	spec, ok := appMap["spec"].(map[string]interface{})
+	if !ok {
+		spec = map[string]interface{}{}
+		appMap["spec"] = spec
 	}
-	return out, nil
+	comps, _ := spec["components"].([]interface{})
+	for _, g := range groups {
+		objs := make([]interface{}, 0, len(g.objects))
+		for _, o := range g.objects {
+			if o == nil {
+				continue
+			}
+			sanitizeManifest(o.Object)
+			objs = append(objs, o.Object)
+		}
+		if len(objs) == 0 {
+			continue // omit empty categories
+		}
+		comps = append(comps, map[string]interface{}{
+			"name":       g.name,
+			"type":       "k8s-objects",
+			"properties": map[string]interface{}{"objects": objs},
+		})
+	}
+	spec["components"] = comps
 }

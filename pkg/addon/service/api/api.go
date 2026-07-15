@@ -36,13 +36,13 @@ type AddonRequest struct {
 	SkipVersionValidate bool
 }
 
-// AddonResult is the rendered output: the addon Application and its auxiliaries
-// as generic maps, ready to hand back to CUE.
+// AddonResult is the rendered output: the addon Application (with its
+// auxiliaries folded in as components) as a generic map, ready to hand back
+// to CUE.
 type AddonResult struct {
 	ResolvedVersion string
 	Registry        string
 	Application     map[string]interface{}
-	Resources       []map[string]interface{}
 }
 
 // Renderer resolves and renders an addon without dispatching it to the cluster.
