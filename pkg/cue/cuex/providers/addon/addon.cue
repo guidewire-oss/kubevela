@@ -15,7 +15,6 @@ package addon
 		resolvedVersion: string
 		registry:        string
 		application: {...}
-		resources: [...{...}]
 		...
 	}
 	...

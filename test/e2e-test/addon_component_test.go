@@ -148,18 +148,42 @@ var _ = Describe("Addon as component e2e", func() {
 			return k8sClient.Get(ctx, types.NamespacedName{Namespace: systemNamespace, Name: helmCompDefName}, cd)
 		}, waitTimeout, pollPeriod).Should(BeNil())
 
-		By("Asserting the wrapping application's ResourceTracker records the child addon Application")
+		By("Asserting the wrapping application's ResourceTracker records ONLY the child addon Application")
 		Eventually(func() error {
 			rt := new(v1beta1.ResourceTracker)
 			if err := k8sClient.Get(ctx, generateResourceTrackerKey(systemNamespace, wrappingAppName, 1), rt); err != nil {
 				return err
 			}
+			var recordsChild, recordsHelm bool
 			for _, mr := range rt.Spec.ManagedResources {
 				if mr.Kind == v1beta1.ApplicationKind && mr.Name == childAppName {
+					recordsChild = true
+				}
+				if mr.Kind == v1beta1.ComponentDefinitionKind && mr.Name == helmCompDefName {
+					recordsHelm = true
+				}
+			}
+			if !recordsChild {
+				return fmt.Errorf("outer resourceTracker %q does not record child Application %q", rt.Name, childAppName)
+			}
+			if recordsHelm {
+				return fmt.Errorf("outer resourceTracker %q must NOT record auxiliary %q (it belongs to the inner app now)", rt.Name, helmCompDefName)
+			}
+			return nil
+		}, waitTimeout, pollPeriod).Should(BeNil())
+
+		By("Asserting the child addon Application's ResourceTracker records the helm auxiliary")
+		Eventually(func() error {
+			rt := new(v1beta1.ResourceTracker)
+			if err := k8sClient.Get(ctx, generateResourceTrackerKey(systemNamespace, childAppName, 1), rt); err != nil {
+				return err
+			}
+			for _, mr := range rt.Spec.ManagedResources {
+				if mr.Kind == v1beta1.ComponentDefinitionKind && mr.Name == helmCompDefName {
 					return nil
 				}
 			}
-			return fmt.Errorf("resourceTracker %q does not record child Application %q", rt.Name, childAppName)
+			return fmt.Errorf("inner resourceTracker %q does not record auxiliary %q", rt.Name, helmCompDefName)
 		}, waitTimeout, pollPeriod).Should(BeNil())
 
 		By("Deleting the helm ComponentDefinition auxiliary and asserting StateKeep heals it back")

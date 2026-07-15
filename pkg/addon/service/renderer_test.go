@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -180,7 +181,46 @@ func TestSanitizeManifest(t *testing.T) {
 	}
 }
 
-func TestRenderAddonReturnsApplicationAndResources(t *testing.T) {
+func TestAppendAuxComponentsGroupsAndOmitsEmpty(t *testing.T) {
+	appMap := map[string]interface{}{
+		"apiVersion": "core.oam.dev/v1beta1",
+		"kind":       "Application",
+		"spec": map[string]interface{}{
+			"components": []interface{}{
+				map[string]interface{}{"name": "fluxcd-ns", "type": "k8s-objects"},
+			},
+		},
+	}
+	def := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "core.oam.dev/v1beta1",
+		"kind":       "ComponentDefinition",
+		"metadata":   map[string]interface{}{"name": "helm", "creationTimestamp": nil},
+		"status":     map[string]interface{}{"phase": "x"},
+	}}
+	groups := []auxComponent{
+		{name: "addon-definitions", objects: []*unstructured.Unstructured{def}},
+		{name: "addon-schemas", objects: nil}, // empty -> omitted
+	}
+
+	appendAuxComponents(appMap, groups)
+
+	comps := appMap["spec"].(map[string]interface{})["components"].([]interface{})
+	require.Len(t, comps, 2) // the original component + addon-definitions only
+
+	added := comps[1].(map[string]interface{})
+	assert.Equal(t, "addon-definitions", added["name"])
+	assert.Equal(t, "k8s-objects", added["type"])
+
+	objs := added["properties"].(map[string]interface{})["objects"].([]interface{})
+	require.Len(t, objs, 1)
+	obj := objs[0].(map[string]interface{})
+	_, hasStatus := obj["status"]
+	assert.False(t, hasStatus, "aux object status must be stripped")
+	_, hasCT := obj["metadata"].(map[string]interface{})["creationTimestamp"]
+	assert.False(t, hasCT, "aux object creationTimestamp must be stripped")
+}
+
+func TestRenderAddonReturnsApplicationWithComponents(t *testing.T) {
 	if os.Getenv("KUBEVELA_ADDON_RENDER_E2E") == "" {
 		t.Skip("requires a reachable registry; happy path is covered by the e2e suite (set KUBEVELA_ADDON_RENDER_E2E to run)")
 	}
@@ -189,5 +229,9 @@ func TestRenderAddonReturnsApplicationAndResources(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "1.0.0", res.ResolvedVersion)
 	assert.Equal(t, "Application", res.Application["kind"])
-	assert.NotEmpty(t, res.Resources)
+	spec, ok := res.Application["spec"].(map[string]interface{})
+	require.True(t, ok, "Application.spec must be a map[string]interface{}")
+	comps, ok := spec["components"].([]interface{})
+	require.True(t, ok, "spec.components must be a []interface{}")
+	assert.NotEmpty(t, comps)
 }

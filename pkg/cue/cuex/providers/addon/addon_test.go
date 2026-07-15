@@ -50,9 +50,6 @@ func TestRenderPassesThrough(t *testing.T) {
 				"apiVersion": "core.oam.dev/v1beta1",
 				"kind":       "Application",
 			},
-			Resources: []map[string]interface{}{
-				{"kind": "ComponentDefinition"},
-			},
 		},
 	}
 	api.SetDefaultRenderer(fake)
@@ -80,8 +77,6 @@ func TestRenderPassesThrough(t *testing.T) {
 	assert.Equal(t, "1.2.3", got.Returns.ResolvedVersion)
 	assert.Equal(t, "my-registry", got.Returns.Registry)
 	assert.Equal(t, "Application", got.Returns.Application["kind"])
-	require.Len(t, got.Returns.Resources, 1)
-	assert.Equal(t, "ComponentDefinition", got.Returns.Resources[0]["kind"])
 }
 
 func TestRenderPropagatesError(t *testing.T) {

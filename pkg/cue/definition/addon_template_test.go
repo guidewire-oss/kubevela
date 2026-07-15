@@ -109,13 +109,6 @@ func TestAddonComponentDefinitionRenders(t *testing.T) {
 				"kind":       "Application",
 				"metadata":   map[string]interface{}{"name": "addon-example", "namespace": "vela-system"},
 			},
-			Resources: []map[string]interface{}{
-				{
-					"apiVersion": "core.oam.dev/v1beta1",
-					"kind":       "ComponentDefinition",
-					"metadata":   map[string]interface{}{"name": "helm"},
-				},
-			},
 		},
 	}
 	api.SetDefaultRenderer(fake)
@@ -151,12 +144,10 @@ func TestAddonComponentDefinitionRenders(t *testing.T) {
 	assert.Equal(t, "core.oam.dev/v1beta1", baseObj.GetAPIVersion())
 	assert.Equal(t, "addon-example", baseObj.GetName())
 
-	require.Len(t, assists, 1)
-	auxObj, err := assists[0].Ins.Unstructured()
-	require.NoError(t, err)
-	assert.Equal(t, "aux-0", assists[0].Name)
-	assert.Equal(t, "ComponentDefinition", auxObj.GetKind())
-	assert.Equal(t, "helm", auxObj.GetName())
+	// The component now emits only output (the self-contained Application);
+	// auxiliaries are folded into the Application by the render service, so the
+	// definition produces no outputs.
+	assert.Empty(t, assists, "addon component must emit no outputs")
 }
 
 // TestAddonComponentDefinitionDefaultsAddonToComponentName verifies the
