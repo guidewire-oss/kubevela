@@ -18,12 +18,16 @@ package service
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"testing"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -35,14 +39,6 @@ import (
 // fakeClientWithRegistry returns a fake client with no addon registry configured,
 // so any addon resolution fails as "not found".
 func fakeClientWithRegistry(t *testing.T) client.Client {
-	t.Helper()
-	return fake.NewClientBuilder().Build()
-}
-
-// fakeClientWithMockRegistry returns a fake client backed by a stubbed registry.
-// The happy-path render test that uses it is gated behind an env var and is
-// exercised by the e2e suite; this keeps the always-on unit test hermetic.
-func fakeClientWithMockRegistry(t *testing.T) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().Build()
 }
@@ -236,6 +232,122 @@ func TestSuppressLastAppliedConfig(t *testing.T) {
 	}
 }
 
+func TestEnsureAddonComponentStateKeepPolicy(t *testing.T) {
+	deepCopyMap := func(in map[string]interface{}) map[string]interface{} {
+		return runtime.DeepCopyJSONValue(in).(map[string]interface{})
+	}
+	getPolicies := func(t *testing.T, app map[string]interface{}) []interface{} {
+		t.Helper()
+		spec, ok := app["spec"].(map[string]interface{})
+		require.True(t, ok)
+		policies, ok := spec["policies"].([]interface{})
+		require.True(t, ok)
+		return policies
+	}
+
+	t.Run("adds disabled policy", func(t *testing.T) {
+		app := map[string]interface{}{}
+		ensureAddonComponentStateKeepPolicy(app)
+		policies := getPolicies(t, app)
+		require.Len(t, policies, 1)
+		assert.Equal(t, map[string]interface{}{
+			"name":       "addon-component-state-keep",
+			"type":       v1alpha1.ApplyOncePolicyType,
+			"properties": map[string]interface{}{"enable": false},
+		}, policies[0])
+	})
+
+	t.Run("preserves unrelated policies", func(t *testing.T) {
+		topology := map[string]interface{}{
+			"name": "deploy-local", "type": "topology",
+			"properties": map[string]interface{}{"clusters": []interface{}{"local"}},
+		}
+		expectedTopology := deepCopyMap(topology)
+		app := map[string]interface{}{
+			"spec": map[string]interface{}{"policies": []interface{}{topology}},
+		}
+		ensureAddonComponentStateKeepPolicy(app)
+		policies := getPolicies(t, app)
+		require.Len(t, policies, 2)
+		assert.Equal(t, expectedTopology, policies[0])
+	})
+
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("preserves explicit apply-once enable=%t", enabled), func(t *testing.T) {
+			explicit := map[string]interface{}{
+				"name": "addon-authored", "type": v1alpha1.ApplyOncePolicyType,
+				"properties": map[string]interface{}{"enable": enabled},
+			}
+			app := map[string]interface{}{
+				"spec": map[string]interface{}{"policies": []interface{}{explicit}},
+			}
+			expected := deepCopyMap(app)
+			ensureAddonComponentStateKeepPolicy(app)
+			assert.Equal(t, expected, app)
+		})
+	}
+
+	t.Run("preserves package-authored rules-only apply-once", func(t *testing.T) {
+		app := map[string]interface{}{
+			"spec": map[string]interface{}{
+				"policies": []interface{}{map[string]interface{}{
+					"name": "not-keep-CRD",
+					"type": v1alpha1.ApplyOncePolicyType,
+					"properties": map[string]interface{}{
+						"rules": []interface{}{map[string]interface{}{
+							"selector": map[string]interface{}{
+								"resourceTypes": []interface{}{"CustomResourceDefinition"},
+							},
+							"strategy": map[string]interface{}{
+								"path":   []interface{}{"*"},
+								"affect": "onStateKeep",
+							},
+						}},
+					},
+				}},
+			},
+		}
+		expected := deepCopyMap(app)
+
+		ensureAddonComponentStateKeepPolicy(app)
+
+		assert.Equal(t, expected, app)
+	})
+
+	t.Run("preserves malformed explicit apply-once for validation", func(t *testing.T) {
+		explicit := map[string]interface{}{
+			"name": "invalid-addon-policy", "type": v1alpha1.ApplyOncePolicyType,
+		}
+		app := map[string]interface{}{
+			"spec": map[string]interface{}{"policies": []interface{}{explicit}},
+		}
+		expected := deepCopyMap(app)
+		ensureAddonComponentStateKeepPolicy(app)
+		assert.Equal(t, expected, app)
+	})
+
+	t.Run("uses deterministic name suffix", func(t *testing.T) {
+		app := map[string]interface{}{"spec": map[string]interface{}{
+			"policies": []interface{}{map[string]interface{}{
+				"name": "addon-component-state-keep", "type": "garbage-collect",
+				"properties": map[string]interface{}{},
+			}},
+		}}
+		ensureAddonComponentStateKeepPolicy(app)
+		policies := getPolicies(t, app)
+		require.Len(t, policies, 2)
+		assert.Equal(t, "addon-component-state-keep-2",
+			policies[1].(map[string]interface{})["name"])
+	})
+
+	t.Run("is idempotent", func(t *testing.T) {
+		app := map[string]interface{}{}
+		ensureAddonComponentStateKeepPolicy(app)
+		ensureAddonComponentStateKeepPolicy(app)
+		assert.Len(t, getPolicies(t, app), 1)
+	})
+}
+
 func TestAppendAuxComponentsGroupsAndOmitsEmpty(t *testing.T) {
 	appMap := map[string]interface{}{
 		"apiVersion": "core.oam.dev/v1beta1",
@@ -275,18 +387,54 @@ func TestAppendAuxComponentsGroupsAndOmitsEmpty(t *testing.T) {
 	assert.False(t, hasCT, "aux object creationTimestamp must be stripped")
 }
 
-func TestRenderAddonReturnsApplicationWithComponents(t *testing.T) {
-	if os.Getenv("KUBEVELA_ADDON_RENDER_E2E") == "" {
-		t.Skip("requires a reachable registry; happy path is covered by the e2e suite (set KUBEVELA_ADDON_RENDER_E2E to run)")
+func TestResolveAndRenderFinalizesApplication(t *testing.T) {
+	r := &rendererImpl{
+		cli: fakeClientWithRegistry(t),
+		findPackagesFn: func(_ context.Context, _ client.Client, addonNames, registryNames []string) ([]*pkgaddon.WholeAddonPackage, error) {
+			assert.Equal(t, []string{"example"}, addonNames)
+			assert.Empty(t, registryNames)
+			return []*pkgaddon.WholeAddonPackage{{
+				InstallPackage: pkgaddon.InstallPackage{
+					Meta: pkgaddon.Meta{Name: "example", Version: "1.0.0"},
+					AppTemplate: &v1beta1.Application{ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{"package.example/preserved": "true"},
+					}},
+				},
+				RegistryName: "fixture",
+			}}, nil
+		},
 	}
-	r := &rendererImpl{cli: fakeClientWithMockRegistry(t)}
-	res, err := r.RenderAddon(context.Background(), api.AddonRequest{Name: "example", Version: "1.0.0"})
+
+	res, err := r.resolveAndRender(context.Background(), api.AddonRequest{
+		Name:                "example",
+		SkipVersionValidate: true,
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "1.0.0", res.ResolvedVersion)
+	assert.Equal(t, "fixture", res.Registry)
 	assert.Equal(t, "Application", res.Application["kind"])
+	metadata, ok := res.Application["metadata"].(map[string]interface{})
+	require.True(t, ok, "Application.metadata must be a map[string]interface{}")
+	annotations, ok := metadata["annotations"].(map[string]interface{})
+	require.True(t, ok, "metadata.annotations must be a map[string]interface{}")
+	assert.Equal(t, "true", annotations["package.example/preserved"])
+	assert.Equal(t, "skip", annotations[oam.AnnotationLastAppliedConfig])
+
 	spec, ok := res.Application["spec"].(map[string]interface{})
 	require.True(t, ok, "Application.spec must be a map[string]interface{}")
 	comps, ok := spec["components"].([]interface{})
 	require.True(t, ok, "spec.components must be a []interface{}")
 	assert.NotEmpty(t, comps)
+
+	policies, ok := spec["policies"].([]interface{})
+	require.True(t, ok, "spec.policies must be a []interface{}")
+	var foundDisabledApplyOnce bool
+	for _, item := range policies {
+		policy, ok := item.(map[string]interface{})
+		if ok && policy["type"] == v1alpha1.ApplyOncePolicyType {
+			assert.Equal(t, map[string]interface{}{"enable": false}, policy["properties"])
+			foundDisabledApplyOnce = true
+		}
+	}
+	assert.True(t, foundDisabledApplyOnce, "resolveAndRender must disable implicit apply-once")
 }
