@@ -29,6 +29,7 @@ import (
 
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/addon/service/api"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 // fakeClientWithRegistry returns a fake client with no addon registry configured,
@@ -176,6 +177,60 @@ func TestSanitizeManifest(t *testing.T) {
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			sanitizeManifest(tc.in)
+			assert.Equal(t, tc.want, tc.in)
+		})
+	}
+}
+
+func TestSuppressLastAppliedConfig(t *testing.T) {
+	testCases := map[string]struct {
+		in   map[string]interface{}
+		want map[string]interface{}
+	}{
+		"adds an annotations map when metadata has none": {
+			in: map[string]interface{}{
+				"metadata": map[string]interface{}{"name": "addon-fluxcd"},
+			},
+			want: map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"name":        "addon-fluxcd",
+					"annotations": map[string]interface{}{oam.AnnotationLastAppliedConfig: "skip"},
+				},
+			},
+		},
+		"preserves existing annotations and adds the sentinel": {
+			in: map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"name":        "addon-fluxcd",
+					"annotations": map[string]interface{}{"custom.io/foo": "bar"},
+				},
+			},
+			want: map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"name": "addon-fluxcd",
+					"annotations": map[string]interface{}{
+						"custom.io/foo":                 "bar",
+						oam.AnnotationLastAppliedConfig: "skip",
+					},
+				},
+			},
+		},
+		"creates metadata when the manifest has none": {
+			in: map[string]interface{}{
+				"kind": "Application",
+			},
+			want: map[string]interface{}{
+				"kind": "Application",
+				"metadata": map[string]interface{}{
+					"annotations": map[string]interface{}{oam.AnnotationLastAppliedConfig: "skip"},
+				},
+			},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			suppressLastAppliedConfig(tc.in)
 			assert.Equal(t, tc.want, tc.in)
 		})
 	}

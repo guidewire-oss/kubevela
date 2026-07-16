@@ -38,6 +38,7 @@ import (
 
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/addon/service/api"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 type rendererImpl struct {
@@ -185,6 +186,7 @@ func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonReques
 
 	appendAuxComponents(appMap, groups)
 	sanitizeManifest(appMap)
+	suppressLastAppliedConfig(appMap)
 
 	return &api.AddonResult{
 		ResolvedVersion: resolved,
@@ -216,6 +218,27 @@ func stripCreationTimestamp(v interface{}) {
 			stripCreationTimestamp(item)
 		}
 	}
+}
+
+// suppressLastAppliedConfig marks the rendered Application so the dispatcher
+// skips recording app.oam.dev/last-applied-configuration on it. The full
+// desired spec is already durably captured per-generation in the
+// ApplicationRevision, so this second dispatch-time copy is redundant - and
+// for a resource-heavy addon (e.g. one bundling several CRDs), folding every
+// manifest into a single Application can make that copy alone exceed
+// Kubernetes' 256KiB per-object annotation limit, failing the apply outright.
+func suppressLastAppliedConfig(m map[string]interface{}) {
+	metadata, ok := m["metadata"].(map[string]interface{})
+	if !ok {
+		metadata = map[string]interface{}{}
+		m["metadata"] = metadata
+	}
+	annotations, ok := metadata["annotations"].(map[string]interface{})
+	if !ok {
+		annotations = map[string]interface{}{}
+		metadata["annotations"] = annotations
+	}
+	annotations[oam.AnnotationLastAppliedConfig] = "skip"
 }
 
 // validateSystemRequirements checks the addon's SystemRequirements against the
