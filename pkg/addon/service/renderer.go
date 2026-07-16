@@ -36,6 +36,7 @@ import (
 
 	"github.com/kubevela/pkg/util/singleton"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/addon/service/api"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -57,6 +58,10 @@ type rendererImpl struct {
 	// only overridden by unit tests that count invocations. Production always
 	// uses the default.
 	resolveFn func(ctx context.Context, req api.AddonRequest) (*api.AddonResult, error)
+
+	// findPackagesFn lets unit tests supply a package without registry I/O.
+	// Production uses pkgaddon.FindAddonPackagesDetailFromRegistry.
+	findPackagesFn func(context.Context, client.Client, []string, []string) ([]*pkgaddon.WholeAddonPackage, error)
 }
 
 // NewRenderer builds a render-only addon service. It reads the Kubernetes
@@ -134,7 +139,11 @@ func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonReques
 	if req.Registry != "" {
 		regs = []string{req.Registry}
 	}
-	pkgs, err := pkgaddon.FindAddonPackagesDetailFromRegistry(ctx, r.client(), []string{req.Name}, regs)
+	findPackages := r.findPackagesFn
+	if findPackages == nil {
+		findPackages = pkgaddon.FindAddonPackagesDetailFromRegistry
+	}
+	pkgs, err := findPackages(ctx, r.client(), []string{req.Name}, regs)
 	if err != nil {
 		return nil, fmt.Errorf("addon %q not found in registries %v: %w", req.Name, regs, err)
 	}
@@ -185,6 +194,7 @@ func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonReques
 	appMap["kind"] = "Application"
 
 	appendAuxComponents(appMap, groups)
+	ensureAddonComponentStateKeepPolicy(appMap)
 	sanitizeManifest(appMap)
 	suppressLastAppliedConfig(appMap)
 
@@ -239,6 +249,45 @@ func suppressLastAppliedConfig(m map[string]interface{}) {
 		metadata["annotations"] = annotations
 	}
 	annotations[oam.AnnotationLastAppliedConfig] = "skip"
+}
+
+const addonComponentStateKeepPolicyName = "addon-component-state-keep"
+
+// ensureAddonComponentStateKeepPolicy disables the legacy implicit apply-once
+// behavior for component-installed addons unless the addon declares its own.
+func ensureAddonComponentStateKeepPolicy(m map[string]interface{}) {
+	spec, ok := m["spec"].(map[string]interface{})
+	if !ok {
+		spec = map[string]interface{}{}
+		m["spec"] = spec
+	}
+	policies, _ := spec["policies"].([]interface{})
+	usedNames := make(map[string]struct{}, len(policies))
+	for _, item := range policies {
+		policy, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if policyType, _ := policy["type"].(string); policyType == v1alpha1.ApplyOncePolicyType {
+			return
+		}
+		if name, _ := policy["name"].(string); name != "" {
+			usedNames[name] = struct{}{}
+		}
+	}
+
+	name := addonComponentStateKeepPolicyName
+	for suffix := 2; ; suffix++ {
+		if _, found := usedNames[name]; !found {
+			break
+		}
+		name = fmt.Sprintf("%s-%d", addonComponentStateKeepPolicyName, suffix)
+	}
+	spec["policies"] = append(policies, map[string]interface{}{
+		"name":       name,
+		"type":       v1alpha1.ApplyOncePolicyType,
+		"properties": map[string]interface{}{"enable": false},
+	})
 }
 
 // validateSystemRequirements checks the addon's SystemRequirements against the
