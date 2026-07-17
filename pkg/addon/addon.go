@@ -1024,13 +1024,13 @@ func (h *Installer) getAddonMeta() (map[string]SourceMeta, error) {
 
 // installDependency checks if addon's dependency and install it
 func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage) error {
+	if len(addon.Dependencies) == 0 {
+		return nil
+	}
+
 	installedAddons, err := listInstalledAddons(h.ctx, h.cli)
 	if err != nil {
 		return err
-	}
-
-	if len(addon.Dependencies) == 0 {
-		return nil
 	}
 
 	var registries []ItemInfoLister
