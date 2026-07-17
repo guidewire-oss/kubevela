@@ -1549,10 +1549,10 @@ func TestVersionedRegistryLoadAddonClassifiesBrokenRegistryAsFetchError(t *testi
 func TestInstallDependencySkipsRegistryScanWhenNoDependencies(t *testing.T) {
 	h := &Installer{
 		ctx: context.Background(),
-		cli: fake.NewClientBuilder().Build(),
-		// h.r is left nil on purpose: if installDependency scans registries
-		// even though the addon has no dependencies, calling ListAddonInfo on
-		// a nil registry pointer panics.
+		// h.cli and h.r are left nil on purpose: if installDependency lists
+		// installed addons or scans registries even though the addon has no
+		// dependencies, calling List/ListAddonInfo on a nil client/registry
+		// pointer panics.
 	}
 	addon := &InstallPackage{Meta: Meta{Name: "velaux"}}
 
