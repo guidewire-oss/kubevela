@@ -1016,7 +1016,7 @@ func (h *Installer) getAddonMeta() (map[string]SourceMeta, error) {
 	var err error
 	if h.registryMeta == nil {
 		if h.registryMeta, err = h.cache.ListAddonMeta(*h.r); err != nil {
-			return nil, err
+			return nil, errors.Wrapf(ErrFetch, "registry %s: %v", h.r.Name, err)
 		}
 	}
 	return h.registryMeta, nil
@@ -1027,6 +1027,10 @@ func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage
 	installedAddons, err := listInstalledAddons(h.ctx, h.cli)
 	if err != nil {
 		return err
+	}
+
+	if len(addon.Dependencies) == 0 {
+		return nil
 	}
 
 	var registries []ItemInfoLister
@@ -1234,7 +1238,12 @@ func listAvailableAddons(registries []ItemInfoLister) (itemInfoMap, error) {
 	for _, registry := range registries {
 		addons, err := registry.ListAddonInfo()
 		if err != nil {
-			return nil, err
+			name := "unknown"
+			if r, ok := registry.(*Registry); ok {
+				name = r.Name
+			}
+			klog.Warningf("skip registry %s: failed to list addons: %v", name, err)
+			continue
 		}
 		availableAddons = mergeAddonInfoMaps(availableAddons, addons)
 	}
