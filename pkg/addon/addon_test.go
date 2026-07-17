@@ -1519,6 +1519,14 @@ func TestListAvailableAddons(t *testing.T) {
 	assert.Equal(t, expected, res)
 }
 
+func TestIsSkippableRegistryError(t *testing.T) {
+	assert.True(t, isSkippableRegistryError(ErrNotExist))
+	assert.True(t, isSkippableRegistryError(ErrFetch))
+	assert.True(t, isSkippableRegistryError(fmt.Errorf("wrapped: %w", ErrFetch)))
+	assert.False(t, isSkippableRegistryError(errors.New("some addon-specific failure")))
+	assert.False(t, isSkippableRegistryError(nil))
+}
+
 func TestGetAddonMetaClassifiesBrokenRegistryAsFetchError(t *testing.T) {
 	h := &Installer{
 		r: &Registry{

@@ -1090,7 +1090,7 @@ func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage
 			}
 			return nil
 		}
-		if !errors.Is(err, ErrNotExist) {
+		if !isSkippableRegistryError(err) {
 			return err
 		}
 		for _, registry := range h.registries {
@@ -1102,7 +1102,7 @@ func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage
 			if err == nil {
 				break
 			}
-			if errors.Is(err, ErrNotExist) {
+			if isSkippableRegistryError(err) {
 				continue
 			}
 			return err
@@ -1228,6 +1228,14 @@ func sortVersionsDescending(versions []string) []string {
 // testing with mocks.
 type ItemInfoLister interface {
 	ListAddonInfo() (map[string]ItemInfo, error)
+}
+
+// isSkippableRegistryError reports whether err means a specific registry
+// could not provide an addon (missing there, or unreachable/misconfigured),
+// as opposed to a fatal, addon-specific failure that should stop dependency
+// resolution outright.
+func isSkippableRegistryError(err error) bool {
+	return errors.Is(err, ErrNotExist) || errors.Is(err, ErrFetch)
 }
 
 // listAvailableAddons fetches a collection of addons available in a list of
