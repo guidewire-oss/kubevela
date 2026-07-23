@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commontypes "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
@@ -299,6 +300,19 @@ func FindAddonPackagesDetailFromRegistry(ctx context.Context, k8sClient client.C
 				}
 				merge(wholePackage)
 			}
+		} else if IsOCIRegistry(r) {
+			or := BuildOCIRegistry(r.Name, r.OCI.URL, r.OCI.Username, r.OCI.Token)
+			for _, addonName := range addonNames {
+				wholePackage, err := or.GetDetailedAddon(ctx, addonName, "")
+				if err != nil {
+					// Log rather than silently swallow: an OCI pull failure
+					// (missing tag, auth, media type) otherwise surfaces to the
+					// caller only as the misleading "addon not exist".
+					klog.Warningf("failed to load addon %q from OCI registry %q: %v", addonName, r.Name, err)
+					continue
+				}
+				merge(wholePackage)
+			}
 		} else {
 			meta, err := r.ListAddonMeta()
 			if err != nil {
@@ -365,6 +379,11 @@ func GetAddonInstallPackageFromRegistry(ctx context.Context, cli client.Client, 
 			InsecureSkipTLS: reg.Helm.InsecureSkipTLS,
 		})
 		return vr.GetAddonInstallPackage(ctx, addonName, version)
+	}
+
+	if IsOCIRegistry(reg) {
+		or := BuildOCIRegistry(reg.Name, reg.OCI.URL, reg.OCI.Username, reg.OCI.Token)
+		return or.GetAddonInstallPackage(ctx, addonName, version)
 	}
 
 	metas, err := reg.ListAddonMeta()
