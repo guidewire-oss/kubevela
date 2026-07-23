@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"sync"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/discovery"
@@ -186,6 +187,8 @@ func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonReques
 	// so they go into a catch-all component.
 	groups = append(groups, auxComponent{name: "addon-auxiliaries", objects: aux})
 
+	setAddonRegistryLabel(app, registryName)
+
 	appMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(app)
 	if err != nil {
 		return nil, err
@@ -203,6 +206,15 @@ func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonReques
 		Registry:        registryName,
 		Application:     appMap,
 	}, nil
+}
+
+func setAddonRegistryLabel(app metav1.Object, registryName string) {
+	labels := app.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[oam.LabelAddonRegistry] = registryName
+	app.SetLabels(labels)
 }
 
 // sanitizeManifest removes the root status subresource and every

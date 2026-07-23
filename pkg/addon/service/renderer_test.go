@@ -43,6 +43,17 @@ func fakeClientWithRegistry(t *testing.T) client.Client {
 	return fake.NewClientBuilder().Build()
 }
 
+func TestSetAddonRegistryLabel(t *testing.T) {
+	app := &v1beta1.Application{}
+	setAddonRegistryLabel(app, "ecr")
+	assert.Equal(t, "ecr", app.Labels[oam.LabelAddonRegistry])
+
+	app.Labels["preserved"] = "true"
+	setAddonRegistryLabel(app, "another")
+	assert.Equal(t, "another", app.Labels[oam.LabelAddonRegistry])
+	assert.Equal(t, "true", app.Labels["preserved"])
+}
+
 func TestRenderAddonNotFound(t *testing.T) {
 	r := &rendererImpl{cli: fakeClientWithRegistry(t)}
 	_, err := r.RenderAddon(context.Background(), api.AddonRequest{Name: "does-not-exist"})
@@ -419,6 +430,9 @@ func TestResolveAndRenderFinalizesApplication(t *testing.T) {
 	require.True(t, ok, "metadata.annotations must be a map[string]interface{}")
 	assert.Equal(t, "true", annotations["package.example/preserved"])
 	assert.Equal(t, "skip", annotations[oam.AnnotationLastAppliedConfig])
+	labels, ok := metadata["labels"].(map[string]interface{})
+	require.True(t, ok, "metadata.labels must be a map[string]interface{}")
+	assert.Equal(t, "fixture", labels[oam.LabelAddonRegistry])
 
 	spec, ok := res.Application["spec"].(map[string]interface{})
 	require.True(t, ok, "Application.spec must be a map[string]interface{}")
