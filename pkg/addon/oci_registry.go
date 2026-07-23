@@ -19,10 +19,15 @@ package addon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/pkg/errors"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/registry"
 	"helm.sh/helm/v3/pkg/repo"
@@ -37,31 +42,51 @@ type ociPuller func(ctx context.Context, ref, host, username, password string) (
 // a seam so unit tests can avoid the network.
 type ociTagLister func(ctx context.Context, repoRef, host, username, password string) ([]string, error)
 
+// ociCatalogLister lists addon repository names below an OCI registry prefix.
+// It is a seam so unit tests can avoid the network.
+type ociCatalogLister func(ctx context.Context, registryURL, username, password string) ([]string, error)
+
 // ociRegistry resolves addons stored as OCI Helm charts (e.g. in ECR/GHCR).
 // It satisfies VersionedRegistry: OCI tags are the addon versions. An empty
 // version resolves to the highest semver tag (there is no reliance on a
-// floating "latest" tag, which `helm push` does not create). Catalog-style
-// listing across all addons is not supported (the OCI API has no such index).
+// floating "latest" tag, which `helm push` does not create).
 type ociRegistry struct {
 	name     string
 	url      string
 	username string
 	token    string
-	// pullFn/tagsFn default to the production implementations; overridden in tests.
-	pullFn ociPuller
-	tagsFn ociTagLister
+	// pullFn/tagsFn/catalogFn/catalogIndexFn default to the production
+	// implementations;
+	// overridden in tests.
+	pullFn         ociPuller
+	tagsFn         ociTagLister
+	catalogFn      ociCatalogLister
+	catalogIndexFn ociCatalogIndexLister
 }
 
 // BuildOCIRegistry builds an OCI addon registry reader.
 func BuildOCIRegistry(name, url, username, token string) VersionedRegistry {
 	return &ociRegistry{
-		name:     name,
-		url:      url,
-		username: username,
-		token:    token,
-		pullFn:   pullOCIChart,
-		tagsFn:   listOCITags,
+		name:           name,
+		url:            url,
+		username:       username,
+		token:          token,
+		pullFn:         pullOCIChart,
+		tagsFn:         listOCITags,
+		catalogFn:      listOCIRepositories,
+		catalogIndexFn: listPortableOCICatalog,
 	}
+}
+
+// ociRegistryLocation returns the registry host and repository prefix.
+func ociRegistryLocation(rawURL string) (host, prefix string) {
+	base := strings.Trim(strings.TrimPrefix(rawURL, "oci://"), "/")
+	host = base
+	if i := strings.Index(base, "/"); i >= 0 {
+		host = base[:i]
+		prefix = strings.Trim(base[i+1:], "/")
+	}
+	return host, prefix
 }
 
 // ociRepoRef builds the OCI repository reference (no tag) and host from a
@@ -69,12 +94,12 @@ func BuildOCIRegistry(name, url, username, token string) VersionedRegistry {
 // trailing slash. The host is the registry authority (everything before the
 // first path separator), used for login.
 func ociRepoRef(url, addon string) (repoRef, host string) {
-	base := strings.TrimSuffix(strings.TrimPrefix(url, "oci://"), "/")
-	repoRef = fmt.Sprintf("%s/%s", base, addon)
-	host = base
-	if i := strings.Index(base, "/"); i >= 0 {
-		host = base[:i]
+	host, prefix := ociRegistryLocation(url)
+	repoRef = host
+	if prefix != "" {
+		repoRef += "/" + prefix
 	}
+	repoRef += "/" + strings.TrimPrefix(addon, "/")
 	return repoRef, host
 }
 
@@ -140,6 +165,77 @@ func listOCITags(_ context.Context, repoRef, host, username, password string) ([
 	return client.Tags(repoRef)
 }
 
+// listOCIRepositories enumerates the OCI distribution catalog and returns
+// repository names relative to the configured registry prefix. The catalog API
+// is paginated through RFC 5988 Link headers.
+func listOCIRepositories(ctx context.Context, registryURL, username, password string) ([]string, error) {
+	host, prefix := ociRegistryLocation(registryURL)
+	next := &url.URL{
+		Scheme:   "https",
+		Host:     host,
+		Path:     "/v2/_catalog",
+		RawQuery: "n=1000",
+	}
+	seen := map[string]bool{}
+	var addons []string
+
+	for next != nil {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, next.String(), nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to build OCI catalog request")
+		}
+		if username != "" || password != "" {
+			req.SetBasicAuth(username, password)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to list OCI catalog at %s", host)
+		}
+
+		var page struct {
+			Repositories []string `json:"repositories"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
+		closeErr := resp.Body.Close()
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return nil, errors.Errorf("failed to list OCI catalog at %s: server returned %s", host, resp.Status)
+		}
+		if decodeErr != nil {
+			return nil, errors.Wrap(decodeErr, "failed to decode OCI catalog response")
+		}
+		if closeErr != nil {
+			return nil, errors.Wrap(closeErr, "failed to close OCI catalog response")
+		}
+
+		for _, repository := range page.Repositories {
+			addonName := strings.Trim(repository, "/")
+			if prefix != "" {
+				prefixWithSlash := prefix + "/"
+				if !strings.HasPrefix(addonName, prefixWithSlash) {
+					continue
+				}
+				addonName = strings.TrimPrefix(addonName, prefixWithSlash)
+			}
+			if addonName != "" && addonName != ociCatalogChartName && !seen[addonName] {
+				seen[addonName] = true
+				addons = append(addons, addonName)
+			}
+		}
+
+		next = nil
+		link := resp.Header.Get("Link")
+		if start, end := strings.Index(link, "<"), strings.Index(link, ">"); start >= 0 && end > start && strings.Contains(link[end:], `rel="next"`) {
+			next, err = req.URL.Parse(link[start+1 : end])
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to parse OCI catalog pagination link")
+			}
+		}
+	}
+
+	sort.Strings(addons)
+	return addons, nil
+}
+
 // loadAddon pulls the addon's OCI chart and turns it into a WholeAddonPackage,
 // reusing the shared archive -> InstallPackage pipeline.
 func (i *ociRegistry) loadAddon(ctx context.Context, name, version string) (*WholeAddonPackage, error) {
@@ -197,14 +293,76 @@ func (i *ociRegistry) GetAddonUIData(ctx context.Context, addonName, version str
 	}, nil
 }
 
-// ListAddon is not supported for OCI registries: the OCI distribution API does
-// not expose an addon catalog, so addons must be referenced by name. Callers get
-// an explicit error rather than a silently empty list.
+// ListAddon enumerates repositories below the configured OCI prefix and loads
+// the latest semver-tagged addon metadata for each repository.
 func (i *ociRegistry) ListAddon() ([]*UIData, error) {
-	return nil, errors.Errorf("listing addons is not supported for OCI registry %q; reference the addon by name", i.name)
+	ctx := context.Background()
+	var indexErr error
+	if i.catalogIndexFn != nil {
+		addons, err := i.catalogIndexFn(ctx, i.url, i.username, i.token)
+		if err == nil {
+			for _, addon := range addons {
+				addon.RegistryName = i.name
+			}
+			return addons, nil
+		}
+		indexErr = err
+		klog.V(4).Infof("Portable OCI addon catalog is unavailable for registry %q, falling back to registry catalog discovery: %v", i.name, err)
+	}
+
+	list := i.catalogFn
+	if list == nil {
+		list = listOCIRepositories
+	}
+	names, err := list(ctx, i.url, i.username, i.token)
+	if err != nil {
+		if indexErr != nil {
+			return nil, errors.Errorf("failed to list OCI addons from portable catalog (%v) and registry catalog (%v)", indexErr, err)
+		}
+		return nil, err
+	}
+
+	var addons []*UIData
+	for _, name := range names {
+		repoRef, host := ociRepoRef(i.url, name)
+		tags := i.tagsFn
+		if tags == nil {
+			tags = listOCITags
+		}
+		versions, err := tags(ctx, repoRef, host, i.username, i.token)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to list versions for OCI addon %s", name)
+		}
+		if len(versions) == 0 {
+			continue
+		}
+		addon, err := i.GetAddonUIData(ctx, name, versions[0])
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to load metadata for OCI addon %s", name)
+		}
+		addon.RegistryName = i.name
+		addon.AvailableVersions = versions
+		addons = append(addons, addon)
+	}
+	return addons, nil
 }
 
-// GetAddonAvailableVersion is not supported for OCI registries (no tag enumeration).
-func (i *ociRegistry) GetAddonAvailableVersion(_ string) ([]*repo.ChartVersion, error) {
-	return nil, errors.Errorf("version listing is not supported for OCI registry %q", i.name)
+// GetAddonAvailableVersion lists semver tags for an OCI addon.
+func (i *ociRegistry) GetAddonAvailableVersion(addonName string) ([]*repo.ChartVersion, error) {
+	repoRef, host := ociRepoRef(i.url, addonName)
+	list := i.tagsFn
+	if list == nil {
+		list = listOCITags
+	}
+	tags, err := list(context.Background(), repoRef, host, i.username, i.token)
+	if err != nil {
+		return nil, err
+	}
+	versions := make([]*repo.ChartVersion, 0, len(tags))
+	for _, tag := range tags {
+		versions = append(versions, &repo.ChartVersion{
+			Metadata: &chart.Metadata{Name: addonName, Version: tag},
+		})
+	}
+	return versions, nil
 }
