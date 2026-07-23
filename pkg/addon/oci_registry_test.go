@@ -18,11 +18,19 @@ package addon
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
 )
 
 func TestIsOCIRegistry(t *testing.T) {
@@ -84,6 +92,91 @@ func TestOCIRepoRef(t *testing.T) {
 	}
 }
 
+func TestListOCIRepositories(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		user, pass, ok := req.BasicAuth()
+		assert.True(t, ok)
+		assert.Equal(t, "AWS", user)
+		assert.Equal(t, "secret", pass)
+		assert.Equal(t, "/v2/_catalog", req.URL.Path)
+
+		if req.URL.Query().Get("last") == "" {
+			rw.Header().Set("Link", fmt.Sprintf(`<%s/v2/_catalog?n=1000&last=addon%%2Ffluxcd>; rel="next"`, server.URL))
+			_, _ = rw.Write([]byte(`{"repositories":["other/image","addon/fluxcd"]}`))
+			return
+		}
+		_, _ = rw.Write([]byte(`{"repositories":["addon/velaux","addon/fluxcd"]}`))
+	}))
+	defer server.Close()
+
+	originalClient := http.DefaultClient
+	http.DefaultClient = server.Client()
+	defer func() {
+		http.DefaultClient = originalClient
+	}()
+
+	registryURL := "oci://" + strings.TrimPrefix(server.URL, "https://") + "/addon"
+	addons, err := listOCIRepositories(context.Background(), registryURL, "AWS", "secret")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fluxcd", "velaux"}, addons)
+}
+
+func TestDecodeOCIAddonCatalog(t *testing.T) {
+	catalog, err := json.Marshal(OCIAddonCatalog{
+		APIVersion: ociCatalogAPIVersion,
+		Addons: []OCIAddonCatalogEntry{
+			{Name: "velaux", Description: "UI", Versions: []string{"1.0.0"}},
+			{Name: "fluxcd", Description: "Flux", Versions: []string{"3.0.2", "3.0.1"}},
+		},
+	})
+	require.NoError(t, err)
+
+	tmp := t.TempDir()
+	archivePath, err := chartutil.Save(&chart.Chart{
+		Metadata: &chart.Metadata{
+			APIVersion: chart.APIVersionV2,
+			Name:       ociCatalogChartName,
+			Version:    "1.0.0",
+		},
+		Files: []*chart.File{{Name: ociCatalogFileName, Data: catalog}},
+	}, tmp)
+	require.NoError(t, err)
+	archive, err := os.ReadFile(filepath.Clean(archivePath))
+	require.NoError(t, err)
+
+	addons, err := decodeOCIAddonCatalog(archive)
+	require.NoError(t, err)
+	require.Len(t, addons, 2)
+	assert.Equal(t, "fluxcd", addons[0].Name)
+	assert.Equal(t, "Flux", addons[0].Description)
+	assert.Equal(t, []string{"3.0.2", "3.0.1"}, addons[0].AvailableVersions)
+	assert.Equal(t, "velaux", addons[1].Name)
+}
+
+func TestOCIRegistryPrefersPortableCatalog(t *testing.T) {
+	reg := &ociRegistry{
+		name: "portable",
+		url:  "oci://reg.example.com/addon",
+		catalogIndexFn: func(_ context.Context, registryURL, _, _ string) ([]*UIData, error) {
+			assert.Equal(t, "oci://reg.example.com/addon", registryURL)
+			return []*UIData{{
+				Meta:              Meta{Name: "fluxcd", Description: "Flux"},
+				AvailableVersions: []string{"3.0.2", "3.0.1"},
+			}}, nil
+		},
+		catalogFn: func(_ context.Context, _, _, _ string) ([]string, error) {
+			t.Fatal("registry catalog fallback must not be called when the portable catalog is available")
+			return nil, nil
+		},
+	}
+
+	addons, err := reg.ListAddon()
+	require.NoError(t, err)
+	require.Len(t, addons, 1)
+	assert.Equal(t, "portable", addons[0].RegistryName)
+}
+
 // TestOCIRegistryLoadAddon injects a fake puller returning a real addon chart
 // archive (a prebuilt fixture), so the OCI load path is exercised without any
 // network and without writing artifacts to disk.
@@ -111,6 +204,12 @@ func TestOCIRegistryLoadAddon(t *testing.T) {
 			assert.Equal(t, "secret", pass)
 			return data, nil
 		},
+		catalogFn: func(_ context.Context, registryURL, user, pass string) ([]string, error) {
+			assert.Equal(t, "oci://reg.example.com/addon", registryURL)
+			assert.Equal(t, "AWS", user)
+			assert.Equal(t, "secret", pass)
+			return []string{"fluxcd"}, nil
+		},
 	}
 
 	pkg, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
@@ -123,9 +222,12 @@ func TestOCIRegistryLoadAddon(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ecr", whole.RegistryName)
 
-	// ListAddon is intentionally unsupported for OCI registries.
-	_, err = reg.ListAddon()
-	assert.Error(t, err)
+	addons, err := reg.ListAddon()
+	require.NoError(t, err)
+	require.Len(t, addons, 1)
+	assert.Equal(t, "fluxcd", addons[0].Name)
+	assert.Equal(t, "ecr", addons[0].RegistryName)
+	assert.Equal(t, []string{"3.0.1", "2.0.0", "1.0.0"}, addons[0].AvailableVersions)
 }
 
 // TestOCIRegistryExplicitVersion pins a version: no tag listing should happen,
