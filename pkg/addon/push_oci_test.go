@@ -105,6 +105,29 @@ func TestPushCmdRoutesConfiguredOCI(t *testing.T) {
 		assert.Equal(t, "override-user", captured.Username)
 		assert.Equal(t, "override-password", captured.Token)
 	})
+
+	// Rotating a registry's password (e.g. a freshly minted ECR token piped via
+	// --password-stdin) should not require re-supplying the stored username: the
+	// merged credential pair is still complete, so this must not be rejected as
+	// ambiguous partial authentication.
+	t.Run("password-only override rotates stored credential without a username flag", func(t *testing.T) {
+		var captured *OCIAddonSource
+		p := &PushCmd{
+			RepoName:  "private",
+			Client:    kubeClient,
+			ChartName: "unused-by-test-seam",
+			Password:  "rotated-password",
+			ociPushFn: func(_ context.Context, source *OCIAddonSource) error {
+				captured = source
+				return nil
+			},
+		}
+
+		require.NoError(t, p.Push(context.Background()))
+		require.NotNil(t, captured)
+		assert.Equal(t, "stored-user", captured.Username)
+		assert.Equal(t, "rotated-password", captured.Token)
+	})
 }
 
 func TestPushCmdRejectsOCIAuthAmbiguity(t *testing.T) {
