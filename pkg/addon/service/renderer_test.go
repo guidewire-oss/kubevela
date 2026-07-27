@@ -99,6 +99,25 @@ func TestRenderAddonCachesByKey(t *testing.T) {
 	assert.Equal(t, 3, calls, "distinct requests must each resolve")
 }
 
+func TestRenderAddonDoesNotCacheLatest(t *testing.T) {
+	r := &rendererImpl{cli: fakeClientWithRegistry(t)}
+	var calls int
+	r.resolveFn = func(_ context.Context, _ api.AddonRequest) (*api.AddonResult, error) {
+		calls++
+		return &api.AddonResult{ResolvedVersion: fmt.Sprintf("3.0.%d", calls+1)}, nil
+	}
+
+	req := api.AddonRequest{Name: "example"}
+	first, err := r.RenderAddon(context.Background(), req)
+	require.NoError(t, err)
+	second, err := r.RenderAddon(context.Background(), req)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, calls, "latest must be resolved for every request")
+	assert.Equal(t, "3.0.2", first.ResolvedVersion)
+	assert.Equal(t, "3.0.3", second.ResolvedVersion)
+}
+
 func TestHashPropertiesStable(t *testing.T) {
 	a := map[string]interface{}{"b": 2, "a": 1, "nested": map[string]interface{}{"x": "y"}}
 	b := map[string]interface{}{"a": 1, "nested": map[string]interface{}{"x": "y"}, "b": 2}
