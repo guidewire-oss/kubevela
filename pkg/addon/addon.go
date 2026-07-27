@@ -1015,7 +1015,7 @@ func (h *Installer) getAddonMeta() (map[string]SourceMeta, error) {
 	var err error
 	if h.registryMeta == nil {
 		if h.registryMeta, err = h.cache.ListAddonMeta(*h.r); err != nil {
-			return nil, err
+			return nil, errors.Wrapf(ErrFetch, "registry %s: %v", h.r.Name, err)
 		}
 	}
 	return h.registryMeta, nil
@@ -1023,6 +1023,10 @@ func (h *Installer) getAddonMeta() (map[string]SourceMeta, error) {
 
 // installDependency checks if addon's dependency and install it
 func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage) error {
+	if len(addon.Dependencies) == 0 {
+		return nil
+	}
+
 	installedAddons, err := listInstalledAddons(h.ctx, h.cli)
 	if err != nil {
 		return err
@@ -1085,7 +1089,7 @@ func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage
 			}
 			return nil
 		}
-		if !errors.Is(err, ErrNotExist) {
+		if !isSkippableRegistryError(err) {
 			return err
 		}
 		for _, registry := range h.registries {
@@ -1097,7 +1101,7 @@ func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage
 			if err == nil {
 				break
 			}
-			if errors.Is(err, ErrNotExist) {
+			if isSkippableRegistryError(err) {
 				continue
 			}
 			return err
@@ -1225,6 +1229,14 @@ type ItemInfoLister interface {
 	ListAddonInfo() (map[string]ItemInfo, error)
 }
 
+// isSkippableRegistryError reports whether err means a specific registry
+// could not provide an addon (missing there, or unreachable/misconfigured),
+// as opposed to a fatal, addon-specific failure that should stop dependency
+// resolution outright.
+func isSkippableRegistryError(err error) bool {
+	return errors.Is(err, ErrNotExist) || errors.Is(err, ErrFetch)
+}
+
 // listAvailableAddons fetches a collection of addons available in a list of
 // registries. Returns a map of ItemInfo grouped by addon name.
 func listAvailableAddons(registries []ItemInfoLister) (itemInfoMap, error) {
@@ -1233,7 +1245,12 @@ func listAvailableAddons(registries []ItemInfoLister) (itemInfoMap, error) {
 	for _, registry := range registries {
 		addons, err := registry.ListAddonInfo()
 		if err != nil {
-			return nil, err
+			name := "unknown"
+			if r, ok := registry.(*Registry); ok {
+				name = r.Name
+			}
+			klog.Warningf("skip registry %s: failed to list addons: %v", name, err)
+			continue
 		}
 		availableAddons = mergeAddonInfoMaps(availableAddons, addons)
 	}
