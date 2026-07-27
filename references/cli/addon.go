@@ -36,6 +36,7 @@ import (
 	types2 "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
@@ -631,7 +632,11 @@ func enableAddon(ctx context.Context, k8sClient client.Client, dc *discovery.Dis
 			continue
 		}
 		additionalInfo, err = pkgaddon.EnableAddon(ctx, addonName, version, k8sClient, dc, apply.NewAPIApplicator(k8sClient), config, registry, args, nil, pkgaddon.FilterDependencyRegistries(i, registries), opts...)
-		if errors.Is(err, pkgaddon.ErrNotExist) || errors.Is(err, pkgaddon.ErrFetch) {
+		if errors.Is(err, pkgaddon.ErrFetch) {
+			klog.Warningf("skip registry %s: %v", registry.Name, err)
+			continue
+		}
+		if errors.Is(err, pkgaddon.ErrNotExist) {
 			continue
 		}
 		if unMatchErr := new(pkgaddon.VersionUnMatchError); errors.As(err, unMatchErr) {
@@ -656,7 +661,10 @@ func enableAddon(ctx context.Context, k8sClient client.Client, dc *discovery.Dis
 		return additionalInfo, nil
 	}
 	if len(registryName) != 0 {
-		return "", fmt.Errorf("addon: %s not found in registry %s", addonName, registryName)
+		return "", fmt.Errorf("addon: %s not found in registry %s: %w", addonName, registryName, err)
+	}
+	if err != nil {
+		return "", fmt.Errorf("addon: %s not found in all candidate registries: %w", addonName, err)
 	}
 	return "", fmt.Errorf("addon: %s not found in all candidate registries", addonName)
 }
