@@ -163,20 +163,6 @@ func fieldByName(decls []ast.Decl, name string) *ast.Field {
 	return nil
 }
 
-// Consumer surfaces a SourceDefinition may declare in `consumableFrom:`.
-const (
-	// SurfaceComponent is a fromSource directive in a component's properties.
-	SurfaceComponent = "component"
-	// SurfaceTrait is a fromSource directive in a trait's properties.
-	SurfaceTrait = "trait"
-)
-
-// SupportedSurfaces are the surfaces where fromSource is resolved today, and
-// therefore what an unset (or "all") consumableFrom permits. Policies and
-// workflow steps are absent deliberately: nothing resolves fromSource there yet,
-// so a definition cannot opt into them.
-var SupportedSurfaces = []string{SurfaceComponent, SurfaceTrait}
-
 // ParseConsumableFrom reads the optional `consumableFrom:` block of a
 // SourceDefinition template.
 //
@@ -201,9 +187,9 @@ func ParseConsumableFrom(template string) ([]string, error) {
 			if err != nil {
 				return nil, fmt.Errorf("consumableFrom entries must be strings: %w", err)
 			}
-			if !slices.Contains(SupportedSurfaces, value) {
+			if !slices.Contains(veladefinition.ConsumableSurfaces, value) {
 				return nil, fmt.Errorf("consumableFrom entry %q is not a surface that supports fromSource; expected one of %v",
-					value, SupportedSurfaces)
+					value, veladefinition.ConsumableSurfaces)
 			}
 			surfaces = append(surfaces, value)
 		}

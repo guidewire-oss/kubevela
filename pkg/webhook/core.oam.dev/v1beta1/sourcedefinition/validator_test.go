@@ -19,6 +19,8 @@ package sourcedefinition
 import (
 	"strings"
 	"testing"
+
+	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 )
 
 func TestValidateSourceStorage(t *testing.T) {
@@ -289,16 +291,16 @@ func TestParseConsumableFrom(t *testing.T) {
 }
 
 func TestSurfaceAllowed(t *testing.T) {
-	if !SurfaceAllowed(nil, SurfaceComponent) {
+	if !SurfaceAllowed(nil, veladefinition.SurfaceComponent) {
 		t.Fatal("unrestricted source must be allowed from a component")
 	}
-	if !SurfaceAllowed(nil, SurfaceTrait) {
+	if !SurfaceAllowed(nil, veladefinition.SurfaceTrait) {
 		t.Fatal("unrestricted source must be allowed from a trait")
 	}
-	if !SurfaceAllowed([]string{SurfaceComponent}, SurfaceComponent) {
+	if !SurfaceAllowed([]string{veladefinition.SurfaceComponent}, veladefinition.SurfaceComponent) {
 		t.Fatal("component-only source must be allowed from a component")
 	}
-	if SurfaceAllowed([]string{SurfaceComponent}, SurfaceTrait) {
+	if SurfaceAllowed([]string{veladefinition.SurfaceComponent}, veladefinition.SurfaceTrait) {
 		t.Fatal("component-only source must not be allowed from a trait")
 	}
 }

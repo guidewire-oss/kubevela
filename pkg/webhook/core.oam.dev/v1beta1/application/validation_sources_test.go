@@ -599,7 +599,7 @@ parameter: {image: string}
 					},
 				},
 			},
-			wantMsg: "not supported in workflow step properties",
+			wantMsg: "not supported in workflowstep properties",
 		},
 	}
 

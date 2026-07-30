@@ -32,6 +32,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 
 	cueutils "github.com/oam-dev/kubevela/pkg/cue"
+	"github.com/oam-dev/kubevela/pkg/cue/definition"
 	// Use WorkloadCompiler instead of the upstream cuex.DefaultCompiler.
 	// The upstream DefaultCompiler does not include provider packages like
 	// "vela/helm". Component templates (e.g., helmchart) import these packages,
@@ -586,24 +587,7 @@ func getWorkflowAndPolicySuppliedParams(app *Appfile) map[string]bool {
 // that component/trait; the fromSource paths themselves are still validated
 // structurally by the admission webhook's ValidateSources stage.
 func hasFromSourceParams(params interface{}) bool {
-	switch v := params.(type) {
-	case map[string]interface{}:
-		if _, ok := v["fromSource"]; ok {
-			return true
-		}
-		for _, child := range v {
-			if hasFromSourceParams(child) {
-				return true
-			}
-		}
-	case []interface{}:
-		for _, child := range v {
-			if hasFromSourceParams(child) {
-				return true
-			}
-		}
-	}
-	return false
+	return definition.HasFromSourceDirective(params)
 }
 
 // getDefaultForMissingParameter checks if a parameter can be defaulted for validation

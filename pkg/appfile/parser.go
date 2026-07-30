@@ -137,6 +137,9 @@ func (p *Parser) GenerateAppFileFromApp(ctx context.Context, app *v1beta1.Applic
 	if err = p.parseReferredObjects(ctx, appFile); err != nil {
 		return nil, errors.Wrap(err, "failed to parseReferredObjects")
 	}
+	if err = validateFromSourceSurfaces(appFile); err != nil {
+		return nil, err
+	}
 
 	return appFile, nil
 }
@@ -794,4 +797,49 @@ func (p *Parser) ValidateComponentNames(app *v1beta1.Application) (int, error) {
 		compNames[comp.Name] = struct{}{}
 	}
 	return 0, nil
+}
+
+// validateFromSourceSurfaces rejects a fromSource directive on a surface where
+// it is never substituted.
+//
+// The admission webhook performs the same check and reports richer field paths,
+// but admission can be disabled (--use-webhook=false). Unlike the other source
+// checks, skipping this one fails silently rather than loudly: the directive
+// never reaches the resolver, so it survives into the consumer as a literal
+// {"fromSource": ...} map instead of erroring. This is the backstop for that.
+//
+// The rule itself lives in pkg/cue/definition, next to the resolver that
+// implements it, so the two enforcement points cannot drift apart.
+func validateFromSourceSurfaces(af *Appfile) error {
+	check := func(raw *runtime.RawExtension, surface, name string) error {
+		if raw == nil || len(raw.Raw) == 0 {
+			return nil
+		}
+		var decoded interface{}
+		if err := json.Unmarshal(raw.Raw, &decoded); err != nil {
+			// Malformed properties are reported by the consumer's own parsing.
+			return nil
+		}
+		if !definition.HasFromSourceDirective(decoded) {
+			return nil
+		}
+		return fmt.Errorf("%s %q: %s", surface, name, definition.UnsupportedSurfaceMessage(surface))
+	}
+
+	for _, policy := range af.Policies {
+		if err := check(policy.Properties, definition.SurfacePolicy, policy.Name); err != nil {
+			return err
+		}
+	}
+	for _, step := range af.WorkflowSteps {
+		if err := check(step.Properties, definition.SurfaceWorkflowStep, step.Name); err != nil {
+			return err
+		}
+		for _, sub := range step.SubSteps {
+			if err := check(sub.Properties, definition.SurfaceWorkflowStep, sub.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

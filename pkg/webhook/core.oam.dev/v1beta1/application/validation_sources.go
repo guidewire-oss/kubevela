@@ -25,6 +25,7 @@ import (
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/sourcedefinition"
 )
@@ -38,29 +39,6 @@ type fromSourceReference struct {
 	// Surface is where the directive was found: a component, a trait, a policy,
 	// a workflow step, or another source's properties (chaining).
 	Surface string
-}
-
-// Surfaces a fromSource directive can appear on. Only components and traits are
-// resolved today; see surfaceResolvesFromSource.
-const (
-	surfaceComponent    = "component"
-	surfaceTrait        = "trait"
-	surfacePolicy       = "policy"
-	surfaceWorkflowStep = "workflow step"
-	surfaceSource       = "source"
-)
-
-// surfaceResolvesFromSource reports whether fromSource is substituted on this
-// surface at reconcile time. Resolution is wired into the component and trait
-// render paths only; a directive anywhere else would pass admission and then be
-// handed to the consumer as a literal {"fromSource": ...} map.
-func surfaceResolvesFromSource(surface string) bool {
-	switch surface {
-	case surfaceComponent, surfaceTrait, surfaceSource:
-		return true
-	default:
-		return false
-	}
 }
 
 // withSurface stamps the surface onto each collected reference.
@@ -99,34 +77,34 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 	for i, comp := range app.Spec.Components {
 		compRefs, refErrs := collectFromRawExtension(comp.Properties, field.NewPath("spec", "components").Index(i).Child("properties"), -1)
 		errs = append(errs, refErrs...)
-		refs = append(refs, withSurface(compRefs, surfaceComponent)...)
+		refs = append(refs, withSurface(compRefs, veladefinition.SurfaceComponent)...)
 		for j, tr := range comp.Traits {
 			trRefs, trErrs := collectFromRawExtension(tr.Properties, field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties"), -1)
 			errs = append(errs, trErrs...)
-			refs = append(refs, withSurface(trRefs, surfaceTrait)...)
+			refs = append(refs, withSurface(trRefs, veladefinition.SurfaceTrait)...)
 		}
 	}
 	for i, policy := range app.Spec.Policies {
 		policyRefs, policyErrs := collectFromRawExtension(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), -1)
 		errs = append(errs, policyErrs...)
-		refs = append(refs, withSurface(policyRefs, surfacePolicy)...)
+		refs = append(refs, withSurface(policyRefs, veladefinition.SurfacePolicy)...)
 	}
 	if app.Spec.Workflow != nil {
 		for i, step := range app.Spec.Workflow.Steps {
 			stepRefs, stepErrs := collectFromRawExtension(step.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("properties"), -1)
 			errs = append(errs, stepErrs...)
-			refs = append(refs, withSurface(stepRefs, surfaceWorkflowStep)...)
+			refs = append(refs, withSurface(stepRefs, veladefinition.SurfaceWorkflowStep)...)
 			for j, sub := range step.SubSteps {
 				subRefs, subErrs := collectFromRawExtension(sub.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("subSteps").Index(j).Child("properties"), -1)
 				errs = append(errs, subErrs...)
-				refs = append(refs, withSurface(subRefs, surfaceWorkflowStep)...)
+				refs = append(refs, withSurface(subRefs, veladefinition.SurfaceWorkflowStep)...)
 			}
 		}
 	}
 	for i, src := range app.Spec.Sources {
 		srcRefs, srcErrs := collectFromRawExtension(src.Properties, field.NewPath("spec", "sources").Index(i).Child("properties"), i)
 		errs = append(errs, srcErrs...)
-		refs = append(refs, withSurface(srcRefs, surfaceSource)...)
+		refs = append(refs, withSurface(srcRefs, veladefinition.SurfaceSource)...)
 	}
 
 	schemaValidators := map[string]*sourceSchemaValidator{}
@@ -153,16 +131,16 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 		// Elsewhere the consumer would receive the literal {"fromSource": ...}
 		// map, so reject it rather than admitting a directive that silently
 		// never resolves.
-		if !surfaceResolvesFromSource(ref.Surface) {
+		if !veladefinition.SurfaceResolvesFromSource(ref.Surface) {
 			errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
-				fmt.Sprintf("fromSource is not supported in %s properties; it is resolved during component and trait rendering only", ref.Surface)))
+				veladefinition.UnsupportedSurfaceMessage(ref.Surface)))
 			continue
 		}
 		if sourceType == "" {
 			continue
 		}
 		// A SourceDefinition may restrict where it can be consumed from.
-		if ref.Surface == surfaceComponent || ref.Surface == surfaceTrait {
+		if ref.Surface == veladefinition.SurfaceComponent || ref.Surface == veladefinition.SurfaceTrait {
 			surfaces, err := h.loadConsumableFrom(ctx, app.Namespace, sourceType, consumableFromCache)
 			if err != nil {
 				errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,

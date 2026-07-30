@@ -1039,3 +1039,114 @@ func TestParseComponentFromRevisionAndClient(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateFromSourceSurfaces covers the render-time backstop.
+//
+// The admission webhook rejects fromSource on surfaces where it is never
+// substituted, but admission can be disabled (--use-webhook=false). Unlike the
+// other source checks, skipping this one fails silently: the directive never
+// reaches the resolver, so it survives into the consumer as a literal
+// {"fromSource": ...} map rather than erroring.
+func TestValidateFromSourceSurfaces(t *testing.T) {
+	raw := func(s string) *runtime.RawExtension { return &runtime.RawExtension{Raw: []byte(s)} }
+	step := func(name string, props *runtime.RawExtension) wfTypesv1alpha1.WorkflowStep {
+		return wfTypesv1alpha1.WorkflowStep{
+			WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{Name: name, Type: "notification", Properties: props},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		af      *Appfile
+		wantErr string
+	}{
+		{
+			name: "policy with fromSource is rejected",
+			af: &Appfile{Policies: []v1beta1.AppPolicy{
+				{Name: "override-image", Type: "override", Properties: raw(`{"image":{"fromSource":"img.image"}}`)},
+			}},
+			wantErr: "not supported in policy properties",
+		},
+		{
+			name:    "workflow step with fromSource is rejected",
+			af:      &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("notify", raw(`{"url":{"fromSource":"cfg.webhook"}}`))}},
+			wantErr: "not supported in workflowstep properties",
+		},
+		{
+			name: "sub-step with fromSource is rejected",
+			af: &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{{
+				WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{Name: "group", Type: "step-group"},
+				SubSteps: []wfTypesv1alpha1.WorkflowStepBase{
+					{Name: "inner", Type: "notification", Properties: raw(`{"url":{"fromSource":"cfg.webhook"}}`)},
+				},
+			}}},
+			wantErr: "not supported in workflowstep properties",
+		},
+		{
+			// The directive is valid at any depth, so the walk must be recursive
+			// through both objects and arrays.
+			name: "nested fromSource is found",
+			af: &Appfile{Policies: []v1beta1.AppPolicy{
+				{Name: "p", Type: "override", Properties: raw(`{"a":{"b":[{"c":{"fromSource":"x.y"}}]}}`)},
+			}},
+			wantErr: "not supported in policy properties",
+		},
+		{
+			name: "the offending policy is named",
+			af: &Appfile{Policies: []v1beta1.AppPolicy{
+				{Name: "my-policy", Type: "override", Properties: raw(`{"image":{"fromSource":"img.image"}}`)},
+			}},
+			wantErr: `"my-policy"`,
+		},
+		{
+			name: "properties without fromSource are accepted",
+			af: &Appfile{
+				Policies:      []v1beta1.AppPolicy{{Name: "p", Type: "override", Properties: raw(`{"image":"nginx"}`)}},
+				WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("notify", raw(`{"url":"https://example.com"}`))},
+			},
+		},
+		{
+			// A field merely *named* fromSource-ish must not trip the check.
+			name: "similarly named fields are accepted",
+			af: &Appfile{Policies: []v1beta1.AppPolicy{
+				{Name: "p", Type: "override", Properties: raw(`{"fromSourceUrl":"https://example.com","notFromSource":true}`)},
+			}},
+		},
+		{
+			name: "absent and empty properties are accepted",
+			af: &Appfile{
+				Policies:      []v1beta1.AppPolicy{{Name: "p", Type: "override"}},
+				WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("s", raw(`{}`))},
+			},
+		},
+		{
+			// Malformed JSON is the consumer's problem to report, not this check's.
+			name: "malformed properties are passed through",
+			af: &Appfile{Policies: []v1beta1.AppPolicy{
+				{Name: "p", Type: "override", Properties: raw(`{not json`)},
+			}},
+		},
+		{
+			name: "an empty appfile is accepted",
+			af:   &Appfile{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateFromSourceSurfaces(tc.af)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected acceptance, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
