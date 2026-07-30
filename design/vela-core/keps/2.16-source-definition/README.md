@@ -134,7 +134,7 @@ The controller always does the cheapest thing first; `storage:` is evaluated to 
 
 The admission webhook and the reconcile controller operate on different information at different times:
 
-**Admission (synchronous, no I/O):**
+**Admission (synchronous, no I/O).** Two webhooks are involved. When a `SourceDefinition` is applied, its own validating webhook checks that it declares a CUE template, a non-empty `schema:` block, and a `storage.key` whose statically-knowable text is a valid cache key. When an `Application` is applied, its webhook checks the binding:
 - Parses `name:` and `schema:` blocks of every referenced `SourceDefinition` (static; no CueX)
 - Validates that every `fromSource` path refers to a field declared in `schema:`
 - Validates `default:` presence where required (optional schema field consumed by required parameter)
@@ -174,7 +174,11 @@ If any entry in `errs` is non-empty, the `template:` execution is treated as fai
 
 ### Concreteness Enforcement
 
-As a new Definition type, `SourceDefinition` enforces that the entire `template:` block is fully concrete after CueX execution (not just `output:`). Unlike older Definition types where incomplete renders could pass silently, the controller rejects any execution that leaves abstract or unresolved CUE values anywhere in the block.
+After CueX execution the controller validates the resolved `output:` against the declared `schema:`, unified as a **closed** struct. Every field the schema declares as required must be present and concrete, and any field the output produces that the schema does not declare is rejected. Unlike older Definition types where an incomplete render could pass silently, a `SourceDefinition` whose output is missing a declared field or carries an undeclared one fails resolution.
+
+The check is scoped to `output:`, not to the whole `template:` block: helper fields (`_foo`) and provider scaffolding are implementation detail of the definition and are not part of the contract the application author consumes. `schema:` is what that contract is expressed in, so it is what gets enforced.
+
+**A `schema:` block is mandatory.** The admission webhook rejects a `SourceDefinition` that declares none, or declares an empty one. Both enforcement points depend on it - the webhook validates `fromSource` paths against it, and the controller validates the resolved output against it - so a schema-less definition would leave `fromSource` unchecked at both layers and let an Application read any field the resolution happened to produce. Requiring it is what makes the guarantees in [Security](#security) hold.
 
 The `schema:` block serves as the contract between the definition author and the application author:
 
@@ -287,7 +291,7 @@ A cache entry is **fresh** if the backing `Config` object exists and the time el
 
 The cache uses two layers with different scopes and lifetimes:
 
-**Layer 1: In-memory LRU** (per controller-process): a process-level singleton LRU keyed by the resolved `storage.key`, so entries are shared across all Applications resolving to the same key and survive across reconciles. Eliminates API server reads for the same key within the in-memory freshness window. Lost on controller restart. The TTL of this layer is a fixed implementation detail (30s), not configurable by definition authors or application authors. Because it sits in front of the Config check, the worst-case staleness window for a running controller is `storageTTL + in-memory TTL`; operators should account for this when choosing `storageTTL` for time-sensitive sources. Stale Layer 2 values are never promoted into Layer 1, so a stale entry always flows through the `onStaleFailure` logic rather than being masked as an in-memory hit. (Implemented directly on `k8s.io/utils/lru`; the reusable LRU abstraction the Helm renderer feature is expected to introduce can replace this later with no behavioural change.)
+**Layer 1: In-memory LRU** (per controller-process): a process-level singleton LRU keyed by the resolved `storage.key`, so entries are shared across all Applications resolving to the same key and survive across reconciles. Eliminates API server reads for the same key within the in-memory freshness window. Lost on controller restart. The TTL of this layer is a fixed implementation detail (30s), not configurable by definition authors or application authors, and it is capped at `min(30s, storageTTL)` so that a source with a short `storageTTL` is not masked by a longer in-memory entry. The worst-case staleness window for a running controller is therefore `storageTTL`, not `storageTTL` plus the in-memory TTL. Stale Layer 2 values are never promoted into Layer 1, so a stale entry always flows through the `onStaleFailure` logic rather than being masked as an in-memory hit. (Implemented directly on `k8s.io/utils/lru`; the reusable LRU abstraction the Helm renderer feature is expected to introduce can replace this later with no behavioural change.)
 
 **Layer 2: Backing Config object** (persistent, in API server): A `Config` CRD instance (KEP-2.18) named by the resolved `key`. Survives controller restarts. `status.lastSyncAt` is the canonical timestamp of the last successful `template:` execution. This is what operators inspect to determine when data was last fetched. The controller reads it on every in-memory miss and writes it after every successful refresh.
 
@@ -344,7 +348,21 @@ storage: {
 
 The `key` field in `storage:` is a CUE expression that resolves to the `Config` object name. It interpolates `context` values and `parameter` values to produce a unique, deterministic name per source binding. The key serves double duty; it is both the Config object name and the in-memory cache lookup key.
 
-**Key validity:** the resolved key is validated against `[a-z0-9-]` (lowercase alphanumeric and hyphens only; max 253 characters). Any character outside this set (including dots, colons, slashes, and uppercase letters) causes a fail-fast error surfaced on the Application status at resolution time. The controller does not sanitize automatically. Definition authors must ensure that all interpolated `parameter` and `context` values produce valid keys; if an input value may contain invalid characters (e.g. a Backstage entity reference like `component:default/api`), the `parameter` schema in `template:` should constrain the input format, or the `SourceDefinition` should validate via `errs:` before the key is formed.
+**A storage key is mandatory.** Every `SourceDefinition` must declare `storage.key`; the admission webhook rejects one that does not. The key is the cache's identity, so there is no meaningful default: synthesising one would silently decide the sharing boundary on the author's behalf.
+
+**Key validity:** the resolved key is validated against `[a-z0-9-]` (lowercase alphanumeric and hyphens only; max 253 characters). Any character outside this set (including dots, colons, slashes, and uppercase letters) is rejected. This is checked twice: the admission webhook validates whatever is statically knowable (a literal key in full, and the literal segments of an interpolated one), and the controller validates the fully resolved key at resolution time, failing fast before any I/O. The controller does not sanitize automatically.
+
+**The key must discriminate on whatever changes the output.** If a source's `output:` depends on a `parameter` that the key does not include, two bindings with different properties resolve to the same cache entry and the second silently receives the first's value. Include every discriminating input in the key. Where an input may contain characters that are illegal in a key, normalise it in the key expression, for example:
+
+```cue
+import "strings"
+
+storage: {
+  // an image ref contains ':' and '.', neither legal in a cache key
+  key: "image-source-" + strings.Replace(strings.Replace(parameter.image, ":", "-", -1), ".", "-", -1)
+}
+```
+ Definition authors must ensure that all interpolated `parameter` and `context` values produce valid keys; if an input value may contain invalid characters (e.g. a Backstage entity reference like `component:default/api`), the `parameter` schema in `template:` should constrain the input format, or the `SourceDefinition` should validate via `errs:` before the key is formed.
 
 **Cache key cardinality:** the key discriminator determines sharing behaviour. A key scoped only to `context.cluster` produces one `Config` per cluster, shared across all Applications on that cluster. Including `context.appName` and `context.namespace` produces one `Config` per Application instance. Definition authors should choose the narrowest discriminator that correctly models the data's scope.
 
@@ -356,7 +374,7 @@ Configs (labelled Secrets in `vela-system`) are accessed through the `vela confi
 
 ```bash
 # List all cache entries for a SourceDefinition
-vela config list -t cluster-config-reader-v1
+vela config list -t cluster-config-reader-a3f9c21b
 
 # Check Application status for per-source phase (Resolved / Stale / Pending / Failed)
 kubectl get application <name> -o jsonpath='{.status.services}'
@@ -369,14 +387,18 @@ Deleting the cache entry is the supported mechanism for forcing an immediate ref
 
 ## ConfigTemplate Versioning
 
-The `schema:` block is registered as a `ConfigTemplate` named `{source-definition-name}-v{N}` where `N` is a monotonically incrementing integer (for example `cluster-config-reader-v1`, `cluster-config-reader-v2`). A hash of the `schema:` block is computed and stored as an annotation on the ConfigTemplate (`definition.oam.dev/schema-hash`). This hash drives the install/upgrade decision:
+The `schema:` block is registered as a `ConfigTemplate` whose name embeds a hash of that schema: `{source-definition-name}-{schema-hash}` (for example `cluster-config-reader-a3f9c21b`). The hash is the schema's identity, so the name is deterministic rather than sequential:
 
 1. Compute the hash of the new `schema:` block
-2. Check whether any existing ConfigTemplate for this SourceDefinition carries a matching `definition.oam.dev/schema-hash` annotation
-3. **Match found:** attach the new SourceDefinition revision to the existing ConfigTemplate (`N` is not incremented, no new object is created)
-4. **No match:** create `{name}-v{N+1}` with the hash annotation
+2. Derive the ConfigTemplate name from it
+3. **Name already exists:** the schema is unchanged; the SourceDefinition revision attaches to the existing ConfigTemplate and no new object is created
+4. **Name does not exist:** create it
 
-This means `N` only increments on genuine schema changes, and if a `SourceDefinition` revision reverts to a previously-used schema it will re-attach to the corresponding existing `ConfigTemplate` rather than creating a duplicate. Each `DefinitionRevision` records the name of its attached versioned `ConfigTemplate`; this link is what allows the controller to determine the correct cache schema for any snapshotted revision, including during rollbacks (see [ApplicationRevision Snapshot](#applicationrevision-snapshot)). Garbage collection of old versioned `ConfigTemplate` entries is left to a future enhancement.
+A new ConfigTemplate therefore appears only on a genuine schema change, and a `SourceDefinition` revision that reverts to a previously-used schema re-attaches to that schema's existing `ConfigTemplate` rather than creating a duplicate. The current name and hash are recorded on the SourceDefinition's `status.configTemplateRef`.
+
+> **Note:** an earlier draft of this KEP specified a monotonically incrementing `{name}-v{N}` scheme with the hash carried in a `definition.oam.dev/schema-hash` annotation. The shipped implementation derives the name from the hash directly, which gives the same deduplication with no counter to maintain and no ordering to reason about. Operator commands below use the hash-suffixed form.
+
+Each `DefinitionRevision` records the name of its attached `ConfigTemplate`; this link is what allows the controller to determine the correct cache schema for any snapshotted revision, including during rollbacks (see [ApplicationRevision Snapshot](#applicationrevision-snapshot)). Garbage collection of `ConfigTemplate` entries whose schema is no longer referenced is left to a future enhancement.
 
 If multiple components in the same Application reference the same `SourceDefinition`, the cached `Config` entry from the first resolution is reused for subsequent ones; the second component's reconcile is a cache hit.
 
@@ -492,7 +514,7 @@ metadata:
   name: cluster-config-reader-us-east-1
   namespace: vela-system   # or configured System Namespace
 spec:
-  template: cluster-config-reader-v1   # {name}-v{N}; N advances only on schema change
+  template: cluster-config-reader-a3f9c21b   # {name}-{schema-hash}; changes only when the schema does
   properties:
     region:      us-east-1
     environment: production
@@ -711,7 +733,7 @@ Errors from the admission pass surface immediately and block the apply. Errors f
 | `context.cluster` | target deployment cluster name |
 | `context.hubCluster` | hub cluster name |
 | `context.namespace` | Application namespace |
-| `context.componentName` | name of the component referencing this source |
+| `context.name` | name of the component referencing this source |
 | `parameter.*` | source binding properties from `spec.sources[].properties` |
 
 ## Resolution Scope: hub vs spoke
@@ -766,6 +788,26 @@ template: {
 ```
 
 > **Note:** because the author controls the target cluster directly on the read, a single `SourceDefinition` can even read from different clusters across bindings (e.g. driven by `context.cluster`). Definition authors handling per-spoke data must key their cache by `context.cluster` as shown above.
+
+## Propagating a Re-resolved Value (opt-in)
+
+Resolution is demand-driven, but a value that has been re-resolved still has to reach the cluster. A component that is already healthy is not normally re-dispatched: change detection compares the component's properties against the previous revision, and a `fromSource` directive is *unchanged* by a new resolved value - the directive is the same text, only the value behind it moved. Left alone, a refreshed source would update the cache and never reach the workload.
+
+This is therefore **opt-in per Application**, via annotations:
+
+| Annotation | Value | Effect |
+|---|---|---|
+| `app.oam.dev/autoUpdateSources` | `"true"` or `"*"` | re-dispatch when any consumed source's resolved value changes |
+| `app.oam.dev/autoUpdateSources` | comma-separated source names | re-dispatch only when one of those sources changes |
+| `app.oam.dev/autoUpdate` | `"true"` | also enables source-change re-dispatch, as a side effect of its existing behaviour |
+
+Absent or empty, source-change re-dispatch is off and a refreshed value reaches the workload only when the component is re-rendered for some other reason.
+
+**How the change is detected.** Each dispatched workload is stamped with `source.oam.dev/resolved-hash`, a JSON map of source name to a hash of the values that source contributed to this component. On the next reconcile the freshly resolved values are hashed the same way and compared against the stamp; a source whose hash differs, and which the selector above has opted in, forces a re-dispatch. Hashing per source rather than over the whole set means an unrelated source refreshing does not churn the workload.
+
+**Why it is opt-in.** Re-dispatching on every resolved-value change turns any volatile source into a continuous rollout of everything consuming it. Whether that is desirable is a property of the application, not of the source, so the application declares it.
+
+**Cadence.** Re-dispatch cannot be faster than resolution, which is bounded by `storageTTL` and the in-memory cache TTL, and it is driven by the reconcile loop - so the effective update interval is the reconcile resync period or the TTL, whichever is longer. This is not a push mechanism; see [Caching Model](#caching-model), which still holds: nothing refreshes a value until a render asks for it.
 
 ## ApplicationRevision Snapshot
 
@@ -836,7 +878,7 @@ status:
 - `Pending`: first resolution in progress; no value available yet
 - `Failed`: first-load failure or refresh failed with `onStaleFailure: fail`; no prior value available; component render is blocked until the source becomes reachable
 
-`config` is the name of the backing Config. Operators can inspect it via `vela config list -t <definition>-v<N>` or list all entries with `vela config list | grep <definition>`.
+`config` is the name of the backing Config. Operators can inspect it via `vela config list -t <definition>-<schema-hash>` or list all entries with `vela config list | grep <definition>`.
 
 ## Practical Operations
 
@@ -910,8 +952,8 @@ kubectl describe application <name>                               # events may i
 | Task | Command |
 |---|---|
 | List all cache entries for a definition | `vela config list \| grep <definition>` |
-| List entries by schema version | `vela config list -t <definition>-v<N>` |
-| Check the registered output schema | `vela config-template show <definition>-v<N>` |
+| List entries by schema version | `vela config list -t <definition>-<schema-hash>` |
+| Check the registered output schema | `vela config-template show <definition>-<schema-hash>` |
 | Force a cache refresh | `vela config delete <cache-entry-name>` |
 | Check per-source phase per component | `kubectl get application <name> -o jsonpath='{.status.services}'` |
 
@@ -947,7 +989,7 @@ The following properties are enforced by the controller and do not require opera
 | `fromSource` paths are limited to declared `schema:` fields | Admission webhook (structural check) |
 | Application authors have `get` permission on referenced `SourceDefinition` | Admission webhook (`SubjectAccessReview`) |
 | Resolved cache entries cannot be overwritten by application authors | RBAC on `config.oam.dev/managed-by: source-controller` Secrets |
-| Sensitive fields are redacted from `status` and logs | Controller (`// +sensitive` marker) |
+| Sensitive fields are redacted from `status` and logs | Controller (`// +sensitive` marker in `schema:` or `output:`) |
 | Sensitive values are not stored in the Application CR | Controller (substitution at render time, not at apply time) |
 
 ### Application Admission RBAC
@@ -981,6 +1023,8 @@ The following properties are the operator's responsibility. They are not enforce
 
 ### Credentials and Sensitive Values
 
+**Where the marker goes.** `// +sensitive` is honoured on a field in either the `schema:` block (its documented home, as in the `cluster-config-reader` example above) or the `output:` block. Marking the field in `schema:` is preferred - it states the sensitivity as part of the published contract rather than as a property of one implementation - but both are recognised, and a field marked in either is redacted.
+
 `SourceDefinition` is not the right mechanism for distributing raw credential values to components. `// +sensitive` redacts values from `status` output and logs, but a sensitive value can still be written to a Config in `vela-system`, passed through the CUE renderer, and written into a rendered resource on the spoke.
 
 The recommended pattern is to return a **reference** (the name of a Kubernetes Secret, an ESO `ExternalSecret` path, or a Vault reference) rather than the credential value itself. The component consumes the reference and the platform handles injection at the resource level. Platform teams should code-review any `SourceDefinition` that handles credentials to verify it follows this pattern.
@@ -1009,9 +1053,9 @@ The controller itself does not gate availability; that decision belongs to the o
 
 ## Implementation Location
 
-`fromSource` resolution is implemented inside `pkg/cue/definition/template.go`, in the `workloadDef.Complete()` method. Traits support `fromSource` identically; trait context (`context.cluster`, `context.namespace`, `context.componentName`, `parameter.*`) is structurally the same as component context, so the same resolution hook in the trait `Complete()` method applies without modification.
+`fromSource` resolution is implemented inside `pkg/cue/definition/template.go`, in the `workloadDef.Complete()` method. Traits support `fromSource` identically; trait context (`context.cluster`, `context.namespace`, `context.name`, `parameter.*`) is structurally the same as component context, so the same resolution hook in the trait `Complete()` method applies without modification.
 
-The hook sits **after** the process context is fully built (`ctx.BaseContextFile()` has returned) but **before** `paramFile` is marshaled and passed to `cuex.DefaultCompiler`. Context fields such as `context.cluster`, `context.namespace`, and `context.componentName` are populated by the standard workflow context pipeline before `Complete()` is called (the same fields components and traits already use). The hook requires them to be available because `storage:` key computation interpolates against them.
+The hook sits **after** the process context is fully built (`ctx.BaseContextFile()` has returned) but **before** `paramFile` is marshaled and passed to `cuex.DefaultCompiler`. Context fields such as `context.cluster`, `context.namespace`, and `context.name` are populated by the standard workflow context pipeline before `Complete()` is called (the same fields components and traits already use). The hook requires them to be available because `storage:` key computation interpolates against them.
 
 ```
 ctx.BaseContextFile()           ← standard workflow context already populated
@@ -1041,11 +1085,11 @@ Because `SourceDefinition` resolution reuses the existing `ConfigTemplate` and `
 ```bash
 # List all ConfigTemplate versions for a SourceDefinition
 vela config-template list | grep cluster-config-reader
-# cluster-config-reader-v1   source   2026-04-01
+# cluster-config-reader-a3f9c21b   source   2026-04-01
 
 # Render the output schema of a specific version as human-readable docs
 # (shows resolved field names, types, and descriptions from the schema: block)
-vela config-template show cluster-config-reader-v1
+vela config-template show cluster-config-reader-a3f9c21b
 ```
 
 A registered ConfigTemplate is stored as a `ConfigMap` in `vela-system`. The ConfigMap name carries the `config-template-` prefix used by the existing factory loader; the CLI presents the name without it:
@@ -1055,14 +1099,14 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   # ConfigMap name = "config-template-" + template name (factory convention)
-  name: config-template-cluster-config-reader-v1
+  name: config-template-cluster-config-reader-a3f9c21b
   namespace: vela-system
   labels:
     config.oam.dev/catalog: velacore-config
     config.oam.dev/scope:   system
   annotations:
     config.oam.dev/description: "Reads platform metadata from the cluster-config ConfigMap"
-    definition.oam.dev/schema-hash: "a3f9c21b"   # hash of schema: block; drives version deduplication
+    config.oam.dev/description: ...              # the schema hash is carried in the name, not an annotation
 data:
   template: |
     <CUE source of the template: block>
@@ -1074,9 +1118,9 @@ data:
 
 ```bash
 # List all Config entries backed by a given ConfigTemplate version
-vela config list -t cluster-config-reader-v1
-# NAME                               TEMPLATE                    CREATED-TIME
-# cluster-config-reader-us-east-1   cluster-config-reader-v1   2026-04-01 10:00:00
+vela config list -t cluster-config-reader-a3f9c21b
+# NAME                               TEMPLATE                          CREATED-TIME
+# cluster-config-reader-us-east-1   cluster-config-reader-a3f9c21b   2026-04-01 10:00:00
 
 # List all cached entries across all versions of a SourceDefinition
 vela config list | grep cluster-config-reader
@@ -1092,7 +1136,7 @@ metadata:
   namespace: vela-system
   labels:
     config.oam.dev/catalog: velacore-config
-    config.oam.dev/type:    cluster-config-reader-v1   # links back to ConfigTemplate version
+    config.oam.dev/type:    cluster-config-reader-a3f9c21b   # links back to the ConfigTemplate
     config.oam.dev/scope:   system
   annotations:
     config.oam.dev/template-namespace: vela-system
