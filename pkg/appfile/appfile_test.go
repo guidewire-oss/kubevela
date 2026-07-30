@@ -1775,3 +1775,55 @@ output: {
 `)
 	assert.ElementsMatch(t, []string{"token", "nested.password"}, paths)
 }
+
+// KEP-2.16 documents `// +sensitive` as a schema: marker and places it there in
+// its examples, but the first implementation only read output:. A definition
+// written to the KEP must still redact.
+func TestExtractSensitiveOutputPathsFromSchema(t *testing.T) {
+	paths := extractSensitiveOutputPaths(`
+schema: {
+  region: string
+  // +sensitive
+  vpcId: string
+  // +sensitive
+  accountId: string
+}
+output: {
+  region:    "us-east-1"
+  vpcId:     "vpc-123"
+  accountId: "123456789012"
+}
+`)
+	assert.ElementsMatch(t, []string{"vpcId", "accountId"}, paths)
+}
+
+func TestExtractSensitiveOutputPathsMergesBothBlocks(t *testing.T) {
+	paths := extractSensitiveOutputPaths(`
+schema: {
+  // +sensitive
+  token: string
+  secret: string
+}
+output: {
+  token: "t"
+  // +sensitive
+  secret: "s"
+}
+`)
+	// Marked in either block, reported once each.
+	assert.ElementsMatch(t, []string{"token", "secret"}, paths)
+}
+
+func TestExtractSensitiveOutputPathsDeduplicates(t *testing.T) {
+	paths := extractSensitiveOutputPaths(`
+schema: {
+  // +sensitive
+  token: string
+}
+output: {
+  // +sensitive
+  token: "t"
+}
+`)
+	assert.Equal(t, []string{"token"}, paths)
+}

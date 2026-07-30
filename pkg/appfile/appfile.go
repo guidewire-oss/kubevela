@@ -823,27 +823,46 @@ func GenerateContextDataFromAppFile(appfile *Appfile, wlName string) velaprocess
 	return data
 }
 
+// sensitiveMarkerBlocks are the template blocks a `// +sensitive` marker is
+// honoured in. schema: is where KEP-2.16 documents the marker and where its
+// examples place it; output: is where the first implementation read it from.
+// Both are scanned so a definition written either way still redacts, rather than
+// silently exposing the value because the marker sat in the other block.
+var sensitiveMarkerBlocks = []string{"schema", "output"}
+
 func extractSensitiveOutputPaths(template string) []string {
 	f, err := cueparser.ParseFile("-", template, cueparser.ParseComments)
 	if err != nil || f == nil {
 		return nil
 	}
-	outStruct := findOutputStruct(f)
-	if outStruct == nil {
-		return nil
-	}
 	var paths []string
-	collectSensitivePaths(outStruct, nil, &paths)
+	seen := map[string]bool{}
+	for _, block := range sensitiveMarkerBlocks {
+		st := findTopLevelStruct(f, block)
+		if st == nil {
+			continue
+		}
+		var found []string
+		collectSensitivePaths(st, nil, &found)
+		for _, path := range found {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			paths = append(paths, path)
+		}
+	}
 	return paths
 }
 
-func findOutputStruct(f *ast.File) *ast.StructLit {
+// findTopLevelStruct returns the named top-level struct of a template, or nil.
+func findTopLevelStruct(f *ast.File, name string) *ast.StructLit {
 	for _, decl := range f.Decls {
 		field, ok := decl.(*ast.Field)
 		if !ok {
 			continue
 		}
-		if labelName(field.Label) != "output" {
+		if labelName(field.Label) != name {
 			continue
 		}
 		if st, ok := field.Value.(*ast.StructLit); ok {
