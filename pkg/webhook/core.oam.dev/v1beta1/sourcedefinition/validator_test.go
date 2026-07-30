@@ -212,3 +212,93 @@ schema: "not-a-struct"
 		})
 	}
 }
+
+func TestParseConsumableFrom(t *testing.T) {
+	cases := []struct {
+		name     string
+		template string
+		want     []string
+		wantErr  string
+	}{
+		{
+			name:     "absent means unrestricted",
+			template: "schema: {a: string}\nstorage: {key: \"k\"}\n",
+			want:     nil,
+		},
+		{
+			name:     "single surface",
+			template: "consumableFrom: [\"component\"]\nschema: {a: string}\n",
+			want:     []string{"component"},
+		},
+		{
+			name:     "both surfaces",
+			template: "consumableFrom: [\"component\", \"trait\"]\nschema: {a: string}\n",
+			want:     []string{"component", "trait"},
+		},
+		{
+			// Nothing resolves fromSource in a workflow step, so a definition
+			// cannot claim to be consumable there.
+			name:     "reject unsupported surface",
+			template: "consumableFrom: [\"workflowstep\"]\nschema: {a: string}\n",
+			wantErr:  "not a surface that supports fromSource",
+		},
+		{
+			name:     "reject empty list",
+			template: "consumableFrom: []\nschema: {a: string}\n",
+			wantErr:  "must not be empty",
+		},
+		{
+			// Absence is the only way to say "unrestricted"; there is no literal
+			// catch-all value to get subtly wrong.
+			name:     "reject a bare string",
+			template: "consumableFrom: \"all\"\nschema: {a: string}\n",
+			wantErr:  "must be a list of surfaces",
+		},
+		{
+			name:     "reject non-string entries",
+			template: "consumableFrom: [1]\nschema: {a: string}\n",
+			wantErr:  "must be strings",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseConsumableFrom(tc.template)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("expected %v, got %v", tc.want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSurfaceAllowed(t *testing.T) {
+	if !SurfaceAllowed(nil, SurfaceComponent) {
+		t.Fatal("unrestricted source must be allowed from a component")
+	}
+	if !SurfaceAllowed(nil, SurfaceTrait) {
+		t.Fatal("unrestricted source must be allowed from a trait")
+	}
+	if !SurfaceAllowed([]string{SurfaceComponent}, SurfaceComponent) {
+		t.Fatal("component-only source must be allowed from a component")
+	}
+	if SurfaceAllowed([]string{SurfaceComponent}, SurfaceTrait) {
+		t.Fatal("component-only source must not be allowed from a trait")
+	}
+}

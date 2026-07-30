@@ -18,6 +18,7 @@ package sourcedefinition
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"cuelang.org/go/cue/ast"
@@ -160,4 +161,83 @@ func fieldByName(decls []ast.Decl, name string) *ast.Field {
 		return field
 	}
 	return nil
+}
+
+// Consumer surfaces a SourceDefinition may declare in `consumableFrom:`.
+const (
+	// SurfaceComponent is a fromSource directive in a component's properties.
+	SurfaceComponent = "component"
+	// SurfaceTrait is a fromSource directive in a trait's properties.
+	SurfaceTrait = "trait"
+)
+
+// SupportedSurfaces are the surfaces where fromSource is resolved today, and
+// therefore what an unset (or "all") consumableFrom permits. Policies and
+// workflow steps are absent deliberately: nothing resolves fromSource there yet,
+// so a definition cannot opt into them.
+var SupportedSurfaces = []string{SurfaceComponent, SurfaceTrait}
+
+// ParseConsumableFrom reads the optional `consumableFrom:` block of a
+// SourceDefinition template.
+//
+// It returns the declared surfaces, or nil when the block is absent - meaning
+// every surface that supports fromSource. Restricting a source is opt-in: the
+// common case declares nothing.
+func ParseConsumableFrom(template string) ([]string, error) {
+	field, err := topLevelField(template, "consumableFrom")
+	if err != nil || field == nil {
+		return nil, err
+	}
+
+	switch v := field.Value.(type) {
+	case *ast.ListLit:
+		var surfaces []string
+		for _, elt := range v.Elts {
+			lit, ok := elt.(*ast.BasicLit)
+			if !ok {
+				return nil, fmt.Errorf("consumableFrom entries must be strings")
+			}
+			value, err := literalString(lit)
+			if err != nil {
+				return nil, fmt.Errorf("consumableFrom entries must be strings: %w", err)
+			}
+			if !slices.Contains(SupportedSurfaces, value) {
+				return nil, fmt.Errorf("consumableFrom entry %q is not a surface that supports fromSource; expected one of %v",
+					value, SupportedSurfaces)
+			}
+			surfaces = append(surfaces, value)
+		}
+		if len(surfaces) == 0 {
+			return nil, fmt.Errorf("consumableFrom must not be empty; omit it to allow every supported surface")
+		}
+		return surfaces, nil
+	default:
+		return nil, fmt.Errorf("consumableFrom must be a list of surfaces, for example [\"component\"]; omit it to allow every supported surface")
+	}
+}
+
+// ValidateConsumableFrom checks that a declared consumableFrom is well-formed.
+func ValidateConsumableFrom(template string) error {
+	_, err := ParseConsumableFrom(template)
+	return err
+}
+
+// SurfaceAllowed reports whether a source declaring the given surfaces may be
+// consumed from surface. Nil surfaces means unrestricted.
+func SurfaceAllowed(surfaces []string, surface string) bool {
+	if len(surfaces) == 0 {
+		return true
+	}
+	return slices.Contains(surfaces, surface)
+}
+
+func literalString(lit *ast.BasicLit) (string, error) {
+	if lit.Kind != cuetoken.STRING {
+		return "", fmt.Errorf("expected a string, got %s", lit.Kind)
+	}
+	value, err := cueliteral.Unquote(lit.Value)
+	if err != nil {
+		return "", fmt.Errorf("invalid string literal %s: %w", lit.Value, err)
+	}
+	return value, nil
 }

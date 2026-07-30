@@ -206,6 +206,21 @@ Concreteness is checked after CueX execution, not at admission. The admission we
 
 **Fail-fast parameter validation:** The `parameter:` block within `template:` is an exception; its values come entirely from `spec.sources[].properties`, which are concrete before CueX execution begins. The controller validates that all required (non-optional) `parameter` fields are concrete *before* invoking CueX. This avoids expensive I/O (HTTP calls, Kubernetes API reads) for an execution that would fail due to a missing input. Definitions should declare optional parameters with `field?:` and required ones without, so the pre-execution check can distinguish them.
 
+### Restricting where a source may be consumed (`consumableFrom`)
+
+By default a `SourceDefinition` may be consumed from any surface that supports `fromSource`. A definition that only makes sense in one place can say so, and admission enforces it:
+
+```cue
+// Keyed by component, so consuming it from a trait would resolve against the
+// component's identity anyway - declare the restriction rather than rely on it.
+consumableFrom: ["component"]
+
+schema: { ... }
+storage: { ... }
+```
+
+`consumableFrom` is a list of surfaces; the accepted values are `"component"` and `"trait"`. Omit the field entirely to allow every supported surface - there is no catch-all value, so there is nothing to mistype into a silently broader permission. Declaring a surface where `fromSource` is not resolved (a policy or a workflow step) is rejected at admission, so a definition cannot advertise a capability the controller does not have.
+
 ## Source Chaining
 
 ### Ordering and dependency rules
@@ -713,6 +728,10 @@ properties:
 
 The admission webhook enforces the third row: if `path` names an optional schema field and the target parameter is required, the webhook rejects the Application if `default:` is absent. This check happens at apply time (before any resolution occurs), so the failure surfaces immediately rather than at render time.
 
+**The component is the unit of source consumption.** A `fromSource` directive resolves identically whether it appears in a component's properties or in one of its traits' properties: the same context, the same cache key, the same entry. Traits have no separate identity in source resolution - they render against the component's context and their consumed sources are reported against the component in `status.services[]`. A trait is a modifier on the component's workload, not an independent consumer.
+
+**Where `fromSource` is valid.** In component properties, trait properties, and the `properties` of a later `spec.sources[]` entry (chaining). It is **not** supported in policy or workflow-step properties: resolution is wired into the component and trait render paths, so a directive elsewhere would reach the consumer as a literal `{"fromSource": ...}` map. The admission webhook rejects it rather than admitting something that silently never resolves. Extending resolution to those surfaces is a [Future Enhancement](#future-enhancements).
+
 `fromSource` is detected structurally during render (not by string matching). It is valid at any depth within `properties`, including nested objects and array entries. It is not valid as a map key. The admission webhook validates that every `path` names a field declared in the `schema:` block; unknown paths are rejected at apply time.
 
 ### Validation summary
@@ -733,7 +752,7 @@ Errors from the admission pass surface immediately and block the apply. Errors f
 | `context.cluster` | target deployment cluster name |
 | `context.hubCluster` | hub cluster name |
 | `context.namespace` | Application namespace |
-| `context.name` | name of the component referencing this source |
+| `context.name` | name of the component referencing this source (also in a trait render - traits use the component's context) |
 | `parameter.*` | source binding properties from `spec.sources[].properties` |
 
 ## Resolution Scope: hub vs spoke
@@ -1160,7 +1179,7 @@ Because resolved source outputs are stored as standard `Config` objects, any wor
 
 ## Future Enhancements
 
-- **`fromSource` in workflow steps and policies:** `fromSource` in component and trait properties is the highest priority and the scope of this KEP. The same mechanism can be extended to `workflow: steps[]` and policy properties; both have access to `spec.sources[]` and the declarative type-safety model applies equally. The critical requirement for this extension is that the `fromSource` resolution logic is implemented behind a reusable internal API, callable from any rendering context without duplicating the cache lookup, key computation, or CueX execution paths.
+- **`fromSource` in workflow steps and policies (and the `context.name` hazard):** note that `context.name` is not stable across render contexts - in a component or trait render it is the *component* name, while in a workflow-step context it is the *application* name. A source whose `storage.key` interpolates `context.name` would therefore compute a different key depending on which surface consumed it, silently splitting one logical cache entry in two. Extending resolution to those surfaces should introduce an explicit `context.componentName` (absent outside a component or trait render, so a component-scoped source fails loudly rather than resolving against the wrong identity) rather than inheriting `context.name`. The `consumableFrom` restriction above is the interim guard. `fromSource` in component and trait properties is the highest priority and the scope of this KEP. The same mechanism can be extended to `workflow: steps[]` and policy properties; both have access to `spec.sources[]` and the declarative type-safety model applies equally. The critical requirement for this extension is that the `fromSource` resolution logic is implemented behind a reusable internal API, callable from any rendering context without duplicating the cache lookup, key computation, or CueX execution paths.
 - **Configurable Config namespace:** allow resolved Config objects that contain no `// +sensitive` fields to be written to a user-accessible namespace (e.g. the Application's namespace) so that end users can inspect resolved source data without access to `vela-system`. Requires a focused design pass on the scope/access model and enforcement that definitions with any `// +sensitive` fields cannot opt into this.
 - **Garbage collection of old ConfigTemplate versions:** remove versioned `ConfigTemplate` entries once no `ApplicationRevision` references that Definition revision.
 

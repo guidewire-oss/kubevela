@@ -2,8 +2,10 @@ package application
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	wfTypesv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -530,4 +532,159 @@ parameter: {
 			assert.Len(t, errs, tt.expectedErrs, "errors: %v", errs)
 		})
 	}
+}
+
+// fromSource is substituted during component and trait rendering only. Anywhere
+// else the consumer would be handed the literal {"fromSource": ...} map, so the
+// directive is rejected rather than admitted into a silent no-op.
+func TestValidateSourcesRejectsUnsupportedSurfaces(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1beta1.AddToScheme(scheme)
+
+	def := &v1beta1.SourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "source-a", Namespace: "default"},
+		Spec: v1beta1.SourceDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {image: string}
+storage: {key: "source-a"}
+output: {image: parameter.image}
+parameter: {image: string}
+`}},
+		},
+	}
+
+	source := []v1beta1.ApplicationSource{
+		{Name: "img", Type: "source-a", Properties: rawJSON(`{"image":"nginx:1.25.0"}`)},
+	}
+	validComp := []common.ApplicationComponent{
+		{Name: "web", Type: "webservice", Properties: rawJSON(`{"image":"nginx"}`)},
+	}
+
+	tests := []struct {
+		name    string
+		app     *v1beta1.Application
+		wantMsg string
+	}{
+		{
+			name: "policy properties",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources:    source,
+					Components: validComp,
+					Policies: []v1beta1.AppPolicy{
+						{Name: "p", Type: "override", Properties: rawJSON(`{"image":{"fromSource":"img.image"}}`)},
+					},
+				},
+			},
+			wantMsg: "not supported in policy properties",
+		},
+		{
+			name: "workflow step properties",
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+				Spec: v1beta1.ApplicationSpec{
+					Sources:    source,
+					Components: validComp,
+					Workflow: &v1beta1.Workflow{
+						Steps: []wfTypesv1alpha1.WorkflowStep{
+							{
+								WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{
+									Name:       "notify",
+									Type:       "notification",
+									Properties: rawJSON(`{"url":{"fromSource":"img.image"}}`),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantMsg: "not supported in workflow step properties",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ValidatingHandler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(def).Build()}
+			errs := h.ValidateSources(context.Background(), tc.app)
+			if len(errs) == 0 {
+				t.Fatalf("expected a rejection mentioning %q, got none", tc.wantMsg)
+			}
+			var joined string
+			for _, e := range errs {
+				joined += e.Error() + "\n"
+			}
+			if !strings.Contains(joined, tc.wantMsg) {
+				t.Fatalf("expected an error containing %q, got:\n%s", tc.wantMsg, joined)
+			}
+		})
+	}
+}
+
+// A SourceDefinition can restrict which surfaces may consume it.
+func TestValidateSourcesHonoursConsumableFrom(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1beta1.AddToScheme(scheme)
+
+	componentOnly := &v1beta1.SourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "component-only", Namespace: "default"},
+		Spec: v1beta1.SourceDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+consumableFrom: ["component"]
+schema: {image: string}
+storage: {key: "component-only"}
+output: {image: parameter.image}
+parameter: {image: string}
+`}},
+		},
+	}
+
+	source := []v1beta1.ApplicationSource{
+		{Name: "img", Type: "component-only", Properties: rawJSON(`{"image":"nginx:1.25.0"}`)},
+	}
+
+	t.Run("allowed from a component", func(t *testing.T) {
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: source,
+				Components: []common.ApplicationComponent{
+					{Name: "web", Type: "webservice", Properties: rawJSON(`{"image":{"fromSource":"img.image"}}`)},
+				},
+			},
+		}
+		h := &ValidatingHandler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(componentOnly).Build()}
+		if errs := h.ValidateSources(context.Background(), app); len(errs) != 0 {
+			t.Fatalf("expected no errors, got: %v", errs)
+		}
+	})
+
+	t.Run("rejected from a trait", func(t *testing.T) {
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: source,
+				Components: []common.ApplicationComponent{
+					{
+						Name: "web", Type: "webservice", Properties: rawJSON(`{"image":"nginx"}`),
+						Traits: []common.ApplicationTrait{
+							{Type: "scaler", Properties: rawJSON(`{"image":{"fromSource":"img.image"}}`)},
+						},
+					},
+				},
+			},
+		}
+		h := &ValidatingHandler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(componentOnly).Build()}
+		errs := h.ValidateSources(context.Background(), app)
+		if len(errs) == 0 {
+			t.Fatal("expected the trait binding to be rejected")
+		}
+		var joined string
+		for _, e := range errs {
+			joined += e.Error() + "\n"
+		}
+		if !strings.Contains(joined, "cannot be consumed from a trait") {
+			t.Fatalf("expected a consumableFrom rejection, got:\n%s", joined)
+		}
+	})
 }

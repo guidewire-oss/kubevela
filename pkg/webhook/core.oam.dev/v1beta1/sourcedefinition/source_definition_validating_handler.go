@@ -99,6 +99,13 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
 	}
 
+	// consumableFrom is optional, but a malformed one must not be accepted and
+	// then silently ignored when an Application binds the source.
+	if err := ValidateConsumableFrom(cueTemplate); err != nil {
+		logger.WithStep("validate-consumable-from").WithError(err).Error(err, "SourceDefinition consumableFrom is invalid")
+		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
+	}
+
 	logger.WithStep("complete").WithSuccess(true, startTime).Info("SourceDefinition admission validation completed successfully - resource is valid and will be admitted", "definitionName", obj.Name, "operation", req.Operation)
 	return admission.ValidationResponse(true, "")
 }

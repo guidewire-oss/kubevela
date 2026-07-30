@@ -26,6 +26,7 @@ import (
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/sourcedefinition"
 )
 
 type fromSourceReference struct {
@@ -34,6 +35,40 @@ type fromSourceReference struct {
 	FieldPath        *field.Path
 	FromSourceObject bool
 	SourceIndex      int
+	// Surface is where the directive was found: a component, a trait, a policy,
+	// a workflow step, or another source's properties (chaining).
+	Surface string
+}
+
+// Surfaces a fromSource directive can appear on. Only components and traits are
+// resolved today; see surfaceResolvesFromSource.
+const (
+	surfaceComponent    = "component"
+	surfaceTrait        = "trait"
+	surfacePolicy       = "policy"
+	surfaceWorkflowStep = "workflow step"
+	surfaceSource       = "source"
+)
+
+// surfaceResolvesFromSource reports whether fromSource is substituted on this
+// surface at reconcile time. Resolution is wired into the component and trait
+// render paths only; a directive anywhere else would pass admission and then be
+// handed to the consumer as a literal {"fromSource": ...} map.
+func surfaceResolvesFromSource(surface string) bool {
+	switch surface {
+	case surfaceComponent, surfaceTrait, surfaceSource:
+		return true
+	default:
+		return false
+	}
+}
+
+// withSurface stamps the surface onto each collected reference.
+func withSurface(refs []fromSourceReference, surface string) []fromSourceReference {
+	for i := range refs {
+		refs[i].Surface = surface
+	}
+	return refs
 }
 
 type sourceSchemaValidator struct {
@@ -64,37 +99,38 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 	for i, comp := range app.Spec.Components {
 		compRefs, refErrs := collectFromRawExtension(comp.Properties, field.NewPath("spec", "components").Index(i).Child("properties"), -1)
 		errs = append(errs, refErrs...)
-		refs = append(refs, compRefs...)
+		refs = append(refs, withSurface(compRefs, surfaceComponent)...)
 		for j, tr := range comp.Traits {
 			trRefs, trErrs := collectFromRawExtension(tr.Properties, field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties"), -1)
 			errs = append(errs, trErrs...)
-			refs = append(refs, trRefs...)
+			refs = append(refs, withSurface(trRefs, surfaceTrait)...)
 		}
 	}
 	for i, policy := range app.Spec.Policies {
 		policyRefs, policyErrs := collectFromRawExtension(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), -1)
 		errs = append(errs, policyErrs...)
-		refs = append(refs, policyRefs...)
+		refs = append(refs, withSurface(policyRefs, surfacePolicy)...)
 	}
 	if app.Spec.Workflow != nil {
 		for i, step := range app.Spec.Workflow.Steps {
 			stepRefs, stepErrs := collectFromRawExtension(step.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("properties"), -1)
 			errs = append(errs, stepErrs...)
-			refs = append(refs, stepRefs...)
+			refs = append(refs, withSurface(stepRefs, surfaceWorkflowStep)...)
 			for j, sub := range step.SubSteps {
 				subRefs, subErrs := collectFromRawExtension(sub.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("subSteps").Index(j).Child("properties"), -1)
 				errs = append(errs, subErrs...)
-				refs = append(refs, subRefs...)
+				refs = append(refs, withSurface(subRefs, surfaceWorkflowStep)...)
 			}
 		}
 	}
 	for i, src := range app.Spec.Sources {
 		srcRefs, srcErrs := collectFromRawExtension(src.Properties, field.NewPath("spec", "sources").Index(i).Child("properties"), i)
 		errs = append(errs, srcErrs...)
-		refs = append(refs, srcRefs...)
+		refs = append(refs, withSurface(srcRefs, surfaceSource)...)
 	}
 
 	schemaValidators := map[string]*sourceSchemaValidator{}
+	consumableFromCache := map[string][]string{}
 	for _, ref := range refs {
 		sourceType, ok := sourceNameToType[ref.SourceName]
 		if !ok {
@@ -113,8 +149,31 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 				continue
 			}
 		}
+		// fromSource is only substituted during component and trait rendering.
+		// Elsewhere the consumer would receive the literal {"fromSource": ...}
+		// map, so reject it rather than admitting a directive that silently
+		// never resolves.
+		if !surfaceResolvesFromSource(ref.Surface) {
+			errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
+				fmt.Sprintf("fromSource is not supported in %s properties; it is resolved during component and trait rendering only", ref.Surface)))
+			continue
+		}
 		if sourceType == "" {
 			continue
+		}
+		// A SourceDefinition may restrict where it can be consumed from.
+		if ref.Surface == surfaceComponent || ref.Surface == surfaceTrait {
+			surfaces, err := h.loadConsumableFrom(ctx, app.Namespace, sourceType, consumableFromCache)
+			if err != nil {
+				errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
+					fmt.Sprintf("failed to load SourceDefinition %q: %v", sourceType, err)))
+				continue
+			}
+			if !sourcedefinition.SurfaceAllowed(surfaces, ref.Surface) {
+				errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
+					fmt.Sprintf("SourceDefinition %q declares consumableFrom %v and cannot be consumed from a %s", sourceType, surfaces, ref.Surface)))
+				continue
+			}
 		}
 		validator, exists := schemaValidators[sourceType]
 		if !exists {
@@ -482,6 +541,27 @@ func parseFromSourceSelector(selector interface{}) (name string, path string, ha
 	default:
 		return "", "", false, fmt.Errorf("invalid fromSource selector type %T", selector)
 	}
+}
+
+// loadConsumableFrom returns the surfaces a SourceDefinition may be consumed
+// from, memoised per source type. Nil means unrestricted.
+func (h *ValidatingHandler) loadConsumableFrom(ctx context.Context, appNamespace, sourceType string, cache map[string][]string) ([]string, error) {
+	if surfaces, ok := cache[sourceType]; ok {
+		return surfaces, nil
+	}
+	def, err := h.getSourceDefinition(ctx, appNamespace, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	var surfaces []string
+	if def.Spec.Schematic != nil && def.Spec.Schematic.CUE != nil {
+		surfaces, err = sourcedefinition.ParseConsumableFrom(def.Spec.Schematic.CUE.Template)
+		if err != nil {
+			return nil, err
+		}
+	}
+	cache[sourceType] = surfaces
+	return surfaces, nil
 }
 
 func (h *ValidatingHandler) loadSourceSchemaValidator(ctx context.Context, appNamespace, sourceType string) (*sourceSchemaValidator, error) {
