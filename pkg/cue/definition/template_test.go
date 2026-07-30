@@ -1882,6 +1882,9 @@ func TestResolveChainedSourceProperties(t *testing.T) {
 	}
 	resolver.sourceTemplates = map[string]string{
 		"typeA": `
+storage: {
+  key: "test-cache-key-1"
+}
 output: {
   nested: {
     image: {
@@ -1896,6 +1899,9 @@ parameter: {
 }
 `,
 		"typeB": `
+storage: {
+  key: "test-cache-key-2"
+}
 output: {
   resolved: {
     image: "\(parameter.repo):\(parameter.tag)"
@@ -2030,6 +2036,9 @@ func TestResolveSourceSchemaMismatchFails(t *testing.T) {
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
+storage: {
+  key: "test-cache-key-3"
+}
 schema: {
   image: string
 }
@@ -2056,6 +2065,9 @@ func TestResolveSourceErrsFieldFails(t *testing.T) {
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
+storage: {
+  key: "test-cache-key-4"
+}
 output: {
   value: parameter.value
 }
@@ -2092,6 +2104,9 @@ func TestResolveSourceErrsFieldEmptyIsIgnored(t *testing.T) {
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
+storage: {
+  key: "test-cache-key-5"
+}
 output: {
   value: parameter.value
 }

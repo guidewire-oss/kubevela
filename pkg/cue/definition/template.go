@@ -32,6 +32,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/cue/definition/health"
 	"github.com/oam-dev/kubevela/pkg/features"
 
+	upstreamcuex "github.com/kubevela/pkg/cue/cuex"
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 
 	"cuelang.org/go/cue"
@@ -920,7 +921,11 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 		}
 		paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(raw))
 	}
-	cachePolicy := r.resolveCachePolicy(sourceName, sourceType, sourceTemplate, resolvedProps)
+	cachePolicy, err := r.resolveCachePolicy(sourceName, sourceType, sourceTemplate, resolvedProps)
+	if err != nil {
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
+		return nil, err
+	}
 	cached, stale, found, cacheExpiresAt, err := r.readSourceCache(cachePolicy.Key, cachePolicy.TTL)
 	if err != nil {
 		klog.Warningf("read source cache failed for %s: %v", sourceName, err)
@@ -990,27 +995,13 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	return output, nil
 }
 
-func (r *sourceResolver) defaultCacheKey(sourceName, sourceType, sourceTemplate string, props map[string]interface{}) string {
-	cluster, _ := r.ctx.GetData(velaprocess.ContextCluster).(string)
-	raw, _ := json.Marshal(map[string]interface{}{
-		"sourceName": sourceName,
-		"sourceType": sourceType,
-		"cluster":    cluster,
-		"template":   sourceTemplate,
-		"props":      props,
-	})
-	sum := sha256.Sum256(raw)
-	return "source-cache-" + hex.EncodeToString(sum[:12])
-}
-
-func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTemplate string, props map[string]interface{}) sourceCachePolicy {
+func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTemplate string, props map[string]interface{}) (sourceCachePolicy, error) {
 	policy := sourceCachePolicy{
-		Key:            r.defaultCacheKey(sourceName, sourceType, sourceTemplate, props),
 		TTL:            sourceCacheTTL,
 		OnStaleFailure: sourceCachePolicyUseStale,
 	}
 	if sourceTemplate == "" {
-		return policy
+		return policy, fmt.Errorf("source definition %q has no cue template", sourceType)
 	}
 	paramFile := velaprocess.ParameterFieldName + ": {}"
 	if len(props) > 0 {
@@ -1020,37 +1011,57 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 	}
 	c, err := r.ctx.BaseContextFile()
 	if err != nil {
-		return policy
+		return policy, err
 	}
-	val, err := velacuex.WorkloadCompiler.Get().CompileString(r.ctx.GetCtx(), strings.Join([]string{
+	// storage: is pure interpolation over context and parameter values, so it is
+	// resolved WITHOUT running provider functions. Resolving them here would
+	// perform the very I/O the cache exists to avoid - on every reconcile, before
+	// the cache is even consulted.
+	val, err := velacuex.WorkloadCompiler.Get().CompileStringWithOptions(r.ctx.GetCtx(), strings.Join([]string{
 		renderTemplate(sourceTemplate), paramFile, c,
-	}, "\n"))
+	}, "\n"), upstreamcuex.DisableResolveProviderFunctions{})
 	if err != nil {
-		klog.Warningf("resolve source cache policy failed for %s: %v", sourceName, err)
-		return policy
+		return policy, errors.WithMessagef(err, "evaluate storage block for source %q", sourceName)
 	}
 	storage := val.LookupPath(value.FieldPath("storage"))
 	if !storage.Exists() {
-		return policy
+		return policy, fmt.Errorf("source definition %q must declare a storage: block with a key: field", sourceType)
 	}
+
 	cacheKey := ""
-	if err := storage.LookupPath(value.FieldPath("key")).Decode(&cacheKey); err == nil && cacheKey != "" {
-		policy.Key = cacheKey
+	if err := storage.LookupPath(value.FieldPath("key")).Decode(&cacheKey); err != nil {
+		return policy, errors.WithMessagef(err, "resolve storage.key for source %q", sourceName)
 	}
+	if err := ValidateCacheKey(cacheKey); err != nil {
+		return policy, errors.WithMessagef(err, "source %q", sourceName)
+	}
+	policy.Key = cacheKey
+
 	ttlRaw := ""
 	if err := storage.LookupPath(value.FieldPath("storageTTL")).Decode(&ttlRaw); err == nil && ttlRaw != "" {
-		if ttl, err := time.ParseDuration(ttlRaw); err == nil && ttl > 0 {
-			policy.TTL = ttl
+		ttl, err := time.ParseDuration(ttlRaw)
+		if err != nil {
+			return policy, fmt.Errorf("source %q has an invalid storageTTL %q: %w", sourceName, ttlRaw, err)
 		}
+		if ttl <= 0 {
+			return policy, fmt.Errorf("source %q has a non-positive storageTTL %q", sourceName, ttlRaw)
+		}
+		policy.TTL = ttl
 	}
+
 	onStaleFailure := ""
-	if err := storage.LookupPath(value.FieldPath("onStaleFailure")).Decode(&onStaleFailure); err == nil {
+	if err := storage.LookupPath(value.FieldPath("onStaleFailure")).Decode(&onStaleFailure); err == nil && onStaleFailure != "" {
 		switch onStaleFailure {
 		case sourceCachePolicyUseStale, sourceCachePolicyFail:
 			policy.OnStaleFailure = onStaleFailure
+		default:
+			// Silently defaulting here would downgrade a definition that asked to
+			// fail on stale data into one that serves it.
+			return policy, fmt.Errorf("source %q has an unknown onStaleFailure %q: expected %q or %q",
+				sourceName, onStaleFailure, sourceCachePolicyUseStale, sourceCachePolicyFail)
 		}
 	}
-	return policy
+	return policy, nil
 }
 
 func (r *sourceResolver) validateResolvedOutput(sourceType, sourceTemplate string, output map[string]interface{}) error {

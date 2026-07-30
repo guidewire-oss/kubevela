@@ -98,6 +98,19 @@ var _ = Describe("SourceDefinition fromSource e2e", func() {
 				Schematic: &oamcomm.Schematic{
 					CUE: &oamcomm.CUE{
 						Template: `
+import "strings"
+
+schema: {
+  image: string
+}
+storage: {
+  // The cache key must discriminate on the image, otherwise changing the source
+  // property would be served from the entry cached under the previous value.
+  // Image refs contain ':' and '.', which are not legal in a cache key, so the
+  // definition normalises them - the pattern the KEP recommends for inputs that
+  // may contain invalid characters.
+  key: "image-source-" + strings.Replace(strings.Replace(parameter.image, ":", "-", -1), ".", "-", -1)
+}
 output: {
   // +sensitive
   image: parameter.image
@@ -349,6 +362,20 @@ parameter: {
 				Schematic: &oamcomm.Schematic{
 					CUE: &oamcomm.CUE{
 						Template: `
+schema: {
+  nested: {
+    image: {
+      repo: string
+      tag:  string
+    }
+    meta: {
+      region: string
+    }
+  }
+}
+storage: {
+  key: "cluster-source"
+}
 output: {
   nested: {
     image: {
@@ -381,6 +408,15 @@ parameter: {
 				Schematic: &oamcomm.Schematic{
 					CUE: &oamcomm.CUE{
 						Template: `
+schema: {
+  resolved: {
+    image:  string
+    region: string
+  }
+}
+storage: {
+  key: "render-source"
+}
 output: {
   resolved: {
     image: "\(parameter.repo):\(parameter.tag)"
@@ -464,6 +500,14 @@ parameter: {
 				Schematic: &oamcomm.Schematic{
 					CUE: &oamcomm.CUE{
 						Template: `
+schema: {
+  scale: {
+    replicas: int
+  }
+}
+storage: {
+  key: "scale-source"
+}
 output: {
   scale: {
     replicas: parameter.replicas
@@ -548,6 +592,9 @@ parameter: {
 schema: {
   image:  string
   vpcId?: string
+}
+storage: {
+  key: "typed-source"
 }
 output: {
   image: parameter.image
