@@ -1938,7 +1938,12 @@ parameter: {
 func TestResolveSourceUsesStaleCacheOnRefreshFailure(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	cacheKey := "stale-cache-use"
+	// The resolver appends a hash of the binding's properties to the declared
+	// key, so the entry has to be seeded under that identity rather than the
+	// key alone.
+	staleProps := map[string]interface{}{"value": 1}
+	cacheKey, err := cacheIdentity("stale-cache-use", staleProps)
+	require.NoError(t, err)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cacheKey,
@@ -1973,21 +1978,26 @@ parameter: {
 `,
 	}
 	// Invalid parameter type triggers refresh compile failure.
-	resolver.sourceProps = map[string]map[string]interface{}{"s": {"value": 1}}
+	resolver.sourceProps = map[string]map[string]interface{}{"s": staleProps}
 
 	out, err := resolver.resolve("s")
 	require.NoError(t, err)
 	require.Equal(t, "cached", out["value"])
 	statuses, _ := resolver.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
 	require.NotNil(t, statuses)
-	assert.Equal(t, "stale-cache-use", statuses["s"].Config)
+	assert.Equal(t, cacheKey, statuses["s"].Config)
 	assert.NotEmpty(t, statuses["s"].ExpiresAt)
 }
 
 func TestResolveSourceFailsOnStaleRefreshFailureWhenPolicyFail(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
-	cacheKey := "stale-cache-fail"
+	// The resolver appends a hash of the binding's properties to the declared
+	// key, so the entry has to be seeded under that identity rather than the
+	// key alone.
+	staleProps := map[string]interface{}{"value": 1}
+	cacheKey, err := cacheIdentity("stale-cache-fail", staleProps)
+	require.NoError(t, err)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cacheKey,
@@ -2021,13 +2031,13 @@ parameter: {
 }
 `,
 	}
-	resolver.sourceProps = map[string]map[string]interface{}{"s": {"value": 1}}
+	resolver.sourceProps = map[string]map[string]interface{}{"s": staleProps}
 
-	_, err := resolver.resolve("s")
+	_, err = resolver.resolve("s")
 	require.Error(t, err)
 	statuses, _ := resolver.ctx.GetData(SourceResolutionStatusKey).(map[string]SourceResolutionStatus)
 	require.NotNil(t, statuses)
-	assert.Equal(t, "stale-cache-fail", statuses["s"].Config)
+	assert.Equal(t, cacheKey, statuses["s"].Config)
 }
 
 func TestResolveSourceSchemaMismatchFails(t *testing.T) {

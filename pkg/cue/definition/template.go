@@ -926,6 +926,15 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 		return nil, err
 	}
+	// storage.key covers the context this source reads; the properties it was
+	// bound with are hashed in here. Without that, two bindings differing only in
+	// their properties would address the same entry and the second would receive
+	// the first's value.
+	cachePolicy.Key, err = cacheIdentity(cachePolicy.Key, resolvedProps)
+	if err != nil {
+		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
+		return nil, err
+	}
 	cached, stale, found, cacheExpiresAt, err := r.readSourceCache(cachePolicy.Key, cachePolicy.TTL)
 	if err != nil {
 		klog.Warningf("read source cache failed for %s: %v", sourceName, err)
