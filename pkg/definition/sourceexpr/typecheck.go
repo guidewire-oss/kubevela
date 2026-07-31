@@ -68,7 +68,30 @@ func TypeOf(expr string, schemas map[string]string) (cue.Kind, error) {
 	if out.Err() != nil {
 		return cue.BottomKind, describe(out.Err())
 	}
-	return out.IncompleteKind(), nil
+
+	kind := out.IncompleteKind()
+	if !isSingleKind(kind) {
+		// The one way to reach this is a default whose type differs from the
+		// value it falls back for - `*source.s.count | "none"` types as
+		// (int|string). A parameter cannot be two types, so the author is told
+		// here rather than at render, where only one branch would be taken and
+		// the mismatch might not show for months.
+		return cue.BottomKind, fmt.Errorf("this expression could be %s depending on whether the value "+
+			"is present; a default must have the same type as the value it replaces", kind)
+	}
+	return kind, nil
+}
+
+// isSingleKind reports a kind that names exactly one type.
+//
+// cue.Kind is a bitmask, so a disjunction of two types shows up as both bits
+// set. NumberKind is the exception worth allowing: it is int|float by
+// definition, not an ambiguity.
+func isSingleKind(k cue.Kind) bool {
+	if k == cue.NumberKind {
+		return true
+	}
+	return k != 0 && k&(k-1) == 0
 }
 
 // sentinelScope renders `source: {...}` with every schema field replaced by a

@@ -52,6 +52,18 @@ func Validate(expr string) error {
 		return fmt.Errorf("not a valid expression: %w", err)
 	}
 
+	// Default markers are legal only in the one position isDefaultedRead
+	// recognises, so they are collected first and checked against below.
+	defaultMarkers := map[*ast.UnaryExpr]bool{}
+	ast.Walk(node, func(n ast.Node) bool {
+		if b, ok := n.(*ast.BinaryExpr); ok && b.Op == token.OR {
+			if u, ok := b.X.(*ast.UnaryExpr); ok && u.Op == token.MUL {
+				defaultMarkers[u] = true
+			}
+		}
+		return true
+	}, nil)
+
 	var bad error
 	ast.Walk(node, func(n ast.Node) bool {
 		if bad != nil {
@@ -75,6 +87,14 @@ func Validate(expr string) error {
 			}
 		case *ast.SliceExpr:
 			bad = fmt.Errorf("slicing is not supported in a property expression")
+		case *ast.UnaryExpr:
+			// The default marker is meaningful only as the left side of the
+			// disjunction above; anywhere else it is a no-op that would read as
+			// if it did something.
+			if t.Op == token.MUL && !defaultMarkers[t] {
+				bad = fmt.Errorf("the default marker * is only meaningful in a default, " +
+					"written *<value> | <fallback>")
+			}
 		case *ast.ImportDecl, *ast.ImportSpec:
 			bad = fmt.Errorf("imports are not allowed in a property expression: "+
 				"an expression may reference %q and nothing else", SourceIdent)
@@ -83,8 +103,25 @@ func Validate(expr string) error {
 			case token.LSS, token.GTR, token.LEQ, token.GEQ, token.EQL, token.NEQ:
 				bad = fmt.Errorf("comparisons are not supported in a property expression")
 			case token.OR:
-				bad = fmt.Errorf("disjunctions are not supported in a property expression: " +
-					"the result type would be ambiguous")
+				// One disjunction is allowed, and it is the one that gives parity
+				// with fromSource's `default:` - a fallback for a value that is
+				// absent at render:
+				//
+				//	*source.img.image | "nginx:latest"
+				//
+				// The default marker has to sit on the *value*, not the fallback.
+				// `x | *"d"` yields the default even when x is present, and a bare
+				// `x | "d"` is ambiguous rather than a fallback - both silently
+				// wrong, which is why the shape is checked rather than trusted.
+				//
+				// It stays soundly typeable because neither branch is chosen by a
+				// value: the result is the value's type when present and the
+				// default's when not, and TypeOf rejects the case where those
+				// differ.
+				if !isDefaultedRead(t) {
+					bad = fmt.Errorf("the only disjunction allowed in a property expression is a default, "+
+						"written with the marker on the value: *%s.<name>.<field> | <fallback>", SourceIdent)
+				}
 			case token.SUB:
 				// A hyphenated source name written with dots parses as
 				// subtraction, not as a path: source.my-source.region is
@@ -269,4 +306,28 @@ func exprText(e ast.Expr) string {
 		return "the expression"
 	}
 	return string(b)
+}
+
+// isDefaultedRead recognises `*<read> | <literal>`: a value with a fallback for
+// when it is absent at render.
+//
+// The fallback must be a literal. Allowing an arbitrary expression there would
+// mean the result type could come from either branch by a route the type checker
+// cannot follow, and a fallback that itself needs computing is a sign the author
+// wants something this grammar deliberately does not have.
+func isDefaultedRead(b *ast.BinaryExpr) bool {
+	u, ok := b.X.(*ast.UnaryExpr)
+	if !ok || u.Op != token.MUL {
+		return false
+	}
+	switch u.X.(type) {
+	case *ast.SelectorExpr, *ast.IndexExpr:
+	default:
+		return false
+	}
+	switch b.Y.(type) {
+	case *ast.BasicLit:
+		return true
+	}
+	return false
 }

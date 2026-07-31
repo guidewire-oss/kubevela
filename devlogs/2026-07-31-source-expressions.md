@@ -135,17 +135,45 @@ keys the expression references - which `References()` already knows. That is why
 even when `a` is present - it is a disjunction, not a default operator. So the
 "allow same-type disjunctions for defaulting" idea is dead.
 
-### The open ergonomic gap
+### Defaults — closed, and it was parity not ergonomics
 
-Admission cannot know whether a label exists, so an absent one fails at render.
-There is currently **no way to default it**: conditionals are barred by the grammar
-gate (they would make typing unsound), and `|` does not mean what it looks like.
+This was first written up as an ergonomic gap. It was worse than that: `fromSource`
+already supports a fallback —
 
-`TestAbsentLabelFailsAtRenderNotAdmission` pins the behaviour so it is not
-forgotten. Failing is the right default - silently substituting `""` would let a
-missing label flow into a parameter as an empty string - but a `default()` builtin
-is probably needed before this is usable. That is the main thing standing between
-the spike and a proposal.
+```yaml
+image:
+  fromSource: {name: img, path: image, default: "nginx:latest"}
+```
+
+`evaluateFromSourceSelector` returns `default` when resolution fails *or* the path
+is missing. So without an equivalent, expressions were **strictly less capable**
+than the thing they would replace.
+
+CUE's default marker supplies it, with one non-obvious detail: **the marker goes on
+the value, not the fallback.**
+
+```
+*source.img.image | "nginx:latest"    → the value when present, the fallback when absent  ✅
+source.img.image | *"nginx:latest"    → the fallback ALWAYS                                ✗
+source.img.image | "nginx:latest"     → ambiguous when present                             ✗
+```
+
+Both wrong forms fail silently, which is why the grammar gate checks the shape
+rather than trusting it. `*<read> | <literal>` is the only disjunction allowed; a
+general one is still refused because its result type would depend on which branch
+a value selected.
+
+It stays soundly typeable because neither branch is chosen by a value: the result
+is the value's type when present and the default's when not. Where those differ
+the kind comes back as a composite - `*source.s.count | "none"` types as
+`(int|string)` - and is rejected at admission, since at render only one branch is
+taken and the mismatch might not show for months.
+
+The same mechanism closes the absent-label case:
+
+```yaml
+region: '$(*context.appLabels["region"] | "unknown")'
+```
 
 ## Getting a typed (non-string) value into a parameter
 
@@ -184,7 +212,6 @@ render.
 | | |
 |---|---|
 | **Trust boundary** | KEP-2.16 says the app author "cannot alter its resolution logic… This separation is load-bearing; the feature's security properties depend on it." Expressions move them from *selecting* a declared field to *computing*. The sandbox (only `source` and `context`, no imports, no providers, grammar-gated) is implemented and tested, but widening that boundary should be a deliberate amendment, not a side effect. |
-| **Defaulting an absent context value** | See above. The blocking ergonomic gap. |
 | **`+sensitive` taint** | Today redaction knows a property came from a sensitive path. `"prefix-" + secret` is not recognisably the secret. `References()` returns the paths an expression reads, which is the input a taint rule needs — but the rule itself is not written. Getting this wrong leaks. |
 | **Wiring** | Nothing calls this. The substitution point is where `fromSource` is resolved today (`resolveFromSourceParams`), and dependency ordering would come from `References()`. |
 | **Cache identity** | Expressions in a *source's* properties would feed the cache key. Properties are resolved before hashing, so this is probably already correct — unverified. |

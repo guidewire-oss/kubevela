@@ -673,3 +673,98 @@ func TestDottedBindingNames(t *testing.T) {
 		t.Fatalf("the two spellings must resolve to one reference; got %v and %v", dotted, bracketed)
 	}
 }
+
+// Parity with fromSource's `default:`. Without this, expressions could not
+// replace fromSource - they would be strictly less capable, since a binding
+// whose value may be absent has no way to carry a fallback.
+//
+// The marker sits on the value, not the fallback. The two obvious alternatives
+// are both silently wrong: `x | *"d"` yields the default even when x is present,
+// and `x | "d"` is an ambiguous disjunction rather than a fallback.
+func TestDefaultForAnAbsentValue(t *testing.T) {
+	schemas := map[string]string{"img": `{image: string}`}
+
+	// Types cleanly: at admission the value is present, so the result is the
+	// value's type - which the default must match.
+	kind, err := TypeOf(`*source.img.image | "nginx:latest"`, schemas)
+	if err != nil {
+		t.Fatalf("a defaulted read must type: %v", err)
+	}
+	if kind != cue.StringKind {
+		t.Fatalf("expected string, got %s", kind)
+	}
+
+	present := map[string]map[string]interface{}{"img": {"image": "nginx:1.25"}}
+	got, err := Eval(`$(*source.img.image | "nginx:latest")`, present, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "nginx:1.25" {
+		t.Errorf("a present value must win over the default, got %#v", got)
+	}
+
+	absent := map[string]map[string]interface{}{"img": {"other": "x"}}
+	got, err = Eval(`$(*source.img.image | "nginx:latest")`, absent, nil)
+	if err != nil {
+		t.Fatalf("an absent value must fall back rather than fail: %v", err)
+	}
+	if got != "nginx:latest" {
+		t.Errorf("expected the fallback, got %#v", got)
+	}
+}
+
+// The same mechanism closes the absent-label gap.
+func TestDefaultForAnAbsentContextLabel(t *testing.T) {
+	expr := `*context.appLabels["region"] | "unknown"`
+
+	if _, err := TypeOf(expr, demoSchemas); err != nil {
+		t.Fatalf("typing: %v", err)
+	}
+	got, err := Eval("$("+expr+")", nil, map[string]interface{}{
+		"appLabels": map[string]interface{}{"team": "payments"},
+	})
+	if err != nil {
+		t.Fatalf("an absent label with a default must not fail: %v", err)
+	}
+	if got != "unknown" {
+		t.Errorf("expected the fallback, got %#v", got)
+	}
+}
+
+// A default of the wrong type is caught at admission. At render only one branch
+// is taken, so the mismatch could otherwise go unnoticed until the day the value
+// happens to be absent.
+func TestDefaultTypeMustMatch(t *testing.T) {
+	schemas := map[string]string{"s": `{count: int}`}
+
+	_, err := TypeOf(`*source.s.count | "none"`, schemas)
+	if err == nil {
+		t.Fatal("a string default for an int value must be rejected")
+	}
+	if !strings.Contains(err.Error(), "same type") {
+		t.Errorf("the error should explain the rule; got: %v", err)
+	}
+
+	if _, err := TypeOf(`*source.s.count | 0`, schemas); err != nil {
+		t.Fatalf("a matching default must be accepted: %v", err)
+	}
+}
+
+// Only the defaulting shape is allowed. A general disjunction is still refused,
+// because its result type would depend on which branch a value selected.
+func TestOnlyTheDefaultShapeOfDisjunctionIsAllowed(t *testing.T) {
+	for _, expr := range []string{
+		`source.img.image | "nginx"`,         // no marker - ambiguous, not a fallback
+		`source.img.image | *"nginx"`,        // marker on the wrong side
+		`*source.img.image | source.other.x`, // non-literal fallback
+		`*"literal" | "other"`,               // marker not on a read
+	} {
+		if err := Validate(expr); err == nil {
+			t.Errorf("expected %q to be rejected", expr)
+		}
+	}
+
+	if err := Validate(`*source.img.image | "nginx"`); err != nil {
+		t.Errorf("the defaulting shape must be accepted: %v", err)
+	}
+}
