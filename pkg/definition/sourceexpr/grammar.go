@@ -36,7 +36,7 @@ import (
 // (see TypeOf), and a construct that branches on a value would be typed against
 // the sentinel rather than against what happens at render:
 //
-//	[if source.s.count > 5 {"big"}, "small"][0]
+//	[if source.scale.count > 5 {"big"}, "small"][0]
 //
 // types as a string with any sentinel, but so would `[..., 0][0]` type as int -
 // the answer depends on data admission has not seen. Rejecting the construct is

@@ -14,7 +14,7 @@ The proposal:
 
 ```yaml
 properties:
-  cluster: '$(source["my-source"].region + "-cluster")'
+  cluster: '$(source.clusterInfo.region + "-cluster")'
 ```
 
 ## What was actually verified
@@ -82,8 +82,16 @@ Both halves are legal CUE, so nothing complains until the evaluator says
 subtraction whose operands are both rooted at `source` and says what to write
 instead. Ordinary subtraction (`count - 1`) is unaffected.
 
-Given how many KubeVela names are hyphenated, this is an argument for making the
-bracket form the documented one rather than an escape hatch.
+**But the dotted form is still the right default.** `source.<name>` names the
+*binding* (`spec.sources[].name`), not the SourceDefinition, and real binding
+names in this repo are `clusterInfo`, `tenant`, `img`, `first`, `second`, `s`,
+`scaleData` - 7 of the 8 present are legal CUE identifiers. Only
+`random-deployment-replicas` needs brackets.
+
+So: dots are the documented form, brackets are the escape hatch for a name that
+is not an identifier, and `Validate` names the fix when someone hits it. Both
+spellings produce the same `Reference`, so schema validation, dependency ordering
+and sensitive taint never have to care which was used.
 
 ## Folding in `context`
 

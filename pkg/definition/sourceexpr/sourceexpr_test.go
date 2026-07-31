@@ -620,3 +620,56 @@ func TestPlainStringsAreUntouched(t *testing.T) {
 		}
 	}
 }
+
+// The dotted form is the normal way to name a binding, and the one nearly every
+// real binding name supports - clusterInfo, tenant, img, scaleData are all legal
+// CUE identifiers. Brackets are the exception, needed only when the name is not.
+func TestDottedBindingNames(t *testing.T) {
+	schemas := map[string]string{
+		"checkout":    `{name: string, tag: string}`,
+		"clusterInfo": `{region: string}`,
+	}
+	resolved := map[string]map[string]interface{}{
+		"checkout":    {"name": "web", "tag": "1.0"},
+		"clusterInfo": {"region": "eu-west"},
+	}
+
+	for _, tc := range []struct {
+		expr string
+		want interface{}
+	}{
+		{`source.checkout.name`, "web"},
+		{`source.clusterInfo.region`, "eu-west"},
+		{`source.checkout.name + ":" + source.checkout.tag`, "web:1.0"},
+		// Both spellings address the same binding.
+		{`source["checkout"].name`, "web"},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			if _, err := TypeOf(tc.expr, schemas); err != nil {
+				t.Fatalf("typing: %v", err)
+			}
+			got, err := Eval("$("+tc.expr+")", resolved, nil)
+			if err != nil {
+				t.Fatalf("evaluating: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %#v, got %#v", tc.want, got)
+			}
+		})
+	}
+
+	// And References reports the same path either way, so downstream consumers -
+	// schema validation, dependency ordering, sensitive taint - do not have to
+	// care which spelling the author used.
+	dotted, err := References(`source.checkout.name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bracketed, err := References(`source["checkout"].name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dotted) != 1 || len(bracketed) != 1 || dotted[0].String() != bracketed[0].String() {
+		t.Fatalf("the two spellings must resolve to one reference; got %v and %v", dotted, bracketed)
+	}
+}

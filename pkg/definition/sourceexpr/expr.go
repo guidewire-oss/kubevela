@@ -18,7 +18,13 @@ limitations under the License.
 // with CUE expressions written inline in component properties:
 //
 //	properties:
-//	  cluster: '$(source.my-source.region + "-cluster")'
+//	  cluster: '$(source.clusterInfo.region + "-cluster")'
+//
+// The binding name is written with a dot, as above. A name that is not a legal
+// CUE identifier - one containing a hyphen - needs bracket syntax instead,
+// source["my-source"].region, because CUE parses the dotted form as subtraction.
+// Validate says so explicitly rather than letting the evaluator complain about
+// an undefined field.
 //
 // The motivating gap is that fromSource yields a whole value or nothing - there
 // is no way to combine a resolved value with anything else. Today an author who

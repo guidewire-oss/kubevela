@@ -32,7 +32,7 @@ import (
 // The obvious implementation does not work. Substituting the schema itself -
 // `region: string` - and evaluating leaves CUE with a non-concrete operand:
 //
-//	out: source.s.region + "-cluster"
+//	out: source.clusterInfo.region + "-cluster"
 //	=> non-concrete value string in operand to +
 //
 // CUE will not compute on a type. So the schema is materialised into concrete
@@ -95,7 +95,7 @@ func sentinelScope(schemas map[string]string) (string, error) {
 
 // sentinelFor renders one value as a concrete sentinel of the same kind.
 //
-// The choices are not arbitrary. An int sentinel of 0 makes `100 / source.s.n`
+// The choices are not arbitrary. An int sentinel of 0 makes `100 / source.x.n`
 // fail admission with a division-by-zero that would never happen at render, so
 // the sentinel is 1. A string sentinel is non-empty for the same reason: an
 // empty string is the degenerate case for most string operations, and typing
