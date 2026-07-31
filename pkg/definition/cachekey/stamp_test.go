@@ -62,15 +62,30 @@ output: {tenant: context.namespace}
 			wantKeep: []string{`storageTTL:`, `"15m"`, `onStaleFailure:`, `"fail"`},
 		},
 		{
-			// Regeneration must be idempotent, or every re-apply would show a diff.
-			name:    "replaces a key that is already present",
+			// vela def get emits the stored template, key included, so a
+			// round-trip through get/edit/apply has to be accepted.
+			name:    "accepts a key that matches what inference produces",
 			defName: "cluster-lookup",
 			template: `
-storage: {key: "stale-value", storageTTL: "15m"}
+storage: {
+  key:        "cluster-lookup-\(context.cluster)"
+  storageTTL: "15m"
+}
 output: {region: context.cluster}
 `,
 			wantKey:  `key: "cluster-lookup-\(context.cluster)"`,
 			wantKeep: []string{`storageTTL:`},
+		},
+		{
+			// Silently rewriting it would hide that the author believed something
+			// different about how their source is cached.
+			name:    "rejects a key that does not match",
+			defName: "cluster-lookup",
+			template: `
+storage: {key: "hand-written", storageTTL: "15m"}
+output: {region: context.cluster}
+`,
+			wantErr: "hand-written",
 		},
 		{
 			name:    "a source reading no context gets a bare key",
@@ -171,5 +186,23 @@ output: {region: context.cluster}
 	}
 	if len(dims) != 1 || dims[0].Field != "cluster" {
 		t.Fatalf("expected [cluster] after stamping, got %v", dims)
+	}
+}
+
+// A mismatch has to name the value that was expected, or the only way to fix it
+// is to delete the line and guess.
+func TestStampMismatchNamesTheExpectedKey(t *testing.T) {
+	const template = `
+storage: {key: "hand-written"}
+output: {region: context.cluster}
+`
+	_, _, err := Stamp("cluster-lookup", template)
+	if err == nil {
+		t.Fatal("expected a mismatched key to be rejected")
+	}
+	for _, want := range []string{"hand-written", `cluster-lookup-\(context.cluster)`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error should mention %q so the fix is obvious; got: %v", want, err)
+		}
 	}
 }

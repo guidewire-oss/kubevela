@@ -33,10 +33,19 @@ const RulesAnnotation = "definition.oam.dev/cache-key-rules"
 // Stamp writes the inferred cache key into a SourceDefinition template and
 // returns it alongside the hash of the rules used.
 //
-// It is idempotent: an existing key is replaced rather than appended to, and the
-// generated key is not itself read when inferring, so re-stamping an already
-// stamped template yields the same bytes. That matters because a re-apply of an
-// unchanged definition must not show a diff.
+// A key already present is accepted when it matches what inference produces and
+// rejected when it does not. Accepting a match is what lets a definition
+// round-trip: `vela def get` emits the stored template, key included, so
+// rejecting any key at all would break get, edit, apply. Rejecting a mismatch
+// rather than overwriting it keeps the author's belief about how their source is
+// cached from being silently corrected.
+//
+// So there is one rule for both the authored CUE and the applied object: the key
+// equals what inference produces, and is written for you when absent.
+//
+// It is idempotent - the generated key is not itself read when inferring - so
+// re-stamping an already stamped template yields the same bytes. That matters
+// because a re-apply of an unchanged definition must not show a diff.
 func Stamp(definitionName, template string) (string, string, error) {
 	rules, err := LoadRules()
 	if err != nil {
@@ -55,6 +64,11 @@ func Stamp(definitionName, template string) (string, string, error) {
 	file, err := cueparser.ParseFile("-", template, cueparser.ParseComments)
 	if err != nil {
 		return "", "", fmt.Errorf("parse cue template: %w", err)
+	}
+	if existing, ok := existingStorageKey(file); ok && existing != expr {
+		return "", "", fmt.Errorf("storage.key is computed from the context this template reads, and %s "+
+			"does not match: expected %s. Correct it, or leave it out and it will be written for you",
+			existing, expr)
 	}
 	setStorageKey(file, expr)
 
@@ -103,6 +117,39 @@ func setStorageKey(file *ast.File, expr string) {
 		Label: ast.NewIdent(storageField),
 		Value: &ast.StructLit{Elts: []ast.Decl{newKeyField(keyValue)}},
 	})
+}
+
+// existingStorageKey returns the key already written in the template, as source
+// text, and whether there was one.
+func existingStorageKey(file *ast.File) (string, bool) {
+	for _, decl := range file.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
+		}
+		if name, _, err := ast.LabelName(field.Label); err != nil || name != storageField {
+			continue
+		}
+		st, ok := field.Value.(*ast.StructLit)
+		if !ok {
+			continue
+		}
+		for _, elt := range st.Elts {
+			f, ok := elt.(*ast.Field)
+			if !ok {
+				continue
+			}
+			if name, _, err := ast.LabelName(f.Label); err != nil || name != keyField {
+				continue
+			}
+			out, err := cueformat.Node(f.Value)
+			if err != nil {
+				return "", false
+			}
+			return string(out), true
+		}
+	}
+	return "", false
 }
 
 func newKeyField(value ast.Expr) *ast.Field {

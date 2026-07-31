@@ -66,7 +66,7 @@ Each step is a commit. Tests come first where the behaviour is assertable.
 | 3 | Hook into the shared CUE→object conversion | unit: converting a demo definition yields the expected key |
 | 4 | Regenerate the five in-repo definitions and the e2e fixtures | existing suites stay green |
 | — | *(`deployment-namer` needs no rewrite: it reads `context.name`, so inference keys on it)* | |
-| 5 | `vela def` rejects an author-supplied `storage.key` | unit: informative message naming the field as computed |
+| 5 | `vela def` accepts a matching `storage.key`, rejects a mismatch | unit: message names both the wrong value and the expected one |
 | 6 | Validating webhook: re-infer and reject a mismatch | unit, then live `kubectl apply` of a tampered YAML |
 | 7 | e2e coverage | focused suite green against a cluster |
 
@@ -117,12 +117,15 @@ upgrade.
 What changes is where the key comes from. The CLI gains the opposite rule for the
 *authored CUE*: supplying one is an error.
 
-Two artifacts, two rules:
+One rule, both artifacts:
 
-| Artifact | Rule |
-|---|---|
-| authored `.cue` | `storage.key` must be **absent** |
-| applied YAML | `storage.key` must be **present** and match inference |
+> `storage.key` equals what inference produces, and is written for you when absent.
+
+An earlier draft had the authored CUE reject any key and the applied object require
+one. That breaks the round-trip: `vela def get` emits the stored template, key
+included, so `get`, edit, `apply` would fail on a file the tool itself produced.
+Accepting a matching key costs nothing - a wrong one is still rejected, naming the
+value that was expected - and collapses two rules into one.
 
 ---
 
