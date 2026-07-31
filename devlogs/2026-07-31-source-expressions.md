@@ -313,6 +313,30 @@ put the guarantee one refactor from gone.
 
 Both properties have regression tests, because both fail silently.
 
+## Which surfaces this would apply to
+
+`fromSource` resolves on component and trait properties, plus `spec.sources[]`
+chaining. Policy and workflow-step properties are **rejected at admission** —
+review finding #10 was that admission validated the directive there while nothing
+resolved it, so the consumer received a literal `{"fromSource": ...}` map. The fix
+was to reject, not to add resolution.
+
+Expressions would inherit exactly that set, because the substitution point
+(`resolveFromSourceParams`) is called from `workloadDef.Complete` and
+`traitDef.Complete` and nowhere else.
+
+**Extending to policy has a specific trap under the context rule above.** A policy
+render builds its context with `CompName: app.Name`
+(`application_policies.go:534`), and `context.name` is `CompName`
+(`handle.go:131`) — so in a policy, `context.name` is the *application* name.
+
+That is *correct* under "an expression sees what its definition sees": each scope
+is internally consistent. But it means an expression moved from a component to a
+policy silently reads different data, which is the hazard KEP-2.16 recorded
+against `context.name` in the first place. Extending surfaces would want either an
+unambiguous field (`context.appName` already is) or a per-surface readable set,
+not a single shared one.
+
 ## What the spike does not address
 
 | | |
