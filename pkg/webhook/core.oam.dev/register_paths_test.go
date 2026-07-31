@@ -25,21 +25,24 @@ import (
 	"testing"
 )
 
-// A validating webhook path is written in three places: the Go registration, the
-// Helm chart that installs the webhook configuration, and the local-debug script
-// that points the configuration at a developer's machine. A handler missing from
-// either of the latter two is silently never invoked - the resource is admitted
-// without validation, and a test proving the handler's logic still passes.
+// A webhook path is written in three places: the Go registration, the Helm chart
+// that installs the webhook configuration, and the local-debug script that points
+// the configuration at a developer's machine. A handler missing from either of the
+// latter two fails silently in its own way - a validating webhook admits the
+// resource unvalidated, a mutating one is simply never applied - while the tests
+// covering the handler keep passing.
 //
-// That is not hypothetical: the SourceDefinition webhook was registered in Go and
-// present in the chart while absent from the debug script, so local runs exercised
-// none of its checks.
+// Neither is hypothetical. The SourceDefinition validating webhook was registered
+// in Go and present in the chart while absent from the debug script, so local runs
+// exercised none of its checks; and the debug script created no mutating
+// configuration at all, leaving every Application and ComponentDefinition apply to
+// fail against a scaled-down in-cluster service.
 func TestWebhookPathsAreRegisteredEverywhere(t *testing.T) {
 	const (
 		goSources  = "v1beta1"
-		chartFile  = "../../../charts/vela-core/templates/admission-webhooks/validatingWebhookConfiguration.yaml"
+		chartDir   = "../../../charts/vela-core/templates/admission-webhooks"
 		debugFile  = "../../../hack/debug-webhook-setup.sh"
-		pathRegexp = `/validating-core-oam-dev-v1beta1-[a-z]+`
+		pathRegexp = `/(validating|mutating)-core-oam-dev-v1beta1-[a-z]+`
 	)
 
 	re := regexp.MustCompile(pathRegexp)
@@ -64,6 +67,27 @@ func TestWebhookPathsAreRegisteredEverywhere(t *testing.T) {
 			t.Fatalf("reading %s: %v", path, err)
 		}
 		return pathsIn(re.FindAllString(string(raw), -1))
+	}
+
+	// The chart splits validating and mutating configurations across files, so
+	// scan the directory rather than naming one of them.
+	collectDir := func(dir string) []string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("reading %s: %v", dir, err)
+		}
+		var found []string
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatalf("reading %s: %v", e.Name(), err)
+			}
+			found = append(found, re.FindAllString(string(raw), -1)...)
+		}
+		return pathsIn(found)
 	}
 
 	// The Go registrations are spread across the per-resource handler packages.
@@ -95,7 +119,7 @@ func TestWebhookPathsAreRegisteredEverywhere(t *testing.T) {
 		name  string
 		paths []string
 	}{
-		{"helm chart (" + chartFile + ")", collectFile(chartFile)},
+		{"helm chart (" + chartDir + ")", collectDir(chartDir)},
 		{"debug script (" + debugFile + ")", collectFile(debugFile)},
 	} {
 		missing := difference(registered, target.paths)

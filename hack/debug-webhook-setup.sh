@@ -303,6 +303,58 @@ EOF
     echo -e "${GREEN}Webhook configuration created${NC}"
 }
 
+# Function to create the mutating webhook configuration
+#
+# The chart points these at the in-cluster vela-core service. Local debugging
+# scales that deployment to zero, so unless they are repointed here too every
+# Application and ComponentDefinition apply fails with "no endpoints available
+# for service vela-core-webhook" - which reads like a cluster fault rather than
+# a setup step that was missed.
+create_mutating_webhook_config() {
+    echo -e "${YELLOW}Creating mutating webhook configuration...${NC}"
+
+    CA_BUNDLE=$(cat ${CERT_DIR}/ca.crt | base64 | tr -d '\n')
+
+    kubectl delete mutatingwebhookconfiguration ${WEBHOOK_CONFIG_NAME} --ignore-not-found
+
+    cat > /tmp/mutating-webhook-config.yaml << EOF
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: ${WEBHOOK_CONFIG_NAME}
+webhooks:
+- name: mutating.core.oam-dev.v1beta1.componentdefinitions
+  clientConfig:
+    url: https://${HOST_IP}:${WEBHOOK_PORT}/mutating-core-oam-dev-v1beta1-componentdefinitions
+    caBundle: ${CA_BUNDLE}
+  rules:
+  - apiGroups: ["core.oam.dev"]
+    apiVersions: ["v1beta1"]
+    resources: ["componentdefinitions"]
+    operations: ["CREATE", "UPDATE"]
+  admissionReviewVersions: ["v1", "v1beta1"]
+  sideEffects: None
+  failurePolicy: Fail
+- name: mutating.core.oam.dev.v1beta1.applications
+  clientConfig:
+    url: https://${HOST_IP}:${WEBHOOK_PORT}/mutating-core-oam-dev-v1beta1-applications
+    caBundle: ${CA_BUNDLE}
+  rules:
+  - apiGroups: ["core.oam.dev"]
+    apiVersions: ["v1beta1"]
+    resources: ["applications"]
+    operations: ["CREATE", "UPDATE"]
+  admissionReviewVersions: ["v1", "v1beta1"]
+  sideEffects: None
+  failurePolicy: Fail
+EOF
+
+    kubectl apply -f /tmp/mutating-webhook-config.yaml
+    rm -f /tmp/mutating-webhook-config.yaml
+
+    echo -e "${GREEN}Mutating webhook configuration created${NC}"
+}
+
 # Function to show next steps
 show_next_steps() {
     echo -e "${GREEN}"
@@ -351,6 +403,7 @@ main() {
     generate_certificates
     create_k8s_secret
     create_webhook_config
+    create_mutating_webhook_config
     show_next_steps
 }
 
