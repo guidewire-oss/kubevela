@@ -301,10 +301,43 @@ Both properties have regression tests, because both fail silently.
 | | |
 |---|---|
 | **Trust boundary** | KEP-2.16 says the app author "cannot alter its resolution logic… This separation is load-bearing; the feature's security properties depend on it." Expressions move them from *selecting* a declared field to *computing*. The sandbox (only `source` and `context`, no imports, no providers, grammar-gated) is implemented and tested, but widening that boundary should be a deliberate amendment, not a side effect. |
-| **`+sensitive` taint** | Today redaction knows a property came from a sensitive path. `"prefix-" + secret` is not recognisably the secret. `References()` returns the paths an expression reads, which is the input a taint rule needs — but the rule itself is not written. Getting this wrong leaks. |
+| **`+sensitive` taint** | Overstated in earlier drafts — see below. Not a blocker under the natural design. |
 | **Wiring** | Nothing calls this. The substitution point is where `fromSource` is resolved today (`resolveFromSourceParams`), and dependency ordering would come from `References()`. |
 | **Cache identity** | Expressions in a *source's* properties would feed the cache key. Properties are resolved before hashing, so this is probably already correct — unverified. |
 | **`vela def` / dry-run** | Untouched. |
+
+## `+sensitive`: less of a problem than first written
+
+Earlier drafts called taint propagation a blocker. That was wrong, and the mistake
+was not reading what `+sensitive` does.
+
+Redaction lives at `apply.go:513`, is keyed on the recorded **path**, and applies
+only to `status.services[].sources[].properties`. It masks the echo in Application
+status. It has never stopped the value reaching the rendered resource -
+`image: {fromSource: "creds.token"}` puts the token in the Deployment today, and
+`+sensitive` does not change that. The protection is against re-publishing a value
+somewhere with different RBAC, not against the value being used.
+
+Because the match is on the path, an expression pass that records **the inputs it
+read** - exactly what `References()` returns - is covered by the existing
+mechanism with nothing added:
+
+```go
+recordConsumedValue(name, type, "creds.token", v)   // masked, as today
+```
+
+Taint is needed only if status also records the *computed result*, since
+`"prefix-<token>"` sits at no sensitive path. That is a real choice with a real
+trade:
+
+| Status records | Cost |
+|---|---|
+| inputs only | no taint logic; status shows what was read, not what was produced |
+| inputs + result | better debugging; needs a rule that masks the result when any referenced path is sensitive |
+
+The second is worth having eventually - with `fromSource` the consumed value *is*
+the property value, so recording only inputs loses something that exists today -
+but it is an enhancement, not a prerequisite.
 
 ## Recommendation
 
