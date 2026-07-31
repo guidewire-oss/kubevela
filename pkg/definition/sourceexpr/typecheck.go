@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	"cuelang.org/go/cue"
-	"cuelang.org/go/cue/cuecontext"
 )
 
 // TypeOf returns the type an expression will produce, given the schemas of the
@@ -51,22 +50,20 @@ func TypeOf(expr string, schemas map[string]string) (cue.Kind, error) {
 	if err != nil {
 		return cue.BottomKind, err
 	}
-	scope, err := sentinelScope(schemas)
+
+	ctx := newContext()
+	sources, err := sentinelSources(ctx, schemas)
 	if err != nil {
 		return cue.BottomKind, err
 	}
-	ctxScope, err := contextScope(refs)
+	contextFields, err := sentinelContext(refs)
 	if err != nil {
 		return cue.BottomKind, err
 	}
 
-	v := cuecontext.New().CompileString(scope + "\n" + ctxScope + "\nout: " + expr + "\n")
-	if v.Err() != nil {
-		return cue.BottomKind, describe(v.Err())
-	}
-	out := v.LookupPath(cue.ParsePath("out"))
-	if out.Err() != nil {
-		return cue.BottomKind, describe(out.Err())
+	out, err := evalIn(ctx, buildScope(ctx, sources, contextFields), expr)
+	if err != nil {
+		return cue.BottomKind, err
 	}
 
 	kind := out.IncompleteKind()
@@ -92,77 +89,6 @@ func isSingleKind(k cue.Kind) bool {
 		return true
 	}
 	return k != 0 && k&(k-1) == 0
-}
-
-// sentinelScope renders `source: {...}` with every schema field replaced by a
-// representative value of its declared kind.
-func sentinelScope(schemas map[string]string) (string, error) {
-	ctx := cuecontext.New()
-	var b strings.Builder
-	b.WriteString(SourceIdent + ": {\n")
-
-	for name, schema := range schemas {
-		v := ctx.CompileString(schema)
-		if v.Err() != nil {
-			return "", fmt.Errorf("source %q has an unreadable schema: %w", name, v.Err())
-		}
-		rendered, err := sentinelFor(v)
-		if err != nil {
-			return "", fmt.Errorf("source %q: %w", name, err)
-		}
-		fmt.Fprintf(&b, "  %q: %s\n", name, rendered)
-	}
-	b.WriteString("}\n")
-	return b.String(), nil
-}
-
-// sentinelFor renders one value as a concrete sentinel of the same kind.
-//
-// The choices are not arbitrary. An int sentinel of 0 makes `100 / source.x.n`
-// fail admission with a division-by-zero that would never happen at render, so
-// the sentinel is 1. A string sentinel is non-empty for the same reason: an
-// empty string is the degenerate case for most string operations, and typing
-// should not sit on a degenerate input.
-func sentinelFor(v cue.Value) (string, error) {
-	switch v.IncompleteKind() {
-	case cue.StringKind:
-		return `"x"`, nil
-	case cue.IntKind:
-		return "1", nil
-	case cue.NumberKind, cue.FloatKind:
-		return "1.0", nil
-	case cue.BoolKind:
-		return "true", nil
-	case cue.BytesKind:
-		return `'x'`, nil
-	case cue.ListKind:
-		// An empty list types as a list without committing to an element type,
-		// which is all that is needed while indexing is rejected.
-		return "[]", nil
-	case cue.StructKind:
-		iter, err := v.Fields(cue.Optional(true))
-		if err != nil {
-			return "", err
-		}
-		var b strings.Builder
-		b.WriteString("{")
-		first := true
-		for iter.Next() {
-			nested, err := sentinelFor(iter.Value())
-			if err != nil {
-				return "", err
-			}
-			if !first {
-				b.WriteString(", ")
-			}
-			first = false
-			fmt.Fprintf(&b, "%q: %s", iter.Selector().Unquoted(), nested)
-		}
-		b.WriteString("}")
-		return b.String(), nil
-	default:
-		return "", fmt.Errorf("cannot represent a %s field", v.IncompleteKind())
-	}
 }
 
 // describe turns CUE's evaluator errors into something a user can act on. The

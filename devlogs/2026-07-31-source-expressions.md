@@ -274,6 +274,28 @@ broken:   '$(source.a.obj) suffix'     # rejected at admission
 
 `TestValueTypeAgreesWithEval` asserts the two stay in step.
 
+## Scopes are values, not text
+
+The scope an expression evaluates against is built as a `cue.Value` from Go data
+and supplied via `cue.Scope`, never assembled as CUE source.
+
+That is correctness, not style. Binding names and label keys come from the
+Application spec, so a hostile author controls them, and a name like
+`a": {pwned: "yes"}, "b` concatenated into CUE text would inject fields into the
+scope - silently, because the injected fields would simply be there. Encoding the
+data means a name can only ever be a *key*: there is no syntax for it to escape
+into. The earlier text-building version happened to be safe because `%q` and
+`json.Marshal` escape correctly, but that made safety a property of remembering
+to quote rather than of the design.
+
+One concatenation remains and cannot be removed: the expression itself is
+compiled as `out: <expr>`. A value like `"x\nevil: 1"` would add a field there, so
+`evalIn` re-parses with `parser.ParseExpr` - which demands a single expression -
+before compiling. `Validate` already does this, but relying on call order would
+put the guarantee one refactor from gone.
+
+Both properties have regression tests, because both fail silently.
+
 ## What the spike does not address
 
 | | |

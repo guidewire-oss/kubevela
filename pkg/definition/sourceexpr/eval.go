@@ -17,11 +17,7 @@ limitations under the License.
 package sourceexpr
 
 import (
-	"encoding/json"
 	"fmt"
-
-	"cuelang.org/go/cue"
-	"cuelang.org/go/cue/cuecontext"
 )
 
 // Eval substitutes resolved source values into a property value.
@@ -51,13 +47,8 @@ func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string
 		return out, nil
 	}
 
-	scope, err := valueScope(resolved)
-	if err != nil {
-		return nil, err
-	}
-
 	if expr, ok := parsed.SoleExpr(); ok {
-		return evalFragment(scope, expr, ctx)
+		return evalFragment(expr, resolved, ctx)
 	}
 
 	out := ""
@@ -66,7 +57,7 @@ func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string
 			out += f.Text
 			continue
 		}
-		value, err := evalFragment(scope, f.Expr, ctx)
+		value, err := evalFragment(f.Expr, resolved, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -79,7 +70,7 @@ func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string
 	return out, nil
 }
 
-func evalFragment(scope, expr string, ctx map[string]interface{}) (interface{}, error) {
+func evalFragment(expr string, resolved map[string]map[string]interface{}, ctx map[string]interface{}) (interface{}, error) {
 	if err := Validate(expr); err != nil {
 		return nil, err
 	}
@@ -87,17 +78,20 @@ func evalFragment(scope, expr string, ctx map[string]interface{}) (interface{}, 
 	if err != nil {
 		return nil, err
 	}
-	ctxScope, err := contextValueScope(refs, ctx)
+	contextFields, err := contextValues(refs, ctx)
 	if err != nil {
 		return nil, err
 	}
-	v := cuecontext.New().CompileString(scope + "\n" + ctxScope + "\nout: " + expr + "\n")
-	if v.Err() != nil {
-		return nil, describe(v.Err())
+
+	cctx := newContext()
+	sources := make(map[string]interface{}, len(resolved))
+	for name, fields := range resolved {
+		sources[name] = fields
 	}
-	out := v.LookupPath(cue.ParsePath("out"))
-	if out.Err() != nil {
-		return nil, describe(out.Err())
+
+	out, err := evalIn(cctx, buildScope(cctx, sources, contextFields), expr)
+	if err != nil {
+		return nil, err
 	}
 
 	var decoded interface{}
@@ -105,26 +99,6 @@ func evalFragment(scope, expr string, ctx map[string]interface{}) (interface{}, 
 		return nil, fmt.Errorf("evaluating %q: %w", expr, err)
 	}
 	return decoded, nil
-}
-
-// valueScope renders the resolved sources as CUE for the expression to read.
-func valueScope(resolved map[string]map[string]interface{}) (string, error) {
-	raw, err := marshalScope(resolved)
-	if err != nil {
-		return "", err
-	}
-	return SourceIdent + ": " + raw, nil
-}
-
-// marshalScope renders a Go map as CUE. JSON is valid CUE, so this needs no
-// separate renderer - and going through JSON is what guarantees the values an
-// expression sees are exactly the values that were resolved.
-func marshalScope(v interface{}) (string, error) {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return "", fmt.Errorf("marshal expression scope: %w", err)
-	}
-	return string(raw), nil
 }
 
 // asText renders a value for embedding. Only scalars can be: a struct or list

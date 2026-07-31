@@ -1069,3 +1069,26 @@ func TestScopeQuotingResistsInjection(t *testing.T) {
 		t.Fatalf("expected %q, got %#v", "v", label)
 	}
 }
+
+// The expression is still concatenated into `out: <expr>` before compiling, so a
+// value carrying a newline and another field would add that field to the compiled
+// file. Validate rejects it because parser.ParseExpr demands a single expression,
+// and evalIn re-checks so the guarantee does not depend on call order.
+func TestExpressionCannotEscapeTheWrapper(t *testing.T) {
+	schemas := map[string]string{"s": `{x: string}`}
+	values := map[string]map[string]interface{}{"s": {"x": "v"}}
+
+	for _, expr := range []string{
+		"source.s.x\nevil: 1",
+		"source.s.x}\nevil: {a: 1",
+		`source.s.x, evil: 1`,
+		"source.s.x // comment\nevil: 1",
+	} {
+		if _, err := TypeOf(expr, schemas); err == nil {
+			t.Errorf("TypeOf accepted an expression that adds a field: %q", expr)
+		}
+		if _, err := evalFragment(expr, values, nil); err == nil {
+			t.Errorf("evalFragment accepted an expression that adds a field: %q", expr)
+		}
+	}
+}

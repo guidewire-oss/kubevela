@@ -80,17 +80,16 @@ var contextTypes = map[string]contextKind{
 	"appAnnotations": kindIndexedString,
 }
 
-// contextScope renders `context: {...}` containing sentinels for exactly the
-// fields an expression references.
+// sentinelContext builds the context sentinels for exactly the fields an
+// expression references.
 //
 // Only the referenced fields, because an open map cannot be typed wholesale: a
 // CUE pattern constraint - appLabels: [string]: "x" - does not make
 // context.appLabels["anything"] resolve, it still reports an undefined field. So
 // the keys actually read are materialised individually, which References()
 // already knows.
-func contextScope(refs []Reference) (string, error) {
-	fields := map[string]string{}
-	indexed := map[string]map[string]string{}
+func sentinelContext(refs []Reference) (map[string]interface{}, error) {
+	out := map[string]interface{}{}
 
 	for _, ref := range refs {
 		if ref.IsSource() {
@@ -99,61 +98,43 @@ func contextScope(refs []Reference) (string, error) {
 		field := ref.Path[0]
 		kind, ok := contextTypes[field]
 		if !ok {
-			return "", fmt.Errorf("context.%s is not a supported value in a property expression; "+
+			return nil, fmt.Errorf("context.%s is not a supported value in a property expression; "+
 				"readable fields are %s", field, strings.Join(readableContextFields(), ", "))
 		}
 
 		switch kind {
 		case kindIndexedString:
 			if len(ref.Path) < 2 {
-				return "", fmt.Errorf("context.%s must be read with a key, e.g. context.%s[\"my-label\"]",
+				return nil, fmt.Errorf("context.%s must be read with a key, e.g. context.%s[\"my-label\"]",
 					field, field)
 			}
-			if indexed[field] == nil {
-				indexed[field] = map[string]string{}
+			nested, _ := out[field].(map[string]interface{})
+			if nested == nil {
+				nested = map[string]interface{}{}
+				out[field] = nested
 			}
-			indexed[field][ref.Path[1]] = `"x"`
+			nested[ref.Path[1]] = "x"
 		case kindString:
-			fields[field] = `"x"`
+			out[field] = "x"
 		case kindInt:
-			fields[field] = "1"
+			out[field] = 1
 		case kindStruct:
 			// clusterVersion. Its shape is fixed, so the sentinel can be too.
-			fields[field] = `{major: "1", minor: "31", gitVersion: "x", platform: "x"}`
-		}
-	}
-
-	var b strings.Builder
-	b.WriteString(ContextIdent + ": {\n")
-	for _, name := range sortedKeys(fields) {
-		fmt.Fprintf(&b, "  %q: %s\n", name, fields[name])
-	}
-	for _, name := range sortedKeysNested(indexed) {
-		fmt.Fprintf(&b, "  %q: {", name)
-		first := true
-		for _, key := range sortedKeys(indexed[name]) {
-			if !first {
-				b.WriteString(", ")
+			out[field] = map[string]interface{}{
+				"major": "1", "minor": "31", "gitVersion": "x", "platform": "x",
 			}
-			first = false
-			fmt.Fprintf(&b, "%q: %s", key, indexed[name][key])
 		}
-		b.WriteString("}\n")
 	}
-	b.WriteString("}\n")
-	return b.String(), nil
+	return out, nil
 }
 
-// contextValueScope renders the same shape with real values, for render time.
+// contextValues selects the real values for the referenced fields, for render.
 //
 // A referenced key that is absent is left absent rather than defaulted. CUE then
-// reports an undefined field, which is the honest outcome: admission cannot know
-// whether a label exists, and silently substituting "" would let a missing label
-// flow into a parameter as an empty string. See the devlog - defaulting needs a
-// syntax this spike does not have, since conditionals are barred by the grammar
-// gate and `|` is a disjunction rather than a fallback.
-func contextValueScope(refs []Reference, values map[string]interface{}) (string, error) {
-	present := map[string]interface{}{}
+// reports an undefined field - unless the read carries a default, which is the
+// supported way to survive it.
+func contextValues(refs []Reference, values map[string]interface{}) (map[string]interface{}, error) {
+	out := map[string]interface{}{}
 
 	for _, ref := range refs {
 		if ref.IsSource() {
@@ -161,44 +142,19 @@ func contextValueScope(refs []Reference, values map[string]interface{}) (string,
 		}
 		field := ref.Path[0]
 		if _, ok := contextTypes[field]; !ok {
-			return "", fmt.Errorf("context.%s is not a supported value in a property expression", field)
+			return nil, fmt.Errorf("context.%s is not a supported value in a property expression", field)
 		}
-		value, ok := values[field]
-		if !ok {
-			continue
+		if value, ok := values[field]; ok {
+			out[field] = value
 		}
-		present[field] = value
 	}
-
-	raw, err := marshalScope(present)
-	if err != nil {
-		return "", err
-	}
-	return ContextIdent + ": " + raw, nil
+	return out, nil
 }
 
 func readableContextFields() []string {
 	out := make([]string, 0, len(contextTypes))
 	for name := range contextTypes {
 		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func sortedKeysNested(m map[string]map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
 	}
 	sort.Strings(out)
 	return out

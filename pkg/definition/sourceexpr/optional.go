@@ -20,7 +20,6 @@ import (
 	"fmt"
 
 	"cuelang.org/go/cue"
-	"cuelang.org/go/cue/cuecontext"
 )
 
 // UndefendedReads returns the reads that could be absent at render and carry no
@@ -43,7 +42,7 @@ func UndefendedReads(raw string, schemas map[string]string) ([]Reference, error)
 		return nil, err
 	}
 
-	ctx := cuecontext.New()
+	ctx := newContext()
 	compiled := map[string]cue.Value{}
 	for name, schema := range schemas {
 		v := ctx.CompileString(schema)
