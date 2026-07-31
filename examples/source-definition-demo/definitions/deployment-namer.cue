@@ -15,7 +15,6 @@ template: {
 
 	// Per-component name, so key on the component and the inputs.
 	storage: {
-		key:            "deployment-namer-\(context.name)-\(parameter.region)-\(parameter.zone)-\(parameter.department)-\(parameter.tenant)"
 		storageTTL:     "5m"
 		onStaleFailure: "use-stale"
 	}

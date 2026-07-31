@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -98,18 +99,14 @@ var _ = Describe("SourceDefinition fromSource e2e", func() {
 				Schematic: &oamcomm.Schematic{
 					CUE: &oamcomm.CUE{
 						Template: `
-import "strings"
-
 schema: {
   image: string
 }
 storage: {
-  // The cache key must discriminate on the image, otherwise changing the source
-  // property would be served from the entry cached under the previous value.
-  // Image refs contain ':' and '.', which are not legal in a cache key, so the
-  // definition normalises them - the pattern the KEP recommends for inputs that
-  // may contain invalid characters.
-  key: "image-source-" + strings.Replace(strings.Replace(parameter.image, ":", "-", -1), ".", "-", -1)
+  // Generated: this source reads no context, so the key is bare. The image is a
+  // property, and properties are hashed into the cache identity by the resolver -
+  // which is why a value containing ':' and '.' needs no normalising here.
+  key: "image-source"
 }
 output: {
   // +sensitive
@@ -236,7 +233,10 @@ schema: {
   image: string
 }
 storage: {
-  key: "source-cache-policy-\(context.namespace)"
+  // Generated: the template reads no context, so the key is the definition name.
+  // storage.key is not itself scanned, so a key mentioning context.namespace
+  // would not make namespace a dimension.
+  key: "stale-image-source"
   storageTTL: "1h"
   onStaleFailure: "use-stale"
 }
@@ -312,14 +312,24 @@ parameter: {
 		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
 		verifyApplicationPhase(ctx, namespaceName, app.Name, oamcomm.ApplicationRunning)
 
-		// Source cache should be persisted as a Secret keyed by storage.key.
+		// The cache entry is named <storage.key>-<propertiesHash>: the generated key
+		// leads so it stays greppable, and the hash discriminates bindings that
+		// differ only in their properties. The hash is not knowable here, so match
+		// on the prefix rather than pinning a name.
 		Eventually(func() error {
-			secret := &corev1.Secret{}
-			if err := k8sClient.Get(ctx, client.ObjectKey{
-				Namespace: "vela-system",
-				Name:      fmt.Sprintf("source-cache-policy-%s", namespaceName),
-			}, secret); err != nil {
+			var secrets corev1.SecretList
+			if err := k8sClient.List(ctx, &secrets, client.InNamespace("vela-system")); err != nil {
 				return err
+			}
+			var secret *corev1.Secret
+			for i := range secrets.Items {
+				if strings.HasPrefix(secrets.Items[i].Name, "stale-image-source-") {
+					secret = &secrets.Items[i]
+					break
+				}
+			}
+			if secret == nil {
+				return fmt.Errorf("no source cache entry with prefix %q in vela-system", "stale-image-source-")
 			}
 			sourceDef := &v1beta1.SourceDefinition{}
 			if err := k8sClient.Get(ctx, client.ObjectKey{

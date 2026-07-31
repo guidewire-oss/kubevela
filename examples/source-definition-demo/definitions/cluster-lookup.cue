@@ -17,7 +17,6 @@ template: {
 	// One cluster-wide fact: a single cache entry per cluster, shared by
 	// every Application on that cluster that reads it.
 	storage: {
-		key:            "cluster-lookup-\(context.cluster)"
 		storageTTL:     "15m"
 		onStaleFailure: "use-stale"
 	}

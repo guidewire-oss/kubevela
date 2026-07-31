@@ -28,7 +28,6 @@ template: {
 	// storageTTL + 30s within a running controller. Setting storageTTL below
 	// ~30s will not make it re-roll faster than the in-memory layer allows.
 	storage: {
-		key:            "get-random-\(parameter.min)-\(parameter.max)"
 		storageTTL:     "10s"
 		onStaleFailure: "use-stale"
 	}

@@ -16,7 +16,6 @@ template: {
 
 	// Cache per namespace on the current cluster.
 	storage: {
-		key:            "tenant-data-\(context.cluster)-\(context.namespace)"
 		storageTTL:     "10m"
 		onStaleFailure: "use-stale"
 	}
