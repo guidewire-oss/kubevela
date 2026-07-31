@@ -24,8 +24,8 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
-	"github.com/oam-dev/kubevela/pkg/oam"
 	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/oam"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/sourcedefinition"
 )
@@ -320,7 +320,7 @@ func (h *ValidatingHandler) validateSourceInputs(ctx context.Context, app *v1bet
 // inputLeaf is a single scalar or fromSource value within a source's
 // properties, addressed by its dotted path relative to the parameter block.
 type inputLeaf struct {
-	path      string     // dotted path into the parameter block, e.g. "region"
+	path      string      // dotted path into the parameter block, e.g. "region"
 	fieldPath *field.Path // full field path for error reporting
 	literal   interface{} // the scalar value, when not a fromSource
 	fromSrc   interface{} // the fromSource selector, when present
