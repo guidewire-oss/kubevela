@@ -2,6 +2,12 @@ apiVersion: core.oam.dev/v1beta1
 kind: SourceDefinition
 metadata:
   name: configmap-check-source
+  annotations:
+    # Which inference policy produced storage.key below. Admission loads the
+    # rules with this hash rather than the current ones, so a later policy does
+    # not invalidate a definition already committed.
+    definition.oam.dev/cache-key-rules: "7fdfcad2"
+    definition.oam.dev/cache-key-rules-version: v1
 spec:
   schematic:
     cue:
@@ -11,8 +17,13 @@ spec:
           tag?: string
         }
 
+        // key and keyInputs are generated from the context this template reads,
+        // not authored. Nothing in output depends on the namespace, so the
+        // source is not keyed by it - the binding's properties still separate
+        // entries, so two Applications passing different images do not share one.
         storage: {
-          key: "configmap-check-\(context.namespace)"
+          key: "configmap-check-source"
+          keyInputs: []
           storageTTL: "15m"
           onStaleFailure: "use-stale"
         }

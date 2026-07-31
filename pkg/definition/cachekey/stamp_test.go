@@ -216,7 +216,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	const good = `
-storage: {key: "cluster-lookup-\(context.cluster)", storageTTL: "15m"}
+storage: {key: "cluster-lookup-\(context.cluster)", keyInputs: ["cluster"], storageTTL: "15m"}
 output: {region: context.cluster}
 `
 
@@ -271,4 +271,104 @@ output: {region: context.cluster}
 			t.Fatalf("error should name the missing hash; got: %v", err)
 		}
 	})
+
+	// keyInputs needs checking on its own account. Only some fields are inlined
+	// into the key, so a hashed-only one can be removed while storage.key still
+	// matches perfectly - and every value that field distinguished then collapses
+	// onto a single cache entry.
+	t.Run("dropping a hashed-only input is rejected even though the key still matches", func(t *testing.T) {
+		const poisoned = `
+storage: {key: "svc-\(context.cluster)", keyInputs: ["cluster"]}
+output: {
+  region: context.cluster
+  team:   context.appLabels["team"]
+}
+`
+		// The premise: the label contributes nothing to the key expression, so the
+		// key alone cannot detect its removal.
+		if !strings.Contains(poisoned, `key: "svc-\(context.cluster)"`) {
+			t.Fatal("fixture no longer exercises a key that is unaffected by the dropped input")
+		}
+
+		err := Verify("svc", poisoned, current.Hash)
+		if err == nil {
+			t.Fatal("a keyInputs list missing a value the template reads must be rejected: " +
+				"every value of that label would share one cache entry")
+		}
+		if !strings.Contains(err.Error(), "appLabels[team]") {
+			t.Fatalf("error should name the missing input; got: %v", err)
+		}
+	})
+
+	t.Run("an extra input is rejected", func(t *testing.T) {
+		// The mirror image: hashing a field the template never reads fragments the
+		// cache and makes the identity depend on data nobody consumes.
+		const extra = `
+storage: {key: "cluster-lookup-\(context.cluster)", keyInputs: ["cluster", "namespace"]}
+output: {region: context.cluster}
+`
+		if err := Verify("cluster-lookup", extra, current.Hash); err == nil {
+			t.Fatal("expected an input the template does not read to be rejected")
+		}
+	})
+
+	t.Run("a missing keyInputs is rejected", func(t *testing.T) {
+		const noInputs = `
+storage: {key: "cluster-lookup-\(context.cluster)", storageTTL: "15m"}
+output: {region: context.cluster}
+`
+		err := Verify("cluster-lookup", noInputs, current.Hash)
+		if err == nil {
+			t.Fatal("expected a template with no storage.keyInputs to be rejected")
+		}
+		if !strings.Contains(err.Error(), KeyInputsField) {
+			t.Fatalf("error should name the missing field; got: %v", err)
+		}
+	})
+
+	t.Run("a malformed keyInputs is rejected rather than read as absent", func(t *testing.T) {
+		const malformed = `
+storage: {key: "cluster-lookup-\(context.cluster)", keyInputs: "cluster"}
+output: {region: context.cluster}
+`
+		if err := Verify("cluster-lookup", malformed, current.Hash); err == nil {
+			t.Fatal("a keyInputs that is not a list of strings must not be waved through")
+		}
+	})
+
+	t.Run("order is part of the contract", func(t *testing.T) {
+		// The resolver hashes a structured document, so order does not change the
+		// identity - but a reordered list is still not what inference produces, and
+		// accepting it would mean the stored artifact no longer round-trips.
+		const reordered = `
+storage: {key: "svc-\(context.cluster)-\(context.namespace)", keyInputs: ["namespace", "cluster"]}
+output: {
+  region: context.cluster
+  ns:     context.namespace
+}
+`
+		if err := Verify("svc", reordered, current.Hash); err == nil {
+			t.Fatal("expected a reordered keyInputs to be rejected")
+		}
+	})
+}
+
+// Stamp rejects a hand-edited keyInputs rather than silently correcting it, for
+// the same reason it rejects a mismatched key: the author's belief about how
+// their source is cached should not be quietly overwritten.
+func TestStampRejectsMismatchedKeyInputs(t *testing.T) {
+	const template = `
+storage: {keyInputs: ["cluster"]}
+output: {
+  region: context.cluster
+  team:   context.appLabels["team"]
+}
+`
+	_, _, err := Stamp("svc", template)
+	if err == nil {
+		t.Fatal("expected a mismatched keyInputs to be rejected")
+	}
+	if !strings.Contains(err.Error(), "appLabels[team]") {
+		t.Fatalf("error should name what is missing; got: %v", err)
+	}
 }

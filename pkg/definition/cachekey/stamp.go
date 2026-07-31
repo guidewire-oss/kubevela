@@ -21,6 +21,7 @@ import (
 
 	"cuelang.org/go/cue/ast"
 	cueformat "cuelang.org/go/cue/format"
+	"cuelang.org/go/cue/literal"
 	cueparser "cuelang.org/go/cue/parser"
 	cuetoken "cuelang.org/go/cue/token"
 )
@@ -81,8 +82,14 @@ func Stamp(definitionName, template string) (string, *Rules, error) {
 			"does not match: expected %s. Correct it, or leave it out and it will be written for you",
 			existing, expr)
 	}
+	inputs := KeyInputs(dims)
+	if existing, ok := existingKeyInputs(file); ok && !equalStrings(existing, inputs) {
+		return "", nil, fmt.Errorf("storage.%s is computed from the context this template reads, and %v "+
+			"does not match: expected %v. Correct it, or leave it out and it will be written for you",
+			KeyInputsField, existing, inputs)
+	}
 	setStorageKey(file, expr)
-	setKeyInputs(file, KeyInputs(dims))
+	setKeyInputs(file, inputs)
 
 	out, err := cueformat.Node(file)
 	if err != nil {
@@ -131,9 +138,8 @@ func setStorageKey(file *ast.File, expr string) {
 	})
 }
 
-// existingStorageKey returns the key already written in the template, as source
-// text, and whether there was one.
-func existingStorageKey(file *ast.File) (string, bool) {
+// storageField returns the value of a field inside the storage: block.
+func storageFieldValue(file *ast.File, want string) (ast.Expr, bool) {
 	for _, decl := range file.Decls {
 		field, ok := decl.(*ast.Field)
 		if !ok {
@@ -151,17 +157,55 @@ func existingStorageKey(file *ast.File) (string, bool) {
 			if !ok {
 				continue
 			}
-			if name, _, err := ast.LabelName(f.Label); err != nil || name != keyField {
-				continue
+			if name, _, err := ast.LabelName(f.Label); err == nil && name == want {
+				return f.Value, true
 			}
-			out, err := cueformat.Node(f.Value)
-			if err != nil {
-				return "", false
-			}
-			return string(out), true
 		}
 	}
-	return "", false
+	return nil, false
+}
+
+// existingStorageKey returns the key already written in the template, as source
+// text, and whether there was one.
+func existingStorageKey(file *ast.File) (string, bool) {
+	value, ok := storageFieldValue(file, keyField)
+	if !ok {
+		return "", false
+	}
+	out, err := cueformat.Node(value)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+// existingKeyInputs returns the keyInputs list already written in the template.
+//
+// A list that is present but not a list of plain strings is reported as present
+// and empty, so it fails the comparison in Verify rather than being skipped: the
+// alternative is that a malformed list reads as absent and slips through.
+func existingKeyInputs(file *ast.File) ([]string, bool) {
+	value, ok := storageFieldValue(file, KeyInputsField)
+	if !ok {
+		return nil, false
+	}
+	list, ok := value.(*ast.ListLit)
+	if !ok {
+		return nil, true
+	}
+	out := make([]string, 0, len(list.Elts))
+	for _, elt := range list.Elts {
+		lit, ok := elt.(*ast.BasicLit)
+		if !ok || lit.Kind != cuetoken.STRING {
+			return nil, true
+		}
+		s, err := literal.Unquote(lit.Value)
+		if err != nil {
+			return nil, true
+		}
+		out = append(out, s)
+	}
+	return out, true
 }
 
 // setKeyInputs records the values the identity hash covers, replacing any list
@@ -246,7 +290,35 @@ func Verify(definitionName, template, rulesHash string) error {
 		return fmt.Errorf("storage.key is computed from the context this template reads, and %s does not "+
 			"match: expected %s", existing, expected)
 	}
+
+	// keyInputs needs checking on its own account, not as a formality. Only some
+	// fields are inlined into the key, so dropping a hashed-only one - a label
+	// value, say - leaves storage.key matching perfectly while collapsing entries
+	// that should be distinct onto a single cache entry.
+	wantInputs := KeyInputs(dims)
+	existingInputs, ok := existingKeyInputs(file)
+	if !ok {
+		return fmt.Errorf("storage.%s is missing; it names the values folded into the cache identity and "+
+			"should be %v. Apply the definition with `vela def apply` and it will be written for you",
+			KeyInputsField, wantInputs)
+	}
+	if !equalStrings(existingInputs, wantInputs) {
+		return fmt.Errorf("storage.%s is computed from the context this template reads, and %v does not "+
+			"match: expected %v", KeyInputsField, existingInputs, wantInputs)
+	}
 	return nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // rulesFor loads the named policy, or the current one when nothing is named.
