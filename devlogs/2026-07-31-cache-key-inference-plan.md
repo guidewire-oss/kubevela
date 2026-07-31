@@ -251,3 +251,116 @@ The resolver appends the properties hash, so the full identity is
   cost is a narrower cache, never a wrong one.
 - **Overflow**: if the assembled key would exceed 253 characters, hash the dimension
   portion. Deterministic, still unique, and only degrades readability in the rare case.
+
+---
+
+# Amendment: the source context is built from the rules
+
+Date: 2026-07-31
+Status: **plan — agreed, not started**
+
+Three changes that turned out to be one change.
+
+## What changes
+
+### 1. `context.name` becomes the binding entry
+
+Everywhere else in KubeVela, `context.name` is the *instance* being rendered - `api`,
+not `webservice`. For a source it is currently the **consuming component's** name,
+because the resolver compiles against the component's process context wholesale.
+
+```yaml
+sources:
+  - name: backstage            # <- context.name should be this
+    type: backstage-component  #    (the definition name is already the key prefix)
+```
+
+Verified against a live cluster before proposing this: a source reading `context.name`,
+bound as `BINDING-ALIAS` and consumed by `component-called-web`, produced the cache entry
+`whoami-component-called-web`.
+
+### 2. Consumer identity is not readable; pass it as a property
+
+`componentType`, `revision` and `replicaKey` leave the keyed set, and no `componentName`
+is added. A source that needs to know its consumer takes it as a property:
+
+```yaml
+sources:
+  - {name: namer-web, type: deployment-namer, properties: {component: web}}
+  - {name: namer-api, type: deployment-namer, properties: {component: api}}
+```
+
+Bindings are Application-level, so a source whose output varies per component needs one
+binding per component regardless. Making it a property says so at the binding site rather
+than hiding it in the template, and the properties hash gives each its own entry.
+
+What this buys is worth more than the convenience it costs:
+
+> A source's output depends only on Application context and its properties - never on
+> which consumer asked.
+
+Sources become portable across surfaces. When `fromSource` extends to workflow steps and
+policies there is nothing to reclassify, no absent-versus-empty question for a component
+field, and no per-surface rules - because nothing was ever consumer-scoped.
+
+This reverses a call made earlier the same day. Consumer identity was un-forbidden on the
+grounds that inference made reading it *safe*, which was true and beside the point: safe
+is not the same as warranted, and the Application-level binding is what tips it.
+
+### 3. One list, not two
+
+`forbidden` is dropped. Both categories rejected; the only difference was the message, and
+under fail-closed an unclassified field is already refused.
+
+The exhaustiveness test goes with it. Its stated justification - that an unclassified
+field could "silently become an unkeyed dependency" - was wrong: an unlisted field is
+rejected, so a template cannot read it, so it cannot become a dependency. It protected
+usability, not correctness, and it imposed friction on anyone adding a context field for
+unrelated reasons.
+
+A `notes` map survives for message quality, with no completeness obligation:
+
+```cue
+keyed: {cluster: order: 1, ...}
+
+notes: {
+  policyName: "not populated during a component render"
+}
+```
+
+The policy hash then covers `keyed` alone.
+
+## Why these are one change
+
+Point 1 requires the resolver to stop reusing the component's context, since `name` has to
+mean something different. Once a source-specific context is being built, constructing it
+**from the keyed list** is nearly free - and it makes points 2 and 3 structural rather
+than merely validated:
+
+| Layer | Before | After |
+|---|---|---|
+| Admission | rejects a template reading a non-keyed field | unchanged |
+| Runtime | the field is present and readable; a bypassed webhook means an unkeyed dependency | the field is not in the context at all - the template cannot compile |
+
+So inference and the runtime cannot disagree, because both are derived from one list. That
+closes the same gap the `fromSource` surface backstop closed, by construction rather than
+by a second check.
+
+## Steps
+
+| # | Step | Test |
+|---|---|---|
+| 1 | Rules: single `keyed` list, `notes`, consumer identity removed, hash covers `keyed` | unit; existing inference tests updated |
+| 2 | Inference: unlisted is unsupported, message uses `notes` | unit |
+| 3 | Resolver builds the source context from the keyed list, `name` = binding entry | unit, then a live check that the entry alias appears in the key |
+| 4 | `deployment-namer` takes a `component` property; demo app updated | e2e |
+| 5 | Regenerate definitions and fixtures | existing suites stay green |
+
+## Consequences to expect
+
+- **The policy hash moves.** Every definition needs re-applying; the annotation is what
+  makes that a clear rejection rather than a silent mismatch.
+- **`deployment-namer` is the worked example** of the per-consumer pattern, so it is worth
+  getting right rather than merely working.
+- **`context.name` changes meaning** for any definition already using it. The only ones
+  are in this repo.
