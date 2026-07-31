@@ -139,6 +139,38 @@ missing label flow into a parameter as an empty string - but a `default()` built
 is probably needed before this is usable. That is the main thing standing between
 the spike and a proposal.
 
+## Getting a typed (non-string) value into a parameter
+
+The property value is a YAML string either way, so the rule that decides the
+substituted type is `Whole()`: a value that is *only* an expression is replaced by
+the typed result, while one embedded in surrounding text can only be a string.
+
+```yaml
+replicas: '$(source["scale"].replicas)'        # int 3
+replicas: '$(source["scale"].replicas * 2)'    # int 6
+replicas: 'count-$(source["scale"].replicas)'  # string "count-3"
+```
+
+One trap: **CUE's `/` is float division**, so `replicas / 2` types as `float` and
+an `int` parameter would refuse it. CUE's integer operators are infix, not
+functions:
+
+| Expression | Type | Value (replicas = 7) |
+|---|---|---|
+| `replicas * 2` | `int` | `14` |
+| `replicas div 2` | `int` | `3` |
+| `replicas mod 2` | `int` | `1` |
+| `replicas / 2` | `float` | `3.5` |
+
+`div`, `mod`, `quo` and `rem` pass the grammar gate as ordinary binary operators.
+The function forms (`div(a, b)`) do not - the sandbox rejects any identifier other
+than `source` and `context`, which is working as intended but does mean the infix
+form is the only one available.
+
+Because the type is known at admission, an `int` parameter fed a `float`
+expression is refused before the Application is admitted rather than failing at
+render.
+
 ## What the spike does not address
 
 | | |

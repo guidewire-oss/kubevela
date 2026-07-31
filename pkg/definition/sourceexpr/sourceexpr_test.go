@@ -502,3 +502,68 @@ func TestAbsentLabelFailsAtRenderNotAdmission(t *testing.T) {
 		t.Errorf("the error should name the label that is absent; got: %v", err)
 	}
 }
+
+// Getting an int into an int parameter is the common case, and there is one
+// trap: CUE's `/` is float division, so `replicas / 2` types as float and would
+// be refused by an int parameter. CUE's integer operators are infix - div, mod,
+// quo, rem - and they type as int.
+func TestIntegerValuedExpressions(t *testing.T) {
+	schemas := map[string]string{"scale": `{replicas: int}`}
+	resolved := map[string]map[string]interface{}{"scale": {"replicas": 7}}
+
+	cases := []struct {
+		expr      string
+		wantKind  cue.Kind
+		wantValue interface{}
+	}{
+		{`source["scale"].replicas`, cue.IntKind, int64(7)},
+		{`source["scale"].replicas * 2`, cue.IntKind, int64(14)},
+		{`source["scale"].replicas + 1`, cue.IntKind, int64(8)},
+		{`source["scale"].replicas div 2`, cue.IntKind, int64(3)},
+		{`source["scale"].replicas mod 2`, cue.IntKind, int64(1)},
+		// The trap: ordinary division is float division.
+		{`source["scale"].replicas / 2`, cue.FloatKind, 3.5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.expr, func(t *testing.T) {
+			kind, err := TypeOf(tc.expr, schemas)
+			if err != nil {
+				t.Fatalf("typing: %v", err)
+			}
+			if kind != tc.wantKind {
+				t.Fatalf("expected kind %s, got %s", tc.wantKind, kind)
+			}
+			got, err := Eval("$("+tc.expr+")", resolved, nil)
+			if err != nil {
+				t.Fatalf("evaluating: %v", err)
+			}
+			if got != tc.wantValue {
+				t.Fatalf("expected %#v, got %#v", tc.wantValue, got)
+			}
+		})
+	}
+}
+
+// An int-valued expression embedded in surrounding text is a string, because
+// that is what concatenation means. Only a whole value keeps its type - which is
+// the distinction that lets an int parameter receive an int at all.
+func TestEmbeddedIntBecomesString(t *testing.T) {
+	resolved := map[string]map[string]interface{}{"scale": {"replicas": 7}}
+
+	whole, err := Eval(`$(source["scale"].replicas)`, resolved, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole != int64(7) {
+		t.Fatalf("a whole value must keep its type, got %#v (%T)", whole, whole)
+	}
+
+	embedded, err := Eval(`replicas-$(source["scale"].replicas)`, resolved, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embedded != "replicas-7" {
+		t.Fatalf("an embedded value must render as text, got %#v", embedded)
+	}
+}
