@@ -175,6 +175,30 @@ The same mechanism closes the absent-label case:
 region: '$(*context.appLabels["region"] | "unknown")'
 ```
 
+### A default is only needed where a value can actually be missing
+
+A source's `schema:` is a contract the resolver enforces - output is validated
+against it before anything is cached - so a **required** field is guaranteed
+present and demanding a fallback for it would be noise. Only an optional field, or
+a context value with no schema at all, can go missing.
+
+That is the rule `fromSource` already follows, and it is target-aware: a default is
+mandatory exactly when an *optional* source field feeds a *required* parameter
+(`validation_sources.go:251`). The target is not this package's business, so
+`UndefendedReads` returns the reads that could be absent and carry no default;
+admission pairs them with the parameter it is filling.
+
+| Read | Needs a default |
+|---|---|
+| `source.info.region` (schema: `region: string`) | no |
+| `source.info.vpcId` (schema: `vpcId?: string`) | yes |
+| `source.info.network.subnet` (schema: `network?: {subnet: string}`) | yes — an optional ancestor makes it absent too |
+| `context.cluster` | no — always supplied, even when empty |
+| `context.appLabels["x"]` | yes — no schema, any key may be missing |
+
+A path read both with and without a default is still reported: the unprotected
+read is the one that fails.
+
 ## Getting a typed (non-string) value into a parameter
 
 The property value is a YAML string either way, so the rule that decides the

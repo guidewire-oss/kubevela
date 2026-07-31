@@ -174,6 +174,9 @@ type Reference struct {
 	// Path is the rest: for a source, [binding, field...]; for context,
 	// [field] or [field, index].
 	Path []string
+	// Defaulted records that the read carries a fallback - *read | literal - so
+	// it survives the value being absent.
+	Defaulted bool
 }
 
 // IsSource reports whether the reference reads a resolved source.
@@ -198,6 +201,18 @@ func References(expr string) ([]Reference, error) {
 		return nil, fmt.Errorf("not a valid expression: %w", err)
 	}
 
+	// Reads sitting under a default marker survive being absent, so they are
+	// collected before the walk that records them.
+	defaulted := map[ast.Expr]bool{}
+	ast.Walk(node, func(n ast.Node) bool {
+		if b, ok := n.(*ast.BinaryExpr); ok && b.Op == token.OR {
+			if u, ok := b.X.(*ast.UnaryExpr); ok && u.Op == token.MUL {
+				defaulted[u.X] = true
+			}
+		}
+		return true
+	}, nil)
+
 	seen := map[string]Reference{}
 	ast.Walk(node, func(n ast.Node) bool {
 		expr, ok := n.(ast.Expr)
@@ -218,7 +233,12 @@ func References(expr string) ([]Reference, error) {
 		if root == SourceIdent && len(path) < 2 {
 			return true
 		}
-		ref := Reference{Root: root, Path: path}
+		ref := Reference{Root: root, Path: path, Defaulted: defaulted[expr]}
+		// A path read twice is defaulted only if every read of it is; the
+		// undefended one is what would fail.
+		if prev, ok := seen[ref.String()]; ok && !prev.Defaulted {
+			ref.Defaulted = false
+		}
 		seen[ref.String()] = ref
 		// Do not descend: the prefix of this chain is not a separate read.
 		return false

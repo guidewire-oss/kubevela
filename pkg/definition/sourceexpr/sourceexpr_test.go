@@ -913,3 +913,108 @@ func TestValueTypeAgreesWithEval(t *testing.T) {
 		}
 	}
 }
+
+// A default is only needed where a value could actually be missing. A source's
+// schema is a contract the resolver enforces - output is validated against it
+// before anything is cached - so a required field is guaranteed present and
+// demanding a fallback for it would be noise.
+//
+// This mirrors fromSource, where a default is mandatory exactly when an optional
+// source field feeds a required parameter.
+func TestUndefendedReads(t *testing.T) {
+	schemas := map[string]string{
+		"info": `{
+			region:  string
+			vpcId?:  string
+			network?: {subnet: string}
+			nested:  {zone: string, backup?: string}
+		}`,
+	}
+
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{
+			name: "a required field needs no default",
+			raw:  `$(source.info.region)`,
+		},
+		{
+			name: "a required nested field needs no default",
+			raw:  `$(source.info.nested.zone)`,
+		},
+		{
+			name: "an optional field is undefended",
+			raw:  `$(source.info.vpcId)`,
+			want: []string{"source.info.vpcId"},
+		},
+		{
+			name: "an optional field with a default is fine",
+			raw:  `$(*source.info.vpcId | "none")`,
+		},
+		{
+			// network? is optional, so subnet is absent whenever network is,
+			// however required it looks inside.
+			name: "an optional ancestor makes a required field absent",
+			raw:  `$(source.info.network.subnet)`,
+			want: []string{"source.info.network.subnet"},
+		},
+		{
+			name: "an optional leaf under a required parent",
+			raw:  `$(source.info.nested.backup)`,
+			want: []string{"source.info.nested.backup"},
+		},
+		{
+			// A label lookup has no schema at all - any key may be missing.
+			name: "a context label is always undefended",
+			raw:  `$(context.appLabels["region"])`,
+			want: []string{"context.appLabels.region"},
+		},
+		{
+			name: "a defaulted context label is fine",
+			raw:  `$(*context.appLabels["region"] | "unknown")`,
+		},
+		{
+			// A plain context field is always supplied, even when empty.
+			name: "a plain context field needs no default",
+			raw:  `$(context.cluster)`,
+		},
+		{
+			name: "several fragments are each checked",
+			raw:  `$(source.info.region)/$(source.info.vpcId)`,
+			want: []string{"source.info.vpcId"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := UndefendedReads(tc.raw, schemas)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, got)
+			}
+			for i := range tc.want {
+				if got[i].String() != tc.want[i] {
+					t.Fatalf("expected %v, got %v", tc.want, got)
+				}
+			}
+		})
+	}
+}
+
+// A path read both with and without a default is still undefended: the
+// unprotected read is the one that fails.
+func TestUndefendedWhenReadBothWays(t *testing.T) {
+	schemas := map[string]string{"info": `{vpcId?: string}`}
+
+	got, err := UndefendedReads(`$(*source.info.vpcId | "a")$(source.info.vpcId)`, schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("the undefended read must still be reported, got %v", got)
+	}
+}
