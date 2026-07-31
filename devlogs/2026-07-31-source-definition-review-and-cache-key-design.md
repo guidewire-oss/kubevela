@@ -42,7 +42,7 @@ Reviewed the branch against KEP-2.16. Ordered by severity as found.
 | 8 | Source-change re-dispatch (`autoUpdateSources`, per-source hashing) was undocumented, and the KEP said the opposite - that nothing refreshes proactively. | KEP documented `7f3e1632c` |
 | 9 | `// +sensitive` was read from `output:` only, but the KEP documents it as a `schema:` marker and its own example puts it there. A definition written to the KEP redacted **nothing**, silently. | fixed `cdb47eb20` |
 | 10 | Admission validated `fromSource` in policy and workflow-step properties, but nothing resolves it there - the consumer received the literal `{"fromSource": ...}` map. | fixed `5cc3ba7ec`, `1e1b432ab` |
-| 11 | Cache reads do not check the entry against the schema it was written under, and cached values skip re-validation - so a schema change with a stable key serves values of the old shape. | **open**, addressed by the new key design |
+| 11 | Cache reads do not check the entry against the schema it was written under, and cached values skip re-validation - so a schema change with a stable key serves values of the old shape. | fixed `72f5ca5d6` - the template's fingerprint is part of the cache identity, so an edit of any kind orphans the entries the previous version produced. A schema hash alone would have missed a changed URL behind an unchanged output shape. E2E-proven non-vacuous in `a1868499c`. |
 
 ## Where the design landed
 

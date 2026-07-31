@@ -38,6 +38,244 @@ graph LR
     AR -->|snapshots| SD
 ```
 
+## Amendments
+
+The body below is the original design. Implementation and review since then have
+changed parts of it. Rather than rewrite the document and lose the reasoning, each
+change is recorded here as an amendment, with what it supersedes and why. Sections
+affected carry a pointer back to this list.
+
+| # | Amendment | Supersedes | Status |
+|---|---|---|---|
+| A1 | The cache key is inferred from the template, not authored | [Cache Key](#cache-key) | implemented |
+| A2 | Generated fields live in `$internal:`; `storage:` is authored-only and optional | [Cache Key](#cache-key), [SourceDefinition Authoring Model](#sourcedefinition-authoring-model) | implemented |
+| A3 | Cache identity is a readable prefix plus a hash of every resolution input | [Cache Key](#cache-key) | implemented, closes finding #11 |
+| A4 | A source may read only the context that is part of the key | [CUE Context in SourceDefinition](#cue-context-in-sourcedefinition), [Future Enhancements](#future-enhancements) | implemented |
+| A5 | Cache entries carry their identity as labels and annotations | [Operator Guidance](#operator-guidance-inspecting-cache-state) | implemented |
+
+**Reading the worked examples below.** Every example in the body writes its key by
+hand, as `storage: { key: "..." }`. Applied as written, all of them would now be
+rejected at admission. Read them as illustrations of *what the key expresses* —
+which is unchanged — not of how it is written. The equivalent today is to omit the
+key entirely and let `vela def` generate the `$internal:` block; the expression it
+produces is the same one the example states, provided the template genuinely reads
+the context the example's key interpolates. Where it does not, the example was
+already describing a cache scope its template did not have, which is the class of
+error A1 exists to remove.
+
+### A1: The cache key is inferred, not authored
+
+**Was:** `storage.key` was a mandatory CUE expression written by the definition
+author. The KEP's own guidance ran to several paragraphs: include every
+discriminating input, normalise anything containing illegal characters, choose the
+narrowest correct scope.
+
+**Is:** the key is generated. `vela def` scans the template for `context` reads,
+orders them by policy, and writes the resulting expression into the definition.
+Admission re-derives it and rejects a mismatch.
+
+**Why.** The original design made the sharing boundary an author's obligation, and
+got no feedback when they got it wrong. The failure was silent and severe: a key
+that omitted a discriminating input meant the second Application to resolve
+received the first's data, and nothing in the system objected. The KEP acknowledged
+this ("the key must discriminate on whatever changes the output") but could only
+state it as a rule to follow, not enforce it.
+
+Inference removes the obligation. Everything the template reads is in the key by
+construction, so the class of bug the guidance warned about cannot be written.
+
+The author keeps the choice that mattered: a source reading `context.cluster` is
+keyed per cluster; one reading nothing is shared everywhere. That is decided by
+what the template reads, which is the honest signal — the previous design let the
+key and the template disagree.
+
+**What this costs.** An author can no longer widen the cache deliberately (read a
+value but exclude it from the key). No use for that has come up, and it is exactly
+the operation that produced the silent-sharing bug, so it is withheld rather than
+supported.
+
+A key already present is accepted when it matches and rejected when it does not,
+rather than being overwritten. That is what lets `vela def get`, edit, apply
+round-trip, and it keeps an author's belief about how their source is cached from
+being silently corrected.
+
+### A2: Generated fields live in `$internal:`
+
+**Was:** `storage: {key, storageTTL, onStaleFailure}` — one block holding both
+generated and authored fields.
+
+**Is:**
+
+```cue
+// Generated from the context this template reads - do not edit.
+$internal: {
+	key:       "tenant-data-\(context.cluster)-\(context.namespace)"
+	keyInputs: ["cluster", "namespace", "appLabels[region]"]
+}
+
+storage: {
+	storageTTL:     "15m"
+	onStaleFailure: "use-stale"
+}
+```
+
+**Why.** With A1, `storage:` held two kinds of field with opposite rules, and
+nothing distinguished them. That is not hypothetical: a demo manifest in this repo
+carried a wrong hand-written key precisely because it sat beside `storageTTL` and
+looked equally authorable.
+
+Splitting them means the reader needs no knowledge at all — one block is theirs,
+the other is not. `storage:` keeps its name because it says *what* it configures,
+and becomes optional: a source with no caching preferences now declares nothing.
+
+**On the `$` prefix.** It follows the convention CueX already uses for `$params`
+and `$returns`. A leading underscore would be the CUE idiom for "internal", but
+hidden fields are dropped from exported output and these must stay visible —
+GitOps diffs them and admission re-derives them. `__` is reserved by CUE outright
+and does not compile.
+
+**`keyInputs` is validated alongside the key, and matters more.** Only some fields
+are inlined into the key expression, so a hashed-only input can be deleted by hand
+while the key still validates perfectly — collapsing every value that input
+distinguished onto one cache entry. Both are re-derived at admission.
+
+### A3: Cache identity is a prefix plus a hash
+
+**Was:** the resolved `storage.key` *was* the Config object name, and the KEP put
+the burden of making it a legal name on the author — including a worked example
+using `strings.Replace` to normalise an image reference.
+
+**Is:** the identity is `<readable prefix>-<hash>`. The prefix is the generated key
+expression and is cosmetic. The hash covers a structured document: the template's
+fingerprint, the binding's properties, and exactly the context values named by
+`keyInputs`.
+
+**Why the split.** Uniqueness lives in the hash, which frees the prefix from having
+to carry it. Three things follow:
+
+- **Normalisation stops being the author's job.** A value that cannot be rendered
+  into a legal object name — a struct, a label value containing `/` or `.` — simply
+  contributes to the hash and not the prefix. The `strings.Replace` guidance in the
+  body is obsolete.
+- **Absent, empty, and set are three different identities.** The hash is a
+  structured document, so `nil`, `""` and `"platform"` are distinct. A template can
+  branch on that difference (`if context.appLabels["team"] != _|_`), so the identity
+  has to draw it too.
+- **Over-long identities trim the prefix, never the hash.** A shorter prefix cannot
+  collide; re-hashing the whole name would discard readability exactly when the name
+  is longest.
+
+**The template fingerprint closes finding #11.** Cached values are served without
+re-validation, so a definition whose fetch logic changed must stop addressing the
+entries its previous version produced. A schema hash alone would miss the case that
+matters — a changed URL behind an unchanged output shape. Because the whole
+template is hashed, an edit of any kind orphans the old entries.
+
+Only what the template actually reads is hashed. `keyInputs` is the exact set
+`Infer` found, so a field nobody reads is never fetched and never contributes —
+cardinality is unchanged from A1.
+
+**Two examples in the body diverge visibly.** Running inference over them:
+
+| Example | Body's hand-written key | Inferred |
+|---|---|---|
+| `cluster-config-reader` | `"cluster-config-reader-\(context.cluster)"` | identical |
+| `backstage-component` | `"backstage-component-\(parameter.entityRef)"` | `"backstage-component"`, properties in the hash |
+| `governance-metadata` | `"governance-\(context.appLabels[...])-\(context.cluster)"` | `"governance-metadata"`, labels in the hash |
+
+Sharing behaviour is unchanged in all three — a property or a label that moves from
+the prefix to the hash still separates entries. What changes is readability: the
+name no longer shows the discriminator. That is the deliberate trade in A3, because
+neither an entity reference nor a label value is guaranteed to be a legal object
+name, and requiring the author to normalise them was the cost the old design paid.
+
+**One documented behaviour is genuinely withdrawn.** The `governance-metadata`
+example states that if `example.org/service-name` is absent, key computation fails
+fast, "enforcing the labelling convention at resolution time". It no longer does.
+An absent label is a distinct identity, not an error — because a template may
+legitimately branch on absence:
+
+```cue
+someVar: "bar"
+if context.appLabels["team"] != _|_ { someVar: "foo" }
+```
+
+Failing on absence would make that template unusable, so absence is hashed as
+distinct from empty and from any value. Enforcing a labelling convention is a
+policy concern and belongs in admission or a `errs:` check in the definition, not
+in cache-key computation.
+
+### A4: A source reads only keyed context
+
+**Was:** a source was compiled against the component's context, and the KEP listed
+the fields available.
+
+**Is:** a source is compiled against a context built from the key policy alone.
+A field that would not contribute to the key is *absent*, so it cannot be read even
+where admission is disabled. Reading anything else fails admission with a single
+message: additional data reaches a source as a property instead.
+
+**Why.** With A1, the key covers what the template reads. The converse has to hold
+too, or a template could depend on a value the key ignores — reintroducing the
+silent-sharing bug through a different door. Restricting the context makes the
+invariant structural rather than a rule to check.
+
+**`context.name` is the `spec.sources[]` binding entry**, not the consuming
+component. This resolves the hazard recorded under Future Enhancements: the concern
+was that `context.name` means different things in a component render versus a
+workflow-step render, so a key interpolating it would split one logical entry in
+two. Binding it to the source entry makes it stable across every surface, and
+removes the need for the proposed `context.componentName`.
+
+Consumer identity is not readable at all. Where a source genuinely needs to know
+who is asking, that is passed as a property — explicit at the binding, and part of
+the identity like any other property.
+
+### A5: Cache entries carry their identity
+
+**Was:** entries were opaque `<key>-<hash>` Secrets, inspected via `vela config`.
+
+**Is:** each entry records its identity inputs on itself.
+
+```yaml
+labels:
+  sourcedefinition.oam.dev/name: tenant-lookup
+  sourcedefinition.oam.dev/ctx.cluster: local
+  sourcedefinition.oam.dev/ctx.namespace: meta-demo
+  sourcedefinition.oam.dev/ctx.appLabels.region: eu-west
+annotations:
+  sourcedefinition.oam.dev/key-inputs: ["cluster","namespace","appLabels[region]"]
+  sourcedefinition.oam.dev/context: {"cluster":"local","appLabels":{"region":"eu-west"}}
+  sourcedefinition.oam.dev/properties: {"fallback":"unknown"}
+  sourcedefinition.oam.dev/template-hash: 14f35523
+```
+
+**Why only identity inputs.** An entry is shared by every binding that resolves to
+it, so anything outside the identity — the consuming Application, say — differs
+between those sharers, and recording it would describe whichever one happened to
+write the entry first. Identity inputs are invariant across sharers by
+construction, and are also exactly what is worth filtering on.
+
+**Why the split across labels and annotations.** Labels are selectable but
+constrained to 63 characters of a restricted alphabet, so only context values that
+are legal as both a label key and a label value become labels — an index like
+`example.org/service-name` would put a second slash in the key. Annotations carry
+everything, so skipping a label loses selectability and nothing else. Emitting an
+illegal label would be far worse: the write fails and the entry never persists.
+
+**Resolved output is deliberately not recorded.** Encryption-at-rest covers a
+Secret's `data` but not its labels and annotations, so mirroring output into
+metadata would quietly defeat it — and output is what `// +sensitive` protects.
+Properties are different: they are already plaintext in the Application spec, so
+recording them exposes nothing new. Oversized properties are clamped per value
+rather than by clipping the finished JSON, so the annotation always parses.
+
+**Open follow-up.** The body states that Configs are inspected through `vela config`
+rather than `kubectl`. These labels make selector filtering possible, but
+`vela config list` does not yet expose it; surfacing label selectors there would
+keep the documented CLI the complete answer.
+
+
 ## Mental Model
 
 **`SourceDefinition`: reusable source provider (platform engineer)**
@@ -86,6 +324,8 @@ Both are identified by the `config.oam.dev/catalog: velacore-config` label, not 
 > **KEP-2.18** proposes graduating ConfigTemplate and Config from labelled ConfigMaps/Secrets into first-class CRDs (or Aggregated API resources), giving them proper status subresources, server-side validation, and watch semantics. This KEP is delivered against the existing v1 backing store and is transparent to that migration; the `SourceDefinition` caching layer will work unchanged once KEP-2.18 lands, with no schema or key format changes required.
 
 ## SourceDefinition Authoring Model
+
+> **Amended by [A1](#a1-the-cache-key-is-inferred-not-authored) and [A2](#a2-generated-fields-live-in-internal).** Generated fields (`key`, `keyInputs`) are written by `vela def` into a `$internal:` block; `storage:` holds only authored fields (`storageTTL`, `onStaleFailure`) and is optional.
 
 A `SourceDefinition` is a single `.cue` file following the standard KubeVela Definition format (a named root block followed by top-level blocks):
 
@@ -361,6 +601,8 @@ storage: {
 
 ### Cache Key
 
+> **Superseded by [A1](#a1-the-cache-key-is-inferred-not-authored), [A2](#a2-generated-fields-live-in-internal) and [A3](#a3-cache-identity-is-a-prefix-plus-a-hash).** The key is now inferred from the template rather than authored, lives in `$internal:` rather than `storage:`, and is a readable prefix followed by a hash of every resolution input. The normalisation guidance below is obsolete: a value that cannot be rendered into a legal name contributes to the hash instead. The section is kept because the reasoning about cardinality and sharing still holds — it is now enforced rather than advised.
+
 The `key` field in `storage:` is a CUE expression that resolves to the `Config` object name. It interpolates `context` values and `parameter` values to produce a unique, deterministic name per source binding. The key serves double duty; it is both the Config object name and the in-memory cache lookup key.
 
 **A storage key is mandatory.** Every `SourceDefinition` must declare `storage.key`; the admission webhook rejects one that does not. The key is the cache's identity, so there is no meaningful default: synthesising one would silently decide the sharing boundary on the author's behalf.
@@ -384,6 +626,8 @@ storage: {
 Cross-application sharing of `Config` cache objects is a natural consequence of key-based caching and is intentional. When two Applications on the same cluster use the same `SourceDefinition` with the same key, they share the backing `Config` object; the second resolution is a cache hit. The key design determines the sharing boundary: a `context.cluster`-scoped key models a cluster-level fact shared by all consumers; a `context.appName`-scoped key models a per-Application fact private to one.
 
 ### Operator Guidance: Inspecting Cache State
+
+> **Extended by [A5](#a5-cache-entries-carry-their-identity).** Entries now record their identity as labels and annotations, so they can be found by selector and read without decoding the key. `vela config` remains the documented surface; exposing label selectors there is an open follow-up.
 
 Configs (labelled Secrets in `vela-system`) are accessed through the `vela config` CLI (not via `kubectl get secret` or similar direct object commands). Use the following:
 
@@ -746,6 +990,8 @@ The admission webhook enforces the third row: if `path` names an optional schema
 Errors from the admission pass surface immediately and block the apply. Errors from the runtime pass surface on `status.services[].sources[].phase` as `Failed` and block the component render. Neither pass substitutes for the other.
 
 ## CUE Context in SourceDefinition
+
+> **Superseded by [A4](#a4-a-source-reads-only-keyed-context).** A source is compiled against a context built from the cache-key policy alone: a field that would not contribute to the key is absent, not merely discouraged. `context.name` is the `spec.sources[]` binding entry, and consumer identity is passed as a property rather than read from context.
 
 | Field | Value |
 |---|---|
@@ -1179,7 +1425,7 @@ Because resolved source outputs are stored as standard `Config` objects, any wor
 
 ## Future Enhancements
 
-- **`fromSource` in workflow steps and policies (and the `context.name` hazard):** note that `context.name` is not stable across render contexts - in a component or trait render it is the *component* name, while in a workflow-step context it is the *application* name. A source whose `storage.key` interpolates `context.name` would therefore compute a different key depending on which surface consumed it, silently splitting one logical cache entry in two. Extending resolution to those surfaces should introduce an explicit `context.componentName` (absent outside a component or trait render, so a component-scoped source fails loudly rather than resolving against the wrong identity) rather than inheriting `context.name`. The `consumableFrom` restriction above is the interim guard. `fromSource` in component and trait properties is the highest priority and the scope of this KEP. The same mechanism can be extended to `workflow: steps[]` and policy properties; both have access to `spec.sources[]` and the declarative type-safety model applies equally. The critical requirement for this extension is that the `fromSource` resolution logic is implemented behind a reusable internal API, callable from any rendering context without duplicating the cache lookup, key computation, or CueX execution paths.
+- **`fromSource` in workflow steps and policies:** the `context.name` hazard this entry originally described is resolved by [A4](#a4-a-source-reads-only-keyed-context) — `context.name` is now the `spec.sources[]` binding entry, stable across every surface, so the proposed `context.componentName` is no longer needed. The original reasoning is kept for the record: `context.name` was not stable across render contexts - in a component or trait render it is the *component* name, while in a workflow-step context it is the *application* name. A source whose `storage.key` interpolates `context.name` would therefore compute a different key depending on which surface consumed it, silently splitting one logical cache entry in two. Extending resolution to those surfaces should introduce an explicit `context.componentName` (absent outside a component or trait render, so a component-scoped source fails loudly rather than resolving against the wrong identity) rather than inheriting `context.name`. The `consumableFrom` restriction above is the interim guard. `fromSource` in component and trait properties is the highest priority and the scope of this KEP. The same mechanism can be extended to `workflow: steps[]` and policy properties; both have access to `spec.sources[]` and the declarative type-safety model applies equally. The critical requirement for this extension is that the `fromSource` resolution logic is implemented behind a reusable internal API, callable from any rendering context without duplicating the cache lookup, key computation, or CueX execution paths.
 - **Configurable Config namespace:** allow resolved Config objects that contain no `// +sensitive` fields to be written to a user-accessible namespace (e.g. the Application's namespace) so that end users can inspect resolved source data without access to `vela-system`. Requires a focused design pass on the scope/access model and enforcement that definitions with any `// +sensitive` fields cannot opt into this.
 - **Garbage collection of old ConfigTemplate versions:** remove versioned `ConfigTemplate` entries once no `ApplicationRevision` references that Definition revision.
 
