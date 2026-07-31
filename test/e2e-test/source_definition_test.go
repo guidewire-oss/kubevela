@@ -366,6 +366,150 @@ parameter: {
 		}, 60*time.Second, time.Second).Should(Succeed())
 	})
 
+	// An edited definition must stop addressing the entries its previous version
+	// resolved. Cached values are served without re-validation, so a definition
+	// whose fetch logic changed would otherwise keep serving data the old logic
+	// produced - for as long as the TTL allows, which here is an hour.
+	//
+	// The change below is deliberately invisible to every other signal: the key is
+	// unchanged (no context is read), the schema is unchanged, and the output shape
+	// is unchanged. Only the value the template computes differs, which is the
+	// shape of a changed URL behind a stable schema. Nothing but the template
+	// itself being part of the cache identity can catch it.
+	It("orphans cached entries when the definition is edited", func() {
+		const defName = "edited-source"
+
+		// Real tags: the resolved value becomes a container image, and an
+		// unpullable one would leave the app short of running for reasons that
+		// have nothing to do with caching.
+		templateFor := func(tag string) string {
+			return fmt.Sprintf(`
+schema: {
+  image: string
+}
+$internal: {
+  key: "%s"
+  keyInputs: []
+}
+storage: {
+  // Long enough that a stale entry would certainly be served if the identity
+  // did not move.
+  storageTTL: "1h"
+}
+output: {
+  image: parameter.image + ":%s"
+}
+parameter: {
+  image: string
+}
+`, defName, tag)
+		}
+
+		sourceDef := &v1beta1.SourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: defName, Namespace: namespaceName},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &oamcomm.Schematic{CUE: &oamcomm.CUE{Template: templateFor("1.25.0")}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sourceDef)).Should(Succeed())
+
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "edited-source-app", Namespace: namespaceName},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{
+					Name:       "img",
+					Type:       defName,
+					Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx"}`)},
+				}},
+				Components: []oamcomm.ApplicationComponent{{
+					Name: "web-edited",
+					Type: "webservice",
+					Properties: &runtime.RawExtension{
+						Raw: []byte(`{"image":{"fromSource":"img.image"},"port":80}`),
+					},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
+
+		// The app's own status reports both facts this test needs: which cache
+		// entry the binding resolved against, and what it resolved to. Reading
+		// them there rather than from the Deployment keeps the assertion about
+		// caching instead of about pod scheduling.
+		resolved := func() (config string, image string, err error) {
+			latest := &v1beta1.Application{}
+			if err = k8sClient.Get(ctx, client.ObjectKey{
+				Namespace: namespaceName, Name: app.Name,
+			}, latest); err != nil {
+				return "", "", err
+			}
+			for _, svc := range latest.Status.Services {
+				for _, src := range svc.Sources {
+					if src.Name != "img" {
+						continue
+					}
+					var props map[string]interface{}
+					if len(src.Properties.Raw) > 0 {
+						if err := json.Unmarshal(src.Properties.Raw, &props); err != nil {
+							return "", "", err
+						}
+					}
+					got, _ := props["image"].(string)
+					return src.Config, got, nil
+				}
+			}
+			return "", "", fmt.Errorf("no resolved source named %q in status yet", "img")
+		}
+
+		var firstConfig string
+		Eventually(func() error {
+			config, image, err := resolved()
+			if err != nil {
+				return err
+			}
+			if config == "" {
+				return fmt.Errorf("no cache entry recorded yet")
+			}
+			if image != "nginx:1.25.0" {
+				return fmt.Errorf("expected the v1 template's value, got %q", image)
+			}
+			firstConfig = config
+			return nil
+		}, 90*time.Second, time.Second).Should(Succeed())
+
+		// Edit the definition. Same key, same schema, same output shape - only the
+		// value the template computes differs, which is the shape of a changed URL
+		// behind a stable schema. Nothing but the template being part of the cache
+		// identity can catch it.
+		Eventually(func() error {
+			latest := &v1beta1.SourceDefinition{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{
+				Namespace: namespaceName, Name: defName,
+			}, latest); err != nil {
+				return err
+			}
+			latest.Spec.Schematic.CUE.Template = templateFor("1.25.2")
+			return k8sClient.Update(ctx, latest)
+		}, 30*time.Second, time.Second).Should(Succeed())
+
+		// The binding must move to a different entry and serve the new value. With
+		// an hour of TTL left on the old one, serving 1.25.0 here would mean the
+		// edit had been ignored.
+		Eventually(func() error {
+			config, image, err := resolved()
+			if err != nil {
+				return err
+			}
+			if config == firstConfig {
+				return fmt.Errorf("still addressing the pre-edit cache entry %q", firstConfig)
+			}
+			if image != "nginx:1.25.2" {
+				return fmt.Errorf("the pre-edit value is still being served: %q", image)
+			}
+			return nil
+		}, 180*time.Second, 2*time.Second).Should(Succeed())
+	})
+
 	It("resolves chained nested sources where second source depends on first", func() {
 		sourceA := &v1beta1.SourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
