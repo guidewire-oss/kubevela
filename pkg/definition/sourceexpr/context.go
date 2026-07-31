@@ -74,7 +74,93 @@ const (
 // TestContextTypesMatchTheRenderContext builds a real render context and
 // requires every field in it to be classified here or in notReadable, so a field
 // added upstream forces a decision instead of silently becoming unavailable.
-var contextTypes = map[string]contextKind{
+// ContextSchema is the readable context for one surface: which fields exist,
+// with what type, and why the others do not.
+//
+// There is one per surface because the contexts genuinely differ. An
+// Application-scoped policy is built by hand in renderPolicyCUETemplate and
+// never receives a cluster, publishVersion or workflowName - those keys exist but
+// hold the empty string forever. Declaring them readable would type cleanly at
+// admission and hand the author an empty value at render, which is the
+// clusterVersion.minor class of bug wearing a different hat.
+type ContextSchema struct {
+	// Surface names the schema in error messages.
+	Surface string
+	types   map[string]contextKind
+	// notReadable explains each excluded field, so a new one upstream has to be
+	// classified rather than silently ignored.
+	notReadable map[string]string
+}
+
+// ComponentContext is what a ComponentDefinition or TraitDefinition sees.
+var ComponentContext = ContextSchema{
+	Surface:     "component",
+	types:       componentContextTypes,
+	notReadable: componentNotReadable,
+}
+
+// ScopedPolicyContext is what an Application-scoped PolicyDefinition sees.
+//
+// It is a subset, plus the policy identity fields the component context has no
+// equivalent of. Measured from a real renderPolicyCUETemplate context rather than
+// derived from the constructor, because NewContext pushes keys regardless of
+// whether the caller supplied a value.
+var ScopedPolicyContext = ContextSchema{
+	Surface: "application-scoped policy",
+	types: map[string]contextKind{
+		"appName":        kindString,
+		"namespace":      kindString,
+		"appRevision":    kindString,
+		"appRevisionNum": kindInt,
+		"clusterVersion": kindStruct,
+		"appLabels":      kindIndexedString,
+		"appAnnotations": kindIndexedString,
+
+		// Policy identity. policyName is the instance from spec.policies[].name,
+		// which is what context.name means on every other surface - hence
+		// excluding name below rather than aliasing it.
+		"policyName":         kindString,
+		"policyType":         kindString,
+		"policyRevisionName": kindString,
+		"policyRevisionHash": kindString,
+		"policyRevision":     kindInt,
+	},
+	notReadable: map[string]string{
+		// Present in the context but never populated on this path: the scoped
+		// render supplies no cluster, publish version, workflow or component, so
+		// these hold the empty string forever. Readable would mean typed at
+		// admission and empty at render.
+		"cluster":        "not supplied to an Application-scoped policy render; always empty",
+		"publishVersion": "not supplied to an Application-scoped policy render; always empty",
+		"workflowName":   "not supplied to an Application-scoped policy render; always empty",
+		"replicaKey":     "not supplied to an Application-scoped policy render; always empty",
+		"revision":       "not supplied to an Application-scoped policy render; always empty",
+
+		// context.name is the *application* name here, because the scoped render
+		// sets CompName to app.Name - while in a resource-rendering policy it is
+		// the policy name. One identifier meaning two things across two policy
+		// paths is the hazard KEP-2.16 records, so expressions read appName or
+		// policyName, both of which say what they are.
+		"name": "ambiguous across the two policy paths; use appName or policyName",
+
+		"appSources":               "internal plumbing for source resolution, not user-facing context",
+		"appSourceTypes":           "internal plumbing for source resolution, not user-facing context",
+		"appSourceTemplates":       "internal plumbing for source resolution, not user-facing context",
+		"appSourceSensitivePaths":  "internal plumbing for source resolution, not user-facing context",
+		"appSourceCacheStore":      "internal plumbing for source resolution, not user-facing context",
+		"sourceResolutionStatuses": "internal plumbing for source resolution, not user-facing context",
+		"components":               "an app-wide list; readable in principle but not yet typed here",
+		"appComponents":            "an app-wide list; readable in principle but not yet typed here",
+		"appPolicies":              "an app-wide list; readable in principle but not yet typed here",
+		"appWorkflow":              "an app-wide object; readable in principle but not yet typed here",
+		"output":                   "produced by the render, so it does not exist when properties are substituted",
+		"outputs":                  "produced by the render, so it does not exist when properties are substituted",
+		"outputSecretName":         "produced by the render, so it does not exist when properties are substituted",
+		"parameter":                "the properties being substituted; reading them from within is circular",
+	},
+}
+
+var componentContextTypes = map[string]contextKind{
 	"name":           kindString,
 	"cluster":        kindString,
 	"clusterVersion": kindStruct,
@@ -93,7 +179,7 @@ var contextTypes = map[string]contextKind{
 // notReadable are context fields a property expression deliberately cannot see,
 // each with the reason. Being explicit is what makes the drift test useful: a new
 // field cannot be quietly ignored, it has to be put in one list or the other.
-var notReadable = map[string]string{
+var componentNotReadable = map[string]string{
 	"appSources":               "internal plumbing for source resolution, not user-facing context",
 	"appSourceTypes":           "internal plumbing for source resolution, not user-facing context",
 	"appSourceTemplates":       "internal plumbing for source resolution, not user-facing context",
@@ -118,7 +204,7 @@ var notReadable = map[string]string{
 // context.appLabels["anything"] resolve, it still reports an undefined field. So
 // the keys actually read are materialised individually, which References()
 // already knows.
-func sentinelContext(refs []Reference) (map[string]interface{}, error) {
+func sentinelContext(refs []Reference, schema ContextSchema) (map[string]interface{}, error) {
 	out := map[string]interface{}{}
 
 	for _, ref := range refs {
@@ -126,10 +212,10 @@ func sentinelContext(refs []Reference) (map[string]interface{}, error) {
 			continue
 		}
 		field := ref.Path[0]
-		kind, ok := contextTypes[field]
+		kind, ok := schema.types[field]
 		if !ok {
-			return nil, fmt.Errorf("context.%s is not a supported value in a property expression; "+
-				"readable fields are %s", field, strings.Join(readableContextFields(), ", "))
+			return nil, fmt.Errorf("context.%s is not readable in %s properties%s; readable fields are %s",
+				field, schema.Surface, schema.why(field), strings.Join(schema.readable(), ", "))
 		}
 
 		switch kind {
@@ -170,7 +256,7 @@ func sentinelContext(refs []Reference) (map[string]interface{}, error) {
 // A referenced key that is absent is left absent rather than defaulted. CUE then
 // reports an undefined field - unless the read carries a default, which is the
 // supported way to survive it.
-func contextValues(refs []Reference, values map[string]interface{}) (map[string]interface{}, error) {
+func contextValues(refs []Reference, values map[string]interface{}, schema ContextSchema) (map[string]interface{}, error) {
 	out := map[string]interface{}{}
 
 	for _, ref := range refs {
@@ -178,8 +264,8 @@ func contextValues(refs []Reference, values map[string]interface{}) (map[string]
 			continue
 		}
 		field := ref.Path[0]
-		if _, ok := contextTypes[field]; !ok {
-			return nil, fmt.Errorf("context.%s is not a supported value in a property expression", field)
+		if _, ok := schema.types[field]; !ok {
+			return nil, fmt.Errorf("context.%s is not readable in %s properties", field, schema.Surface)
 		}
 		if value, ok := values[field]; ok {
 			out[field] = value
@@ -188,11 +274,21 @@ func contextValues(refs []Reference, values map[string]interface{}) (map[string]
 	return out, nil
 }
 
-func readableContextFields() []string {
-	out := make([]string, 0, len(contextTypes))
-	for name := range contextTypes {
+// readable lists the fields this surface exposes, for an error message.
+func (c ContextSchema) readable() []string {
+	out := make([]string, 0, len(c.types))
+	for name := range c.types {
 		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
+}
+
+// why appends the recorded reason for an excluded field, so the author is told
+// that it exists and why they cannot have it rather than that it is unknown.
+func (c ContextSchema) why(field string) string {
+	if reason, ok := c.notReadable[field]; ok {
+		return " (" + reason + ")"
+	}
+	return ""
 }

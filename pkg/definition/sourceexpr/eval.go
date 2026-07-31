@@ -32,6 +32,13 @@ import (
 // stays an int. An expression embedded in surrounding text yields a string,
 // because that is what concatenating with text means.
 func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string]interface{}) (interface{}, error) {
+	return EvalIn(raw, resolved, ctx, ComponentContext, SourceIdent, ContextIdent)
+}
+
+// EvalIn is Eval against a named surface, mirroring TypeOfIn so the two halves
+// of the contract cannot be checked against different schemas.
+func EvalIn(raw string, resolved map[string]map[string]interface{}, ctx map[string]interface{},
+	ctxSchema ContextSchema, roots ...string) (interface{}, error) {
 	parsed, err := Parse(raw)
 	if err != nil {
 		return nil, err
@@ -48,7 +55,7 @@ func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string
 	}
 
 	if expr, ok := parsed.SoleExpr(); ok {
-		return evalFragment(expr, resolved, ctx)
+		return evalFragment(expr, resolved, ctx, ctxSchema, roots)
 	}
 
 	out := ""
@@ -57,7 +64,7 @@ func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string
 			out += f.Text
 			continue
 		}
-		value, err := evalFragment(f.Expr, resolved, ctx)
+		value, err := evalFragment(f.Expr, resolved, ctx, ctxSchema, roots)
 		if err != nil {
 			return nil, err
 		}
@@ -70,15 +77,16 @@ func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string
 	return out, nil
 }
 
-func evalFragment(expr string, resolved map[string]map[string]interface{}, ctx map[string]interface{}) (interface{}, error) {
-	if err := Validate(expr); err != nil {
+func evalFragment(expr string, resolved map[string]map[string]interface{}, ctx map[string]interface{},
+	ctxSchema ContextSchema, roots []string) (interface{}, error) {
+	if err := ValidateRoots(expr, roots...); err != nil {
 		return nil, err
 	}
 	refs, err := References(expr)
 	if err != nil {
 		return nil, err
 	}
-	contextFields, err := contextValues(refs, ctx)
+	contextFields, err := contextValues(refs, ctx, ctxSchema)
 	if err != nil {
 		return nil, err
 	}

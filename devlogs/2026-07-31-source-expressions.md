@@ -471,14 +471,33 @@ gets for free, without moving source resolution ahead of the transforms and
 inheriting the question of what happens when a scoped policy rewrites
 `spec.sources[]`.
 
-**Still to do before this is real:** per-surface context tables. The scoped policy
-context is built by hand from Namespace, AppName, CompName, AppRevisionName,
-AppLabels and AppAnnotations, plus `policyName`/`policyType`/`policyRevision*`. It
-does *not* carry cluster, publishVersion or workflowName, which `contextTypes`
-currently declares readable. Typing an expression against fields that surface does
-not have would promise a value the render cannot produce - the same class of bug
-as `clusterVersion.minor`, and the drift test already written for the component
-context is the shape of the fix.
+### Per-surface context schemas
+
+Done. `ContextSchema` names a surface's readable context, and there are two:
+`ComponentContext` and `ScopedPolicyContext`. `TypeOfIn` / `EvalIn` take one, so
+the admission and render halves cannot be checked against different schemas.
+`TypeOf` and `Eval` keep their signatures and default to the component schema.
+
+The scoped schema was **measured, not derived from the constructor** - `NewContext`
+pushes keys whether or not the caller supplied a value, so reading the code would
+have said `cluster` is available when in reality it is `""` forever.
+
+| | Fields |
+|---|---|
+| readable | `appName`, `namespace`, `appRevision`, `appRevisionNum`, `clusterVersion`, `appLabels`, `appAnnotations`, `policyName`, `policyType`, `policyRevision*` |
+| present but always empty | `cluster`, `publishVersion`, `workflowName`, `replicaKey`, `revision` |
+| excluded | `name` - the *application* name here but the *policy* name in a resource-rendering policy; `appSource*` internals; app-wide lists |
+
+The always-empty group is the interesting one. Those keys exist, so a naive schema
+would declare them readable, they would type cleanly at admission, and the author
+would get an empty string at render. `TestScopedPolicyContextMatchesTheRender`
+therefore asserts more than membership: a readable field must be **populated** in a
+real scoped render. Verified non-vacuous - declaring `cluster` readable fails with
+*"declared readable but is empty in a real scoped policy render"*.
+
+`name` is excluded rather than aliased. It means the application on this path and
+the policy on the other, and baking that into expressions would spread the hazard
+KEP-2.16 records. `appName` and `policyName` both say what they are.
 
 ## What the spike does not address
 

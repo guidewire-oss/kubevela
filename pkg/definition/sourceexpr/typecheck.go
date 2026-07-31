@@ -42,7 +42,17 @@ import (
 // This is sound exactly because Validate rejects everything whose result type
 // could depend on a value. Call Validate first.
 func TypeOf(expr string, schemas map[string]string) (cue.Kind, error) {
-	if err := Validate(expr); err != nil {
+	return TypeOfIn(expr, schemas, ComponentContext, SourceIdent, ContextIdent)
+}
+
+// TypeOfIn is TypeOf against a named surface: its context schema, and the roots
+// it permits.
+//
+// Both vary by surface. An Application-scoped policy has a smaller context and
+// cannot read sources at all, so typing an expression there against the component
+// schema would accept fields that surface never receives.
+func TypeOfIn(expr string, schemas map[string]string, ctxSchema ContextSchema, roots ...string) (cue.Kind, error) {
+	if err := ValidateRoots(expr, roots...); err != nil {
 		return cue.BottomKind, err
 	}
 
@@ -56,7 +66,7 @@ func TypeOf(expr string, schemas map[string]string) (cue.Kind, error) {
 	if err != nil {
 		return cue.BottomKind, err
 	}
-	contextFields, err := sentinelContext(refs)
+	contextFields, err := sentinelContext(refs, ctxSchema)
 	if err != nil {
 		return cue.BottomKind, err
 	}

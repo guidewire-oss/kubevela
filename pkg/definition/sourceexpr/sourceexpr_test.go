@@ -404,23 +404,23 @@ func TestContextTypesMatchTheRenderContext(t *testing.T) {
 	for iter.Next() {
 		field := iter.Selector().Unquoted()
 		seen[field] = true
-		_, readable := contextTypes[field]
-		_, excluded := notReadable[field]
+		_, readable := ComponentContext.types[field]
+		_, excluded := ComponentContext.notReadable[field]
 		switch {
 		case readable && excluded:
 			t.Errorf("%q is both readable and excluded; it must be one or the other", field)
 		case !readable && !excluded:
 			t.Errorf("the render context carries %q (%s) but this package neither types it nor "+
-				"explains why it is unavailable - classify it in contextTypes or notReadable",
+				"explains why it is unavailable - classify it in ComponentContext",
 				field, iter.Value().IncompleteKind())
 		}
 	}
 
 	// A type declared for a field the render context does not carry would type
 	// cleanly at admission and fail at render.
-	for field := range contextTypes {
+	for field := range ComponentContext.types {
 		if !seen[field] {
-			t.Errorf("contextTypes declares %q, which the render context does not carry", field)
+			t.Errorf("ComponentContext declares %q, which the render context does not carry", field)
 		}
 	}
 }
@@ -447,12 +447,12 @@ func TestContextTypeOf(t *testing.T) {
 			// not readable by a source is not readable here either.
 			name:    "an unsupported field is rejected",
 			expr:    `context.componentType`,
-			wantErr: "not a supported value",
+			wantErr: "is not readable in component properties",
 		},
 		{
 			name:    "context.output stays unreachable",
 			expr:    `context.output.metadata.name`,
-			wantErr: "not a supported value",
+			wantErr: "is not readable in component properties",
 		},
 		{
 			name:    "an indexed field read without a key",
@@ -1120,7 +1120,7 @@ func TestExpressionCannotEscapeTheWrapper(t *testing.T) {
 		if _, err := TypeOf(expr, schemas); err == nil {
 			t.Errorf("TypeOf accepted an expression that adds a field: %q", expr)
 		}
-		if _, err := evalFragment(expr, values, nil); err == nil {
+		if _, err := evalFragment(expr, values, nil, ComponentContext, []string{SourceIdent, ContextIdent}); err == nil {
 			t.Errorf("evalFragment accepted an expression that adds a field: %q", expr)
 		}
 	}
@@ -1254,5 +1254,119 @@ func TestValidateRootsKeepsTheSandbox(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), `"source"`) {
 		t.Errorf("the message should not offer a root this surface forbids; got: %v", err)
+	}
+}
+
+// scopedPolicyContext mirrors renderPolicyCUETemplate's construction, so the
+// schema is checked against what that render really carries.
+func scopedPolicyContext(t *testing.T) string {
+	t.Helper()
+	pCtx := velaprocess.NewContext(velaprocess.ContextData{
+		Namespace:       "team-a",
+		AppName:         "checkout",
+		CompName:        "checkout",
+		AppRevisionName: "checkout-v3",
+		AppLabels:       map[string]string{"team": "payments"},
+		AppAnnotations:  map[string]string{"note": "x"},
+	})
+	pCtx.PushData(velaprocess.ContextAppComponents, []string{})
+	pCtx.PushData(velaprocess.ContextAppWorkflow, nil)
+	pCtx.PushData(velaprocess.ContextAppPolicies, []string{})
+	pCtx.PushData(velaprocess.ContextPolicyName, "my-policy")
+	pCtx.PushData(velaprocess.ContextPolicyType, "my-type")
+	pCtx.PushData(velaprocess.ContextPolicyRevisionName, "rev-1")
+	pCtx.PushData(velaprocess.ContextPolicyRevision, int64(1))
+	pCtx.PushData(velaprocess.ContextPolicyRevisionHash, "abc")
+
+	base, err := pCtx.BaseContextFile()
+	if err != nil {
+		t.Fatalf("building the scoped policy context: %v", err)
+	}
+	return base
+}
+
+// The same drift guard as the component context, against the surface that
+// actually differs. Its point is that a field a surface never populates must not
+// be declared readable: it would type cleanly at admission and hand the author an
+// empty value at render.
+func TestScopedPolicyContextMatchesTheRender(t *testing.T) {
+	v := cuecontext.New().CompileString(scopedPolicyContext(t))
+	if v.Err() != nil {
+		t.Fatalf("compiling: %v", v.Err())
+	}
+	iter, err := v.LookupPath(cue.ParsePath("context")).Fields(cue.All())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]bool{}
+	for iter.Next() {
+		field := iter.Selector().Unquoted()
+		seen[field] = true
+		_, readable := ScopedPolicyContext.types[field]
+		_, excluded := ScopedPolicyContext.notReadable[field]
+		switch {
+		case readable && excluded:
+			t.Errorf("%q is both readable and excluded", field)
+		case !readable && !excluded:
+			t.Errorf("the scoped policy context carries %q (%s) but ScopedPolicyContext neither "+
+				"types it nor explains why it is unavailable", field, iter.Value().IncompleteKind())
+		}
+
+		// A readable field must actually be populated. An always-empty one would
+		// type at admission and be useless at render.
+		if readable {
+			if s, err := iter.Value().String(); err == nil && s == "" {
+				t.Errorf("%q is declared readable but is empty in a real scoped policy render", field)
+			}
+		}
+	}
+
+	for field := range ScopedPolicyContext.types {
+		if !seen[field] {
+			t.Errorf("ScopedPolicyContext declares %q, which the scoped render does not carry", field)
+		}
+	}
+}
+
+// The subset is the point: fields the component context has, that a scoped
+// policy never receives, must be refused there.
+func TestScopedPolicyContextIsASubset(t *testing.T) {
+	for _, expr := range []string{
+		`context.appName`,
+		`context.namespace`,
+		`context.appLabels["team"]`,
+		`context.policyName`,
+	} {
+		if _, err := TypeOfIn(expr, nil, ScopedPolicyContext, ContextIdent); err != nil {
+			t.Errorf("expected %q to be readable in a scoped policy: %v", expr, err)
+		}
+	}
+
+	for _, tc := range []struct{ expr, why string }{
+		{`context.cluster`, "always empty"},
+		{`context.workflowName`, "always empty"},
+		{`context.publishVersion`, "always empty"},
+		{`context.name`, "ambiguous across the two policy paths"},
+	} {
+		_, err := TypeOfIn(tc.expr, nil, ScopedPolicyContext, ContextIdent)
+		if err == nil {
+			t.Errorf("expected %q to be refused in a scoped policy (%s)", tc.expr, tc.why)
+			continue
+		}
+		if !strings.Contains(err.Error(), "application-scoped policy") {
+			t.Errorf("the error should name the surface; got: %v", err)
+		}
+	}
+
+	// policyName is the scoped context's answer to context.name, and the
+	// component context has no equivalent.
+	if _, err := TypeOfIn(`context.policyName`, nil, ComponentContext, ContextIdent); err == nil {
+		t.Error("policyName must not be readable in a component, where it does not exist")
+	}
+
+	// And sources stay unreadable there regardless of the context schema.
+	if _, err := TypeOfIn(`source.img.image`, nil, ScopedPolicyContext, ContextIdent); err == nil {
+		t.Error("a scoped policy cannot resolve sources and must refuse to read them")
 	}
 }
