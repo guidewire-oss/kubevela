@@ -768,3 +768,148 @@ func TestOnlyTheDefaultShapeOfDisjunctionIsAllowed(t *testing.T) {
 		t.Errorf("the defaulting shape must be accepted: %v", err)
 	}
 }
+
+// ValueType is what admission compares against the parameter. It has to answer
+// for a whole property value, not just one expression - a value may be plain
+// text, one expression, or several interleaved with text.
+func TestValueType(t *testing.T) {
+	schemas := map[string]string{
+		"a": `{x: string, n: int, obj: {k: string}, items: [...string]}`,
+		"b": `{y: string}`,
+	}
+
+	cases := []struct {
+		name    string
+		raw     string
+		want    cue.Kind
+		wantErr string
+	}{
+		{name: "a literal is a string", raw: "nginx:1.25", want: cue.StringKind},
+		{name: "a lone expression keeps its type", raw: `$(source.a.n)`, want: cue.IntKind},
+		{name: "a lone string expression", raw: `$(source.a.x)`, want: cue.StringKind},
+		{
+			// The case that motivated this: two expressions concatenate, so the
+			// value is a string no matter what the parts produce.
+			name: "two expressions concatenate to a string",
+			raw:  `$(source.a.x) $(source.b.y)`,
+			want: cue.StringKind,
+		},
+		{
+			name: "an int among text is still a string",
+			raw:  `port-$(source.a.n)`,
+			want: cue.StringKind,
+		},
+		{
+			// Knowable from the shape alone: an int parameter can be told at
+			// admission that this will never satisfy it.
+			name: "two int expressions still make a string",
+			raw:  `$(source.a.n)$(source.a.n)`,
+			want: cue.StringKind,
+		},
+		{
+			// Previously only caught at render, after admission had passed.
+			name:    "a struct cannot be combined with text",
+			raw:     `$(source.a.obj) suffix`,
+			wantErr: "cannot be combined with text",
+		},
+		{
+			name:    "a list cannot be combined with text",
+			raw:     `items: $(source.a.items)!`,
+			wantErr: "cannot be combined with text",
+		},
+		{
+			// A struct on its own is fine - it is not being concatenated.
+			name: "a struct alone keeps its type",
+			raw:  `$(source.a.obj)`,
+			want: cue.StructKind,
+		},
+		{
+			name:    "an error inside any fragment is reported",
+			raw:     `$(source.a.x) $(source.b.undeclared)`,
+			wantErr: "not declared in the source's schema",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ValueType(tc.raw, schemas)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected an error mentioning %q, got %v (kind %s)", tc.wantErr, err, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
+// Each expression carries its own default; there is no outer one. A default on
+// the whole value could not know which part was absent, and would mask the rest.
+func TestEachExpressionDefaultsIndependently(t *testing.T) {
+	srcs := map[string]map[string]interface{}{
+		"a": {"x": "alpha"},
+		"b": {},
+	}
+
+	// One absent value with no default fails the whole value, even though the
+	// other fragment resolved.
+	if _, err := Eval(`$(source.a.x) $(source.b.y)`, srcs, nil); err == nil {
+		t.Fatal("an absent value without a default must fail the whole property")
+	}
+
+	got, err := Eval(`$(source.a.x) $(*source.b.y | "fallback")`, srcs, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "alpha fallback" {
+		t.Fatalf("expected %q, got %#v", "alpha fallback", got)
+	}
+}
+
+// ValueType and Eval must agree, or admission is checking something the render
+// does not produce.
+func TestValueTypeAgreesWithEval(t *testing.T) {
+	schemas := map[string]string{"a": `{x: string, n: int, ok: bool}`}
+	srcs := map[string]map[string]interface{}{"a": {"x": "alpha", "n": 3, "ok": true}}
+
+	for _, raw := range []string{
+		"literal",
+		`$(source.a.x)`,
+		`$(source.a.n)`,
+		`$(source.a.ok)`,
+		`$(source.a.x) $(source.a.n)`,
+		`prefix-$(source.a.n)`,
+	} {
+		kind, err := ValueType(raw, schemas)
+		if err != nil {
+			t.Fatalf("%s: typing: %v", raw, err)
+		}
+		value, err := Eval(raw, srcs, nil)
+		if err != nil {
+			t.Fatalf("%s: evaluating: %v", raw, err)
+		}
+
+		var actual cue.Kind
+		switch value.(type) {
+		case string:
+			actual = cue.StringKind
+		case bool:
+			actual = cue.BoolKind
+		case int64, int:
+			actual = cue.IntKind
+		case float64:
+			actual = cue.FloatKind
+		default:
+			t.Fatalf("%s: unexpected result type %T", raw, value)
+		}
+		if actual != kind {
+			t.Errorf("%s: admission promised %s, render produced %s (%#v)", raw, kind, actual, value)
+		}
+	}
+}

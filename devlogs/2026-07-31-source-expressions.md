@@ -207,6 +207,49 @@ Because the type is known at admission, an `int` parameter fed a `float`
 expression is refused before the Application is admitted rather than failing at
 render.
 
+## Several expressions in one value
+
+A property value may hold more than one:
+
+```yaml
+endpoint: '$(source.app.name).$(context.namespace).svc'
+```
+
+Each is evaluated independently and the results are concatenated, so the value is
+a **string** regardless of what the parts produce - and that is knowable from the
+shape alone, without evaluating anything. An `int` parameter can therefore be told
+at admission that `'$(a) $(b)'` will never satisfy it.
+
+**Each expression carries its own default.** There is no outer one, and there
+should not be: a default on the whole value could not know which part was absent,
+and would mask the rest.
+
+```yaml
+endpoint: '$(source.app.name) $(*source.b.region | "unknown")'
+```
+
+`ValueType` is what admission compares against the parameter, and it covers the
+whole value rather than one expression:
+
+| Property value | Type |
+|---|---|
+| `nginx:1.25` | `string` — a literal |
+| `$(source.scale.replicas)` | `int` — the expression's own type |
+| `$(a.x) $(b.y)` | `string` — concatenation |
+| `port-$(source.scale.replicas)` | `string` |
+
+It also closes a hole `TypeOf` alone left open. A fragment with no text form - a
+struct or a list - cannot be concatenated, and that was previously only caught at
+render, *after* the Application had been admitted. On its own the same expression
+is fine, because nothing is being concatenated:
+
+```yaml
+config:   '$(source.a.obj)'            # struct, fine
+broken:   '$(source.a.obj) suffix'     # rejected at admission
+```
+
+`TestValueTypeAgreesWithEval` asserts the two stay in step.
+
 ## What the spike does not address
 
 | | |
