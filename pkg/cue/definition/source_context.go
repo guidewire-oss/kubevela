@@ -19,6 +19,7 @@ package definition
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kubevela/workflow/pkg/cue/process"
 
@@ -65,4 +66,68 @@ func sourceContext(ctx process.Context, bindingName string) (string, error) {
 		return "", err
 	}
 	return sourceContextFile(ctx, bindingName, rules.Fields())
+}
+
+// identityContext gathers the values named by the generated keyInputs list.
+//
+// Exactly those, and no more: hashing every label on the object would change the
+// identity whenever GitOps stamped an unrelated annotation, leaving the cache
+// permanently cold. A field that is absent contributes nil and one that is
+// present but empty contributes "", because a template may branch on the
+// difference and the identity has to draw it too.
+func identityContext(ctx process.Context, bindingName string, inputs []string) map[string]interface{} {
+	if len(inputs) == 0 {
+		return nil
+	}
+	out := map[string]interface{}{}
+	for _, in := range inputs {
+		field, index, indexed := splitIndexed(in)
+
+		var value interface{}
+		switch {
+		case field == velaprocess.ContextName:
+			value = bindingName
+		case indexed:
+			value = lookupIndex(ctx.GetData(field), index)
+		default:
+			value = ctx.GetData(field)
+		}
+
+		if indexed {
+			nested, _ := out[field].(map[string]interface{})
+			if nested == nil {
+				nested = map[string]interface{}{}
+				out[field] = nested
+			}
+			nested[index] = value
+			continue
+		}
+		out[field] = value
+	}
+	return out
+}
+
+// splitIndexed parses "appLabels[team]" into its field and index.
+func splitIndexed(input string) (field, index string, indexed bool) {
+	open := strings.Index(input, "[")
+	if open < 0 || !strings.HasSuffix(input, "]") {
+		return input, "", false
+	}
+	return input[:open], input[open+1 : len(input)-1], true
+}
+
+// lookupIndex reads one entry from a context map, returning nil when it is
+// absent - which is distinct from an entry present with an empty value.
+func lookupIndex(container interface{}, index string) interface{} {
+	switch m := container.(type) {
+	case map[string]string:
+		if v, ok := m[index]; ok {
+			return v
+		}
+	case map[string]interface{}:
+		if v, ok := m[index]; ok {
+			return v
+		}
+	}
+	return nil
 }

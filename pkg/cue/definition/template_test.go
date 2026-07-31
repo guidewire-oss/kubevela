@@ -1935,6 +1935,37 @@ parameter: {
 	assert.Equal(t, "nginx:1.25.2", resolved["image"])
 }
 
+// Seeded cache entries have to be created under the identity the resolver will
+// compute, which now covers the template as well as the properties - so both
+// sides use the same text.
+const resolver_stale_cache_use_template = `
+storage: {
+  key: "stale-cache-use"
+  storageTTL: "1ms"
+  onStaleFailure: "use-stale"
+}
+output: {
+  value: parameter.value
+}
+parameter: {
+  value: string
+}
+`
+
+const resolver_stale_cache_fail_template = `
+storage: {
+  key: "stale-cache-fail"
+  storageTTL: "1ms"
+  onStaleFailure: "fail"
+}
+output: {
+  value: parameter.value
+}
+parameter: {
+  value: string
+}
+`
+
 func TestResolveSourceUsesStaleCacheOnRefreshFailure(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -1942,7 +1973,10 @@ func TestResolveSourceUsesStaleCacheOnRefreshFailure(t *testing.T) {
 	// key, so the entry has to be seeded under that identity rather than the
 	// key alone.
 	staleProps := map[string]interface{}{"value": 1}
-	cacheKey, err := cacheIdentity("stale-cache-use", staleProps)
+	cacheKey, err := cacheIdentity("stale-cache-use", identityInputs{
+		Template:   templateFingerprint(resolver_stale_cache_use_template),
+		Properties: staleProps,
+	})
 	require.NoError(t, err)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1963,19 +1997,7 @@ func TestResolveSourceUsesStaleCacheOnRefreshFailure(t *testing.T) {
 	resolver := newSourceResolver(ctx)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
-		"t": `
-storage: {
-  key: "stale-cache-use"
-  storageTTL: "1ms"
-  onStaleFailure: "use-stale"
-}
-output: {
-  value: parameter.value
-}
-parameter: {
-  value: string
-}
-`,
+		"t": resolver_stale_cache_use_template,
 	}
 	// Invalid parameter type triggers refresh compile failure.
 	resolver.sourceProps = map[string]map[string]interface{}{"s": staleProps}
@@ -1996,7 +2018,10 @@ func TestResolveSourceFailsOnStaleRefreshFailureWhenPolicyFail(t *testing.T) {
 	// key, so the entry has to be seeded under that identity rather than the
 	// key alone.
 	staleProps := map[string]interface{}{"value": 1}
-	cacheKey, err := cacheIdentity("stale-cache-fail", staleProps)
+	cacheKey, err := cacheIdentity("stale-cache-fail", identityInputs{
+		Template:   templateFingerprint(resolver_stale_cache_fail_template),
+		Properties: staleProps,
+	})
 	require.NoError(t, err)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2017,19 +2042,7 @@ func TestResolveSourceFailsOnStaleRefreshFailureWhenPolicyFail(t *testing.T) {
 	resolver := newSourceResolver(ctx)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
-		"t": `
-storage: {
-  key: "stale-cache-fail"
-  storageTTL: "1ms"
-  onStaleFailure: "fail"
-}
-output: {
-  value: parameter.value
-}
-parameter: {
-  value: string
-}
-`,
+		"t": resolver_stale_cache_fail_template,
 	}
 	resolver.sourceProps = map[string]map[string]interface{}{"s": staleProps}
 

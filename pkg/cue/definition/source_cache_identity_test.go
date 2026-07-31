@@ -23,79 +23,109 @@ import (
 	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 )
 
-// The generated storage.key covers the context a source reads. Properties are
-// hashed here and appended, so a definition author cannot fail to discriminate on
-// an input that changes the output - the failure that silently serves one binding
-// another's value.
-func TestCacheIdentity(t *testing.T) {
-	cases := []struct {
-		name  string
-		key   string
-		props map[string]interface{}
-		want  string // "" means: assert only via the relations below
-	}{
-		{
-			name:  "no properties leaves the key alone",
-			key:   "cluster-lookup-prod",
-			props: nil,
-			want:  "cluster-lookup-prod",
-		},
-		{
-			name:  "an empty map is the same as none",
-			key:   "cluster-lookup-prod",
-			props: map[string]interface{}{},
-			want:  "cluster-lookup-prod",
-		},
-	}
+func inputs(template string, props, ctx map[string]interface{}) identityInputs {
+	return identityInputs{Template: template, Properties: props, Context: ctx}
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := cacheIdentity(tc.key, tc.props)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tc.want {
-				t.Fatalf("expected %q, got %q", tc.want, got)
-			}
-		})
+// The readable prefix is cosmetic; the hash carries uniqueness. So the hash is
+// always present, even for a source that reads nothing and takes no properties -
+// the definition's own template is always a contributor.
+func TestCacheIdentityAlwaysHashes(t *testing.T) {
+	got, err := cacheIdentity("cluster-lookup-prod", inputs("t1", nil, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got, "cluster-lookup-prod-") {
+		t.Fatalf("the readable prefix must lead: got %q", got)
+	}
+	if got == "cluster-lookup-prod" {
+		t.Fatal("the hash must always be appended, or uniqueness has nowhere to live")
+	}
+	if err := cachekey.ValidateCacheKey(got); err != nil {
+		t.Fatalf("the identity must be a legal object name: %v", err)
 	}
 }
 
-func TestCacheIdentityDiscriminatesOnProperties(t *testing.T) {
-	const key = "image-source"
-
-	a, err := cacheIdentity(key, map[string]interface{}{"image": "nginx:1.25.0"})
+// The case that drove this design: a template may branch on whether a label is
+// set, so absent, present-but-empty and set-to-a-value are three different
+// inputs and must be three different identities.
+func TestCacheIdentityDistinguishesAbsentFromEmpty(t *testing.T) {
+	absent, err := cacheIdentity("svc", inputs("t1", nil, map[string]interface{}{
+		"appLabels": map[string]interface{}{"team": nil},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := cacheIdentity(key, map[string]interface{}{"image": "nginx:1.25.1"})
+	empty, err := cacheIdentity("svc", inputs("t1", nil, map[string]interface{}{
+		"appLabels": map[string]interface{}{"team": ""},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := cacheIdentity("svc", inputs("t1", nil, map[string]interface{}{
+		"appLabels": map[string]interface{}{"team": "platform"},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if a == b {
-		t.Fatal("two bindings with different properties must not share a cache entry")
+	if absent == empty {
+		t.Error("an absent label and an empty one produce different output; they must not share an entry")
 	}
-	if !strings.HasPrefix(a, key+"-") {
-		t.Fatalf("the readable key must lead: got %q", a)
+	if empty == set {
+		t.Error("an empty label and a set one must not share an entry")
 	}
-	if err := cachekey.ValidateCacheKey(a); err != nil {
-		t.Fatalf("the assembled identity must be a legal object name: %v", err)
+	if absent == set {
+		t.Error("an absent label and a set one must not share an entry")
+	}
+}
+
+// A property and a context value of the same name must not be confusable, which
+// is why the hash covers a structured document rather than concatenated text.
+func TestCacheIdentityKeepsPropertiesAndContextApart(t *testing.T) {
+	asProperty, err := cacheIdentity("svc", inputs("t1", map[string]interface{}{"team": "platform"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asContext, err := cacheIdentity("svc", inputs("t1", nil, map[string]interface{}{"team": "platform"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asProperty == asContext {
+		t.Fatal("a property named like a context field must not collide with it")
+	}
+}
+
+// Editing a definition - its schema or its fetch logic - must orphan the entries
+// resolved by the previous version, since cached values are served without
+// re-validation. That is finding #11, closed by the template being an input.
+func TestCacheIdentityChangesWithTheTemplate(t *testing.T) {
+	before, err := cacheIdentity("svc", inputs("t1", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := cacheIdentity("svc", inputs("t2", nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("a changed template must produce a different identity")
 	}
 }
 
 func TestCacheIdentityIsStable(t *testing.T) {
 	// Map iteration order must not leak into the hash, or the same binding would
 	// address a different entry on each reconcile.
-	props := map[string]interface{}{
-		"zebra": "z", "alpha": "a", "middle": 3, "nested": map[string]interface{}{"b": 2, "a": 1},
-	}
-	first, err := cacheIdentity("k", props)
+	in := inputs("t1",
+		map[string]interface{}{"zebra": "z", "alpha": "a", "middle": 3},
+		map[string]interface{}{"appLabels": map[string]interface{}{"b": 2, "a": 1}, "cluster": "prod"},
+	)
+	first, err := cacheIdentity("svc", in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 50; i++ {
-		again, err := cacheIdentity("k", props)
+		again, err := cacheIdentity("svc", in)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,29 +135,30 @@ func TestCacheIdentityIsStable(t *testing.T) {
 	}
 }
 
-func TestCacheIdentityOverflow(t *testing.T) {
-	// The generated key is static text, so its resolved length is only knowable
-	// here. An over-long identity is hashed rather than truncated: truncation
-	// would let two distinct keys collide.
-	long := strings.Repeat("a", cachekey.MaxCacheKeyLen)
+// Uniqueness lives in the hash, so an over-long identity trims the cosmetic
+// prefix and keeps the hash intact. Re-hashing the whole thing would discard
+// readability exactly when the name is longest.
+func TestCacheIdentityTruncatesThePrefixNotTheHash(t *testing.T) {
+	long := strings.Repeat("a", cachekey.MaxCacheKeyLen+50)
 
-	got, err := cacheIdentity(long, map[string]interface{}{"x": "y"})
+	got, err := cacheIdentity(long, inputs("t1", map[string]interface{}{"x": "y"}, nil))
 	if err != nil {
-		t.Fatalf("an over-long key must be reduced, not rejected: %v", err)
+		t.Fatalf("an over-long prefix must be trimmed, not rejected: %v", err)
 	}
 	if len(got) > cachekey.MaxCacheKeyLen {
 		t.Fatalf("identity is %d characters, over the %d limit", len(got), cachekey.MaxCacheKeyLen)
 	}
 	if err := cachekey.ValidateCacheKey(got); err != nil {
-		t.Fatalf("the reduced identity must still be legal: %v", err)
+		t.Fatalf("the trimmed identity must still be legal: %v", err)
 	}
 
-	// Distinct over-long inputs must stay distinct.
-	other, err := cacheIdentity(long, map[string]interface{}{"x": "z"})
+	// The hash survives intact, so two over-long prefixes with different inputs
+	// stay distinct even though their visible parts are identical.
+	other, err := cacheIdentity(long, inputs("t1", map[string]interface{}{"x": "z"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got == other {
-		t.Fatal("reducing an over-long identity must not collapse distinct inputs")
+		t.Fatal("trimming must not collapse distinct inputs")
 	}
 }

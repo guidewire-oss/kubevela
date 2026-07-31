@@ -89,7 +89,11 @@ const (
 )
 
 type sourceCachePolicy struct {
-	Key            string
+	Key string
+	// KeyInputs names the values folded into the identity hash, as generated
+	// alongside the key. Recorded rather than re-derived, so inference stays a
+	// build-time concern.
+	KeyInputs      []string
 	TTL            time.Duration
 	OnStaleFailure string
 }
@@ -927,11 +931,14 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 		return nil, err
 	}
-	// storage.key covers the context this source reads; the properties it was
-	// bound with are hashed in here. Without that, two bindings differing only in
-	// their properties would address the same entry and the second would receive
-	// the first's value.
-	cachePolicy.Key, err = cacheIdentity(cachePolicy.Key, resolvedProps)
+	// storage.key is the readable prefix; uniqueness comes from the hash below,
+	// which covers the definition's template, the binding's properties, and
+	// exactly the context values the template reads.
+	cachePolicy.Key, err = cacheIdentity(cachePolicy.Key, identityInputs{
+		Template:   templateFingerprint(sourceTemplate),
+		Properties: resolvedProps,
+		Context:    identityContext(r.ctx, sourceName, cachePolicy.KeyInputs),
+	})
 	if err != nil {
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 		return nil, err
@@ -1048,6 +1055,11 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 		return policy, errors.WithMessagef(err, "source %q", sourceName)
 	}
 	policy.Key = cacheKey
+
+	var keyInputs []string
+	if err := storage.LookupPath(value.FieldPath(cachekey.KeyInputsField)).Decode(&keyInputs); err == nil {
+		policy.KeyInputs = keyInputs
+	}
 
 	ttlRaw := ""
 	if err := storage.LookupPath(value.FieldPath("storageTTL")).Decode(&ttlRaw); err == nil && ttlRaw != "" {

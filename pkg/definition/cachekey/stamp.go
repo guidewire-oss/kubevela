@@ -30,6 +30,12 @@ import (
 // changing inference never invalidates a definition already generated.
 const RulesAnnotation = "definition.oam.dev/cache-key-rules"
 
+// KeyInputsField is the generated sibling of storage.key: the values the resolver
+// folds into the identity hash. It is recorded rather than re-derived so that
+// inference stays a build-time concern, and so the resolver hashes exactly what
+// the template reads rather than, say, every label on the object.
+const KeyInputsField = "keyInputs"
+
 // RulesVersionAnnotation records the readable name of the same policy. The hash
 // above is what validation looks up; this is for whoever is reading the object
 // and wants to know which policy applied without computing anything.
@@ -76,6 +82,7 @@ func Stamp(definitionName, template string) (string, *Rules, error) {
 			existing, expr)
 	}
 	setStorageKey(file, expr)
+	setKeyInputs(file, KeyInputs(dims))
 
 	out, err := cueformat.Node(file)
 	if err != nil {
@@ -155,6 +162,42 @@ func existingStorageKey(file *ast.File) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// setKeyInputs records the values the identity hash covers, replacing any list
+// already present so regeneration stays idempotent.
+func setKeyInputs(file *ast.File, inputs []string) {
+	elts := make([]ast.Expr, 0, len(inputs))
+	for _, in := range inputs {
+		elts = append(elts, ast.NewString(in))
+	}
+	value := ast.NewList(elts...)
+
+	for _, decl := range file.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
+		}
+		if name, _, err := ast.LabelName(field.Label); err != nil || name != storageField {
+			continue
+		}
+		st, ok := field.Value.(*ast.StructLit)
+		if !ok {
+			continue
+		}
+		for _, elt := range st.Elts {
+			f, ok := elt.(*ast.Field)
+			if !ok {
+				continue
+			}
+			if name, _, err := ast.LabelName(f.Label); err == nil && name == KeyInputsField {
+				f.Value = value
+				return
+			}
+		}
+		st.Elts = append(st.Elts, &ast.Field{Label: ast.NewIdent(KeyInputsField), Value: value})
+		return
+	}
 }
 
 func newKeyField(value ast.Expr) *ast.Field {

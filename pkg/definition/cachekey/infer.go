@@ -34,6 +34,11 @@ const (
 	keyField     = "key"
 )
 
+// generatedStorageFields are written by Stamp, so they are not part of the
+// resolution logic and must not be scanned - a regenerated key would otherwise
+// depend on the previous one.
+var generatedStorageFields = map[string]bool{keyField: true, KeyInputsField: true}
+
 // Dimension is one context value a cache key is built from.
 type Dimension struct {
 	// Field is the context field, e.g. "cluster".
@@ -184,7 +189,7 @@ func stripGeneratedKey(file *ast.File) {
 		kept := make([]ast.Decl, 0, len(st.Elts))
 		for _, elt := range st.Elts {
 			if f, ok := elt.(*ast.Field); ok {
-				if name, _, err := ast.LabelName(f.Label); err == nil && name == keyField {
+				if name, _, err := ast.LabelName(f.Label); err == nil && generatedStorageFields[name] {
 					continue
 				}
 			}

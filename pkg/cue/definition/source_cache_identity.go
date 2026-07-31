@@ -17,67 +17,81 @@ limitations under the License.
 package definition
 
 import (
-	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
-
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 )
 
-// propertiesHashLen is long enough that two property sets colliding is not a
-// practical concern, and short enough to leave the readable part of a key visible.
-const propertiesHashLen = 8
+// identityHashLen is long enough that a collision is not a practical concern, and
+// short enough to leave the readable prefix visible.
+const identityHashLen = 8
 
-// cacheIdentity assembles the name of the backing Config object from a source's
-// resolved storage.key and its properties.
+// identityInputs is everything a cache entry's identity depends on.
 //
-// storage.key is generated from the context the template reads, and covers only
-// that. Properties are appended as a hash here rather than being written into the
-// key, for two reasons: a property may contain characters that are illegal in an
-// object name - an image reference or an entity ref, say - and hashing removes any
-// chance of a definition failing to discriminate on an input that changes its
-// output.
-//
-// The readable portion leads, so `vela config list | grep <definition>` still
-// finds what an operator is looking for.
-func cacheIdentity(key string, props map[string]interface{}) (string, error) {
-	identity := key
-	if len(props) > 0 {
-		sum, err := hashProperties(props)
-		if err != nil {
-			return "", err
-		}
-		identity = key + "-" + sum
-	}
-
-	// The generated key is static text, so how long it resolves to is only known
-	// now. Reduce rather than reject: an over-long key is an accident of the
-	// values, not an authoring error the user can act on. Hash the whole thing
-	// rather than truncating, because truncation lets distinct keys collide.
-	if len(identity) > cachekey.MaxCacheKeyLen {
-		sum := sha256.Sum256([]byte(identity))
-		full := hex.EncodeToString(sum[:])
-		// Keep a readable prefix where there is room for one.
-		prefixLen := cachekey.MaxCacheKeyLen - len(full) - 1
-		if prefixLen > 0 && prefixLen <= len(identity) {
-			return identity[:prefixLen] + "-" + full, nil
-		}
-		return full, nil
-	}
-	return identity, nil
+// It is hashed as a structured document rather than concatenated text, so a
+// property cannot be confused with a context field of the same name.
+type identityInputs struct {
+	// Template fingerprints the definition that produced the value. Cached values
+	// are served without re-validation, so a definition whose schema or fetch
+	// logic changed must not keep addressing entries resolved by the old one.
+	Template string `json:"template"`
+	// Properties are the binding's inputs.
+	Properties map[string]interface{} `json:"properties,omitempty"`
+	// Context holds the values the template reads: nil for a field that is absent,
+	// "" for one that is present and empty. A template may branch on the
+	// difference, so the identity has to draw it too.
+	Context map[string]interface{} `json:"context,omitempty"`
 }
 
-// hashProperties fingerprints resolved source properties.
+// cacheIdentity assembles the name of the backing Config object.
 //
-// json.Marshal sorts map keys, so the result does not depend on Go's map
-// iteration order - without that, the same binding would address a different
-// entry on each reconcile.
-func hashProperties(props map[string]interface{}) (string, error) {
-	raw, err := json.Marshal(props)
+// The prefix is cosmetic - it exists so an operator can grep - and the hash
+// carries uniqueness on its own. That split is what lets a value be left out of
+// the prefix without consequence: two identities differing only in an omitted
+// segment still differ in the hash. It is also why nothing here needs a sentinel
+// for an absent or empty value, or a character rule for a value that cannot be
+// rendered into a name.
+func cacheIdentity(prefix string, in identityInputs) (string, error) {
+	raw, err := json.Marshal(in)
 	if err != nil {
-		return "", fmt.Errorf("hashing source properties: %w", err)
+		return "", fmt.Errorf("hashing cache identity inputs: %w", err)
 	}
 	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])[:propertiesHashLen], nil
+	hash := hex.EncodeToString(sum[:])[:identityHashLen]
+
+	identity := prefix + "-" + hash
+	if len(identity) <= cachekey.MaxCacheKeyLen {
+		return identity, nil
+	}
+
+	// Trim the prefix, never the hash: uniqueness lives in the hash, so a shorter
+	// prefix cannot cause a collision, whereas re-hashing the whole name would
+	// throw away readability exactly when it is longest.
+	room := cachekey.MaxCacheKeyLen - len(hash) - 1
+	if room < 1 {
+		return hash, nil
+	}
+	return trimTrailingSeparator(prefix[:room]) + "-" + hash, nil
+}
+
+// trimTrailingSeparator avoids a doubled separator where the cut lands on one.
+func trimTrailingSeparator(s string) string {
+	for len(s) > 0 && s[len(s)-1] == '-' {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// templateFingerprint identifies the definition a value was resolved by.
+//
+// Cached values are served without re-validation, so a definition whose schema or
+// fetch logic has changed must stop addressing the entries its previous version
+// produced - otherwise a changed URL with an unchanged output shape keeps serving
+// data fetched by the old logic.
+func templateFingerprint(template string) string {
+	sum := sha256.Sum256([]byte(template))
+	return hex.EncodeToString(sum[:])[:identityHashLen]
 }
