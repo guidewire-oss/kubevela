@@ -48,6 +48,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils"
@@ -370,6 +371,19 @@ func (def *Definition) FromCUE(val *cue.Value, templateString string) error {
 			}
 		}
 	}
+	// A SourceDefinition's cache key is generated, not authored: infer it from the
+	// context the template reads and write it into storage.key, recording which
+	// rules were used so the same ones validate it later. Doing this here rather
+	// than in a command covers every path that builds a definition from CUE.
+	if def.GetType() == sourceDefType {
+		stamped, rulesHash, err := cachekey.Stamp(def.GetName(), templateString)
+		if err != nil {
+			return fmt.Errorf("deriving the cache key for SourceDefinition %s: %w", def.GetName(), err)
+		}
+		templateString = stamped
+		annotations[cachekey.RulesAnnotation] = rulesHash
+	}
+
 	def.SetAnnotations(annotations)
 	def.SetLabels(labels)
 	if err := unstructured.SetNestedField(spec, templateString, DefinitionTemplateKeys[1:]...); err != nil {
