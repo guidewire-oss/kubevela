@@ -1,0 +1,133 @@
+# DevLog: KEP-2.16 review, fixes, and the cache-key redesign
+
+Date: 2026-07-31
+Branch: `feature/source-definitions`
+Backup of discarded work: `wip/source-cache-exploration`
+
+## STATUS (read this first)
+
+Seven commits on top of `6223cd007`, **all unit-green and the source e2e suite green
+against a live k3d cluster** (9 of 9 specs, first time this branch has been
+cluster-verified at all).
+
+```
+663143a79 fix(webhook): point mutating webhooks at the host when debugging locally
+019baf187 fix(webhook): register the SourceDefinition webhook for local debugging
+1e1b432ab fix(source): reject fromSource on unresolvable surfaces at render time too
+5cc3ba7ec feat(source): restrict where a source may be consumed, and reject unsupported surfaces
+7f3e1632c docs(kep): reconcile KEP-2.16 with shipped behaviour
+cdb47eb20 fix(source): honour +sensitive markers declared in the schema block
+36ff4886b fix(source): require a storage key and stop resolving providers to compute it
+```
+
+**Next up: the cache key is being redesigned** (see "Where the design landed"). The code
+still implements author-written `storage.key`; the agreed design infers the key from the
+template. Nothing is implemented yet - deliberately, so it lands once.
+
+## Review findings
+
+Reviewed the branch against KEP-2.16. Ordered by severity as found.
+
+| # | Finding | State |
+|---|---|---|
+| 1 | Cache-key computation could not fail: `resolveCachePolicy` returned no error, so a `storage:` block that failed to evaluate was logged at warning level and replaced with a synthesised `source-cache-<hash>` key. Resolution then proceeded, so the "self-enforcing labelling convention" the KEP describes was not enforced, and Applications that should share an entry silently got separate ones. | fixed `36ff4886b` |
+| 2 | No validation of the resolved key against `[a-z0-9-]` or the 253-char limit, though the KEP specifies both. | fixed `36ff4886b` |
+| 3 | A `schema:`-less SourceDefinition bypassed **both** enforcement layers - admission skipped path validation, the resolver skipped output validation - voiding two stated security properties. | fixed `36ff4886b` |
+| 4 | `storageTTL` and `onStaleFailure` fell back silently on bad input. A mistyped `"Fail"` downgraded a source that asked to fail into one serving stale data. | fixed `36ff4886b` |
+| 5 | **Computing the cache key ran the definition's provider functions.** `CompileString` defaults `ResolveProviderFunctions: true`, so every reconcile performed the source's HTTP calls and cluster reads *before* the cache was consulted - a hit did the I/O and discarded the result, a miss did it twice. The cache prevented no I/O at all. | fixed `36ff4886b` |
+| 6 | Concreteness was narrower than the KEP claimed (output-vs-schema, not the whole template block). | KEP corrected `7f3e1632c` |
+| 7 | ConfigTemplate naming is `{name}-{schema-hash}`, not the KEP's `{name}-v{N}`; every operator command in the doc was wrong. | KEP corrected `7f3e1632c` |
+| 8 | Source-change re-dispatch (`autoUpdateSources`, per-source hashing) was undocumented, and the KEP said the opposite - that nothing refreshes proactively. | KEP documented `7f3e1632c` |
+| 9 | `// +sensitive` was read from `output:` only, but the KEP documents it as a `schema:` marker and its own example puts it there. A definition written to the KEP redacted **nothing**, silently. | fixed `cdb47eb20` |
+| 10 | Admission validated `fromSource` in policy and workflow-step properties, but nothing resolves it there - the consumer received the literal `{"fromSource": ...}` map. | fixed `5cc3ba7ec`, `1e1b432ab` |
+| 11 | Cache reads do not check the entry against the schema it was written under, and cached values skip re-validation - so a schema change with a stable key serves values of the old shape. | **open**, addressed by the new key design |
+
+## Where the design landed
+
+The cache key went through three shapes this session. The first two are on
+`wip/source-cache-exploration` and were deliberately discarded.
+
+1. **Author-written `storage.key`** (what shipped). Made authors responsible for
+   character legality, successful interpolation, and discriminating on every parameter
+   that affects output - with no signal when the last one was missed.
+2. **Declared `cacheScope` + `additionalKeys`.** Better, but still asked the author to
+   state a cardinality that the template already implies, and the "key must cover what
+   the resolution reads" rule had to be *validated* rather than being true.
+3. **Inferred from the template** (agreed). Parse the CUE, see which `context` fields the
+   resolution reads, key on exactly those. Nothing to declare, so nothing to get wrong,
+   and the invariant holds by construction.
+
+Two reasoning errors along the way, both worth remembering because they had the same
+shape - assuming a sharing set rather than deriving it:
+
+- "Only component-level context can differ between consumers" was derived from consumers
+  of one *binding*, where cluster and app are constant. But the sharing set is whatever
+  the scope declares, so under a global scope a template reading `context.cluster` serves
+  one cluster's data to another. The rule generalised to "any context not constant within
+  the sharing boundary".
+- Component scope was argued for, then out. Bindings live in `spec.sources[]`, so every
+  consumer of one receives identical properties; only context can vary per consumer.
+
+**Decision: keep the available context minimal.** No `consumerName`, `consumerType`,
+`stepName`, or component `revision`. That buys a strong structural invariant - *a
+source's output depends only on Application context and its properties, never on which
+component consumed it* - and it is the reversible direction, since adding context fields
+later is additive.
+
+Consequences accepted: `deployment-namer` must move its per-component name composition
+into a ComponentDefinition, and per-service lookups need one binding per service rather
+than reading `context.name`.
+
+### Still to settle before implementing
+
+- Ordering table for key segments (broad -> narrow), and a test asserting every
+  `keyword.go` context field is classified: keyed, not-key-relevant, or forbidden in a
+  source template.
+- Whether the trailing hash covers the whole template or just `schema:`. Hashing the
+  whole template closes #11 for logic changes as well as shape changes.
+- Overflow rule when the assembled key would exceed 253 characters.
+- Whether the context exposed to a source template is *restricted* to what the key covers
+  (making misuse impossible rather than merely detected). Needs a prototype: the resolver
+  currently reuses the component's process context.
+
+## Branch hygiene
+
+Three KEP commits specifying `cacheScope`/`additionalKeys` were dropped once inference
+superseded them, and `zz_realdefs_test.go` - a throwaway harness swept in by `git add -A` -
+was removed from the commit that introduced it. The branch was replayed from
+`6223cd007`; everything discarded is on `wip/source-cache-exploration`.
+
+## Environment findings
+
+These cost real time; all are now in the workspace `claude.md`.
+
+- **A missing kubeconfig makes tests and `make manifests` fail silently.**
+  `singleton.KubeClient` -> controller-runtime `GetConfigOrDie()` -> `os.Exit(1)`, and
+  controller-runtime's logger discards output until `SetLogger` is called. Symptom: a
+  package `FAIL` with no `--- FAIL:` line, or `make manifests` exiting 1 with no message.
+  Any parseable kubeconfig works, even one pointing at a dead port. This misled the
+  review into reporting a regression that did not exist.
+- **`make manifests` deletes before it regenerates.** A failure part-way leaves 92
+  `defwithtemplate` YAMLs deleted. `git checkout --` restores them. There is no
+  `generate` target, only `manifests`.
+- **A webhook path is written in three places** - the Go registration, the chart, and
+  `hack/debug-webhook-setup.sh`. The SourceDefinition entry was missing from the last, so
+  local runs exercised none of its checks while its unit tests passed.
+  `pkg/webhook/core.oam.dev/register_paths_test.go` now compares all three.
+- **The debug script wrote no mutating configuration at all**, so with `vela-core` scaled
+  to zero every Application and ComponentDefinition apply failed with "no endpoints
+  available" - which reads as a broken cluster. Fixed in `663143a79`.
+- **`go test` without `-v` prints `ok` and nothing else**, so "9 specs passed" and "0
+  specs ran" are indistinguishable. Always check the `Ran N of M` line.
+- The controller's default metrics port (8080) is commonly taken (Docker Desktop);
+  `_scripts/e2e-setup.sh` defaults to 8090 and preflights both ports.
+
+## E2E
+
+`_scripts/e2e-setup.sh` (workspace) prepares the environment; `/e2e-setup` is the skill.
+Verified live beyond the suite: a SourceDefinition with no `storage.key`, no `schema:`,
+or an illegal key is rejected with a readable message; a valid one is accepted; all four
+in-repo demo SourceDefinitions apply.
+
+The **full** suite has still not been run - the focus covered 9 of 183 specs, and the
+remaining 174 have no known baseline on this branch.
