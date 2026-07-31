@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"cuelang.org/go/cue"
+
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 )
 
 var demoSchemas = map[string]string{
@@ -138,9 +140,9 @@ func TestValidate(t *testing.T) {
 		{`[if source["my-source"].count > 5 {"big"}, "small"][0]`, "indexing"},
 		{`source["my-source"].region | "default"`, "disjunction"},
 		{`source["my-source"].count > 5`, "comparison"},
-		// Sandbox: an expression reaches `source` and nothing else.
-		{`context.cluster`, "unknown identifier"},
+		// Sandbox: an expression reaches `source` and `context`, nothing else.
 		{`parameter.image`, "unknown identifier"},
+		{`strings.ToUpper("x")`, "unknown identifier"},
 	}
 	for _, tc := range reject {
 		err := Validate(tc.expr)
@@ -158,7 +160,7 @@ func TestReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"my-source.region", "other.name"}
+	want := []string{"source.my-source.region", "source.other.name"}
 	if len(refs) != len(want) {
 		t.Fatalf("expected %v, got %v", want, refs)
 	}
@@ -266,7 +268,7 @@ func TestEval(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Eval(tc.raw, resolved)
+			got, err := Eval(tc.raw, resolved, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -296,7 +298,7 @@ func TestTypeOfAgreesWithEval(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: typing: %v", expr, err)
 		}
-		value, err := Eval("$("+expr+")", resolved)
+		value, err := Eval("$("+expr+")", resolved, nil)
 		if err != nil {
 			t.Fatalf("%s: evaluating: %v", expr, err)
 		}
@@ -365,5 +367,138 @@ func TestSubtractionIsStillAllowed(t *testing.T) {
 	}
 	if kind != cue.IntKind {
 		t.Fatalf("expected int, got %s", kind)
+	}
+}
+
+// Membership of the readable context set comes from the cache-key rules, so the
+// two cannot drift into disagreeing about what a consumer may read. Only the
+// types are declared locally.
+func TestContextTypesMatchTheKeyRules(t *testing.T) {
+	rules, err := cachekey.LoadRules()
+	if err != nil {
+		t.Fatalf("loading rules: %v", err)
+	}
+
+	fromRules := map[string]bool{}
+	for _, f := range rules.Fields() {
+		fromRules[f] = true
+	}
+	for field := range contextTypes {
+		if !fromRules[field] {
+			t.Errorf("contextTypes declares %q, which the cache-key rules do not permit", field)
+		}
+	}
+	for field := range fromRules {
+		if _, ok := contextTypes[field]; !ok {
+			t.Errorf("the cache-key rules permit %q but contextTypes gives it no type", field)
+		}
+	}
+}
+
+func TestContextTypeOf(t *testing.T) {
+	cases := []struct {
+		name    string
+		expr    string
+		want    cue.Kind
+		wantErr string
+	}{
+		{name: "a plain field", expr: `context.cluster`, want: cue.StringKind},
+		{name: "an indexed label", expr: `context.appLabels["cluster-name"]`, want: cue.StringKind},
+		{name: "a label with a dotted key", expr: `context.appLabels["example.org/team"]`, want: cue.StringKind},
+		{name: "combined with a literal", expr: `context.appLabels["cluster-name"] + "-suffix"`, want: cue.StringKind},
+		{name: "combined with a source", expr: `context.cluster + "/" + source["other"].name`, want: cue.StringKind},
+		{name: "a nested struct field", expr: `context.clusterVersion.minor`, want: cue.StringKind},
+		{name: "a numeric field", expr: `context.appRevisionNum * 2`, want: cue.IntKind},
+		{
+			// The same curated set the cache-key rules define, so a field that is
+			// not readable by a source is not readable here either.
+			name:    "an unsupported field is rejected",
+			expr:    `context.componentType`,
+			wantErr: "not a supported value",
+		},
+		{
+			name:    "context.output stays unreachable",
+			expr:    `context.output.metadata.name`,
+			wantErr: "not a supported value",
+		},
+		{
+			name:    "an indexed field read without a key",
+			expr:    `context.appLabels`,
+			wantErr: "must be read with a key",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := TypeOf(tc.expr, demoSchemas)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected an error mentioning %q, got %v (kind %s)", tc.wantErr, err, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected kind %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestContextEval(t *testing.T) {
+	ctx := map[string]interface{}{
+		"cluster":   "prod",
+		"namespace": "team-a",
+		"appLabels": map[string]interface{}{"cluster-name": "eu-west-1"},
+	}
+	resolved := map[string]map[string]interface{}{
+		"other": {"name": "checkout"},
+	}
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want interface{}
+	}{
+		{name: "the motivating case", raw: `$(context.appLabels["cluster-name"])`, want: "eu-west-1"},
+		{name: "combined with a literal", raw: `$(context.appLabels["cluster-name"] + "-cluster")`, want: "eu-west-1-cluster"},
+		{name: "combined with a source", raw: `$(context.cluster + "/" + source["other"].name)`, want: "prod/checkout"},
+		{name: "embedded in text", raw: `https://$(context.namespace).svc`, want: "https://team-a.svc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Eval(tc.raw, resolved, ctx)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %#v, got %#v", tc.want, got)
+			}
+		})
+	}
+}
+
+// The main ergonomic gap, recorded as a test so it is not forgotten.
+//
+// Admission cannot know whether a label exists, so an absent one can only fail
+// at render. Defaulting it needs a syntax this spike does not have: conditionals
+// are barred by the grammar gate, and CUE's `|` is a disjunction rather than a
+// fallback - `x | "default"` yields "default" even when x is present.
+func TestAbsentLabelFailsAtRenderNotAdmission(t *testing.T) {
+	expr := `context.appLabels["missing"]`
+
+	if _, err := TypeOf(expr, demoSchemas); err != nil {
+		t.Fatalf("admission cannot know the label is absent and must accept: %v", err)
+	}
+
+	_, err := Eval("$("+expr+")", nil, map[string]interface{}{
+		"appLabels": map[string]interface{}{"present": "yes"},
+	})
+	if err == nil {
+		t.Fatal("an absent label must fail rather than resolve to an empty string")
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Errorf("the error should name the label that is absent; got: %v", err)
 	}
 }

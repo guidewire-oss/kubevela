@@ -85,11 +85,66 @@ instead. Ordinary subtraction (`count - 1`) is unaffected.
 Given how many KubeVela names are hyphenated, this is an argument for making the
 bracket form the documented one rather than an escape hatch.
 
+## Folding in `context`
+
+`$(context.appLabels["cluster-name"])` now works alongside `source`.
+
+**This was an explicit KEP Non-Goal**, and the rationale deserves stating before
+it is overridden:
+
+> `fromContext`: OAM context fields needed in properties should be exposed via a
+> `SourceDefinition` authored by the platform engineer, keeping the resolution
+> model consistent
+
+Two things weaken it. The consistency argument is already spent once expressions
+exist in properties at all - that ship sails with `source`. And the cost of the
+alternative is steep: surfacing `context.appLabels["cluster-name"]` through a
+SourceDefinition means a definition, a ConfigTemplate, a cache entry and an
+admission path, to relay a value that is already sitting in the render context.
+
+There is also a structural reason context is *safer* here than in a
+SourceDefinition. A source's context reads are restricted because they determine
+cache identity - reading an unkeyed value would silently break sharing. A property
+expression feeds no cache and is evaluated per render, so that constraint does not
+apply at all.
+
+**Membership comes from the cache-key rules.** `contextTypes` declares each field's
+type, and `TestContextTypesMatchTheKeyRules` asserts its keys match
+`cachekey.Rules.Fields()` exactly, so the two cannot drift on *what* is readable.
+That keeps one curated set, one error message, and keeps `context.output` and
+`context.status` unreachable by construction.
+
+### Two more CUE mechanics that did not work
+
+**A pattern constraint cannot type an open map.** The obvious way to allow any
+label key is `appLabels: [string]: "x"`, but `context.appLabels["anything"]` still
+reports `undefined field: anything`. So the sentinel scope materialises exactly the
+keys the expression references - which `References()` already knows. That is why
+`References` had to be fixed to record the *maximal* chain: it was logging
+`context.appLabels` and dropping the index.
+
+**`|` is not a fallback.** `context.appLabels["a"] | "default"` yields `"default"`
+even when `a` is present - it is a disjunction, not a default operator. So the
+"allow same-type disjunctions for defaulting" idea is dead.
+
+### The open ergonomic gap
+
+Admission cannot know whether a label exists, so an absent one fails at render.
+There is currently **no way to default it**: conditionals are barred by the grammar
+gate (they would make typing unsound), and `|` does not mean what it looks like.
+
+`TestAbsentLabelFailsAtRenderNotAdmission` pins the behaviour so it is not
+forgotten. Failing is the right default - silently substituting `""` would let a
+missing label flow into a parameter as an empty string - but a `default()` builtin
+is probably needed before this is usable. That is the main thing standing between
+the spike and a proposal.
+
 ## What the spike does not address
 
 | | |
 |---|---|
-| **Trust boundary** | KEP-2.16 says the app author "cannot alter its resolution logic… This separation is load-bearing; the feature's security properties depend on it." Expressions move them from *selecting* a declared field to *computing*. The sandbox (only `source`, no imports, no providers, grammar-gated) is implemented and tested, but widening that boundary should be a deliberate amendment, not a side effect. |
+| **Trust boundary** | KEP-2.16 says the app author "cannot alter its resolution logic… This separation is load-bearing; the feature's security properties depend on it." Expressions move them from *selecting* a declared field to *computing*. The sandbox (only `source` and `context`, no imports, no providers, grammar-gated) is implemented and tested, but widening that boundary should be a deliberate amendment, not a side effect. |
+| **Defaulting an absent context value** | See above. The blocking ergonomic gap. |
 | **`+sensitive` taint** | Today redaction knows a property came from a sensitive path. `"prefix-" + secret` is not recognisably the secret. `References()` returns the paths an expression reads, which is the input a taint rule needs — but the rule itself is not written. Getting this wrong leaks. |
 | **Wiring** | Nothing calls this. The substitution point is where `fromSource` is resolved today (`resolveFromSourceParams`), and dependency ordering would come from `References()`. |
 | **Cache identity** | Expressions in a *source's* properties would feed the cache key. Properties are resolved before hashing, so this is probably already correct — unverified. |

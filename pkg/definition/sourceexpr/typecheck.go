@@ -47,12 +47,20 @@ func TypeOf(expr string, schemas map[string]string) (cue.Kind, error) {
 		return cue.BottomKind, err
 	}
 
+	refs, err := References(expr)
+	if err != nil {
+		return cue.BottomKind, err
+	}
 	scope, err := sentinelScope(schemas)
 	if err != nil {
 		return cue.BottomKind, err
 	}
+	ctxScope, err := contextScope(refs)
+	if err != nil {
+		return cue.BottomKind, err
+	}
 
-	v := cuecontext.New().CompileString(scope + "\nout: " + expr + "\n")
+	v := cuecontext.New().CompileString(scope + "\n" + ctxScope + "\nout: " + expr + "\n")
 	if v.Err() != nil {
 		return cue.BottomKind, describe(v.Err())
 	}

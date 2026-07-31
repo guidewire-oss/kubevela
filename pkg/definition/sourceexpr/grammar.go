@@ -100,9 +100,9 @@ func Validate(expr string) error {
 		case *ast.Ident:
 			// The sandbox. Every identifier is either the one permitted root or a
 			// field name reached through it; a bare identifier is neither.
-			if t.Name != SourceIdent && !isFieldPosition(node, t) {
-				bad = fmt.Errorf("unknown identifier %q: an expression may reference %q and nothing else",
-					t.Name, SourceIdent)
+			if t.Name != SourceIdent && t.Name != ContextIdent && !isFieldPosition(node, t) {
+				bad = fmt.Errorf("unknown identifier %q: an expression may reference %q and %q, nothing else",
+					t.Name, SourceIdent, ContextIdent)
 			}
 		}
 		return true
@@ -130,15 +130,21 @@ func nodeIs(label ast.Label, id *ast.Ident) bool {
 	return ok && other == id
 }
 
-// Reference is one path an expression reads, e.g. source "img", path "image".
+// Reference is one path an expression reads, rooted at source or context.
 type Reference struct {
-	Source string
-	Path   []string
+	// Root is SourceIdent or ContextIdent.
+	Root string
+	// Path is the rest: for a source, [binding, field...]; for context,
+	// [field] or [field, index].
+	Path []string
 }
+
+// IsSource reports whether the reference reads a resolved source.
+func (r Reference) IsSource() bool { return r.Root == SourceIdent }
 
 // String renders a reference the way an error message names it.
 func (r Reference) String() string {
-	return fmt.Sprintf("%s.%s", r.Source, strings.Join(r.Path, "."))
+	return fmt.Sprintf("%s.%s", r.Root, strings.Join(r.Path, "."))
 }
 
 // References returns every source path the expression reads.
@@ -157,17 +163,28 @@ func References(expr string) ([]Reference, error) {
 
 	seen := map[string]Reference{}
 	ast.Walk(node, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectorExpr)
+		expr, ok := n.(ast.Expr)
 		if !ok {
 			return true
 		}
-		path, rooted := selectorPath(sel)
-		if !rooted || len(path) < 2 {
+		switch expr.(type) {
+		case *ast.SelectorExpr, *ast.IndexExpr:
+		default:
 			return true
 		}
-		ref := Reference{Source: path[0], Path: path[1:]}
+		root, path, ok := selectorPath(expr)
+		if !ok || len(path) == 0 {
+			return true
+		}
+		// A source needs a binding name and at least one field; context needs
+		// only a field. A bare `source.x` is an incomplete read either way.
+		if root == SourceIdent && len(path) < 2 {
+			return true
+		}
+		ref := Reference{Root: root, Path: path}
 		seen[ref.String()] = ref
-		return true
+		// Do not descend: the prefix of this chain is not a separate read.
+		return false
 	}, nil)
 
 	out := make([]Reference, 0, len(seen))
@@ -179,14 +196,19 @@ func References(expr string) ([]Reference, error) {
 }
 
 // selectorPath flattens source.a.b (and source["a"].b) into ["a","b"], reporting
-// whether the chain is rooted at the permitted identifier.
-func selectorPath(sel *ast.SelectorExpr) ([]string, bool) {
+// the root identifier and whether the chain is rooted at a permitted one.
+func selectorPath(head ast.Expr) (string, []string, bool) {
+	root := ""
 	var parts []string
 	var walk func(ast.Expr) bool
 	walk = func(e ast.Expr) bool {
 		switch t := e.(type) {
 		case *ast.Ident:
-			return t.Name == SourceIdent
+			if t.Name == SourceIdent || t.Name == ContextIdent {
+				root = t.Name
+				return true
+			}
+			return false
 		case *ast.SelectorExpr:
 			if !walk(t.X) {
 				return false
@@ -214,10 +236,10 @@ func selectorPath(sel *ast.SelectorExpr) ([]string, bool) {
 		}
 		return false
 	}
-	if !walk(sel) {
-		return nil, false
+	if !walk(head) {
+		return "", nil, false
 	}
-	return parts, true
+	return root, parts, true
 }
 
 // hyphenHazard reports a subtraction whose operands are both rooted at `source`,
@@ -230,7 +252,7 @@ func rootedAtSource(e ast.Expr) bool {
 	for {
 		switch t := e.(type) {
 		case *ast.Ident:
-			return t.Name == SourceIdent
+			return t.Name == SourceIdent || t.Name == ContextIdent
 		case *ast.SelectorExpr:
 			e = t.X
 		case *ast.IndexExpr:

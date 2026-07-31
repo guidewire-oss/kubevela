@@ -35,7 +35,7 @@ import (
 // A value that is a single expression is replaced by the typed result, so an int
 // stays an int. An expression embedded in surrounding text yields a string,
 // because that is what concatenating with text means.
-func Eval(raw string, resolved map[string]map[string]interface{}) (interface{}, error) {
+func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string]interface{}) (interface{}, error) {
 	parsed, err := Parse(raw)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func Eval(raw string, resolved map[string]map[string]interface{}) (interface{}, 
 	}
 
 	if parsed.Whole() {
-		return evalOne(scope, parsed.Fragments[0].Expr)
+		return evalFragment(scope, parsed.Fragments[0].Expr, ctx)
 	}
 
 	out := ""
@@ -66,7 +66,7 @@ func Eval(raw string, resolved map[string]map[string]interface{}) (interface{}, 
 			out += f.Text
 			continue
 		}
-		value, err := evalOne(scope, f.Expr)
+		value, err := evalFragment(scope, f.Expr, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -79,11 +79,19 @@ func Eval(raw string, resolved map[string]map[string]interface{}) (interface{}, 
 	return out, nil
 }
 
-func evalOne(scope, expr string) (interface{}, error) {
+func evalFragment(scope, expr string, ctx map[string]interface{}) (interface{}, error) {
 	if err := Validate(expr); err != nil {
 		return nil, err
 	}
-	v := cuecontext.New().CompileString(scope + "\nout: " + expr + "\n")
+	refs, err := References(expr)
+	if err != nil {
+		return nil, err
+	}
+	ctxScope, err := contextValueScope(refs, ctx)
+	if err != nil {
+		return nil, err
+	}
+	v := cuecontext.New().CompileString(scope + "\n" + ctxScope + "\nout: " + expr + "\n")
 	if v.Err() != nil {
 		return nil, describe(v.Err())
 	}
@@ -101,11 +109,22 @@ func evalOne(scope, expr string) (interface{}, error) {
 
 // valueScope renders the resolved sources as CUE for the expression to read.
 func valueScope(resolved map[string]map[string]interface{}) (string, error) {
-	raw, err := json.Marshal(resolved)
+	raw, err := marshalScope(resolved)
 	if err != nil {
-		return "", fmt.Errorf("marshal resolved sources: %w", err)
+		return "", err
 	}
-	return SourceIdent + ": " + string(raw), nil
+	return SourceIdent + ": " + raw, nil
+}
+
+// marshalScope renders a Go map as CUE. JSON is valid CUE, so this needs no
+// separate renderer - and going through JSON is what guarantees the values an
+// expression sees are exactly the values that were resolved.
+func marshalScope(v interface{}) (string, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("marshal expression scope: %w", err)
+	}
+	return string(raw), nil
 }
 
 // asText renders a value for embedding. Only scalars can be: a struct or list
