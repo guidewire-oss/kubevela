@@ -73,6 +73,24 @@ type SourceCacheWriteMeta struct {
 	SourceDefNamespace string
 	// TemplateName is the ConfigTemplate the entry was rendered against, if any.
 	TemplateName string
+
+	// The fields below are the entry's identity inputs, recorded onto the object
+	// so an operator can find an entry and see why it is distinct from its
+	// neighbours.
+	//
+	// Only identity inputs are safe to record. A cache entry is shared by every
+	// binding that resolves to it, so anything outside the identity - the
+	// consuming application, say - differs between those sharers, and recording
+	// it would describe whichever one happened to write the entry first.
+
+	// KeyInputs names the context values that formed the identity.
+	KeyInputs []string
+	// Context holds those values.
+	Context map[string]interface{}
+	// Properties holds the binding's inputs.
+	Properties map[string]interface{}
+	// TemplateHash fingerprints the definition that produced the entry.
+	TemplateHash string
 }
 
 // SourceCacheStore abstracts source cache persistence operations.

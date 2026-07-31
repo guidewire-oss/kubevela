@@ -112,6 +112,31 @@ const (
 	LabelSourceDefinitionName = "sourcedefinition.oam.dev/name"
 	// LabelSourceDefinitionNamespace is the label recording the namespace of the owning SourceDefinition.
 	LabelSourceDefinitionNamespace = "sourcedefinition.oam.dev/namespace"
+
+	// LabelSourceContextPrefix prefixes one label per context value that both
+	// contributed to a cache entry's identity and is expressible as a label
+	// value, e.g. "sourcedefinition.oam.dev/ctx.cluster: prod-cluster". These
+	// exist to be selected on; the full context is in AnnotationSourceContext.
+	LabelSourceContextPrefix = "sourcedefinition.oam.dev/ctx."
+
+	// AnnotationSourceKeyInputs records which context values formed the entry's
+	// identity, as a JSON array - the answer to "why is this entry distinct?".
+	AnnotationSourceKeyInputs = "sourcedefinition.oam.dev/key-inputs"
+	// AnnotationSourceContext records those values as a JSON object, including
+	// the ones no label could hold: a struct, or a label value containing
+	// characters legal there and illegal in a label value.
+	AnnotationSourceContext = "sourcedefinition.oam.dev/context"
+	// AnnotationSourceProperties records the binding's properties as JSON. They
+	// are already plaintext in the Application spec, so recording them here
+	// exposes nothing new - unlike the resolved output, which stays in the
+	// Secret's data where encryption-at-rest covers it.
+	AnnotationSourceProperties = "sourcedefinition.oam.dev/properties"
+	// AnnotationSourcePropertiesTruncated marks properties too large to record
+	// whole, so a reader does not mistake a clipped value for the real one.
+	AnnotationSourcePropertiesTruncated = "sourcedefinition.oam.dev/properties-truncated"
+	// AnnotationSourceTemplateHash fingerprints the definition that produced the
+	// entry, so entries orphaned by an edit can be told from live ones.
+	AnnotationSourceTemplateHash = "sourcedefinition.oam.dev/template-hash"
 )
 
 const (

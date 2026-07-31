@@ -47,6 +47,7 @@ import (
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/kubevela/workflow/pkg/cue/model"
@@ -934,11 +935,12 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	// storage.key is the readable prefix; uniqueness comes from the hash below,
 	// which covers the definition's template, the binding's properties, and
 	// exactly the context values the template reads.
-	cachePolicy.Key, err = cacheIdentity(cachePolicy.Key, identityInputs{
+	identity := identityInputs{
 		Template:   templateFingerprint(sourceTemplate),
 		Properties: resolvedProps,
 		Context:    identityContext(r.ctx, sourceName, cachePolicy.KeyInputs),
-	})
+	}
+	cachePolicy.Key, err = cacheIdentity(cachePolicy.Key, identity)
 	if err != nil {
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 		return nil, err
@@ -1007,7 +1009,8 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	}
 	r.resolved[sourceName] = output
 	expiresAt := time.Now().Add(cachePolicy.TTL).Format(time.RFC3339)
-	if err := r.writeSourceCache(cachePolicy.Key, sourceType, output, cachePolicy.TTL); err != nil {
+	if err := r.writeSourceCache(cachePolicy.Key, sourceType, output, cachePolicy.TTL,
+		cachePolicy.KeyInputs, identity); err != nil {
 		klog.Warningf("write source cache failed for %s: %v", sourceName, err)
 	}
 	r.setSourceStatus(sourceName, sourceType, "Resolved", "", cachePolicy.Key, expiresAt, output)
@@ -1154,7 +1157,8 @@ func (r *sourceResolver) readSourceCache(cacheKey string, ttl time.Duration) (ma
 	return r.cacheStore.Read(r.ctx.GetCtx(), cacheKey, ttl)
 }
 
-func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[string]interface{}, ttl time.Duration) error {
+func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[string]interface{},
+	ttl time.Duration, keyInputs []string, identity identityInputs) error {
 	if r.cacheStore == nil || cacheKey == "" {
 		return nil
 	}
@@ -1164,6 +1168,10 @@ func (r *sourceResolver) writeSourceCache(cacheKey, sourceType string, data map[
 		SourceDefName:      sourceType,
 		SourceDefNamespace: namespace,
 		TemplateName:       sourceCacheTemplateName(sourceType, r.sourceSchemas[sourceType]),
+		KeyInputs:          keyInputs,
+		Context:            identity.Context,
+		Properties:         identity.Properties,
+		TemplateHash:       identity.Template,
 	}
 	return r.cacheStore.Write(r.ctx.GetCtx(), cacheKey, sourceType, data, meta)
 }
@@ -1258,6 +1266,9 @@ func ApplySourceCacheMetadata(obj metav1.Object, sourceType string, meta velapro
 	if meta.SourceDefNamespace != "" {
 		labels[apitypes.LabelSourceDefinitionNamespace] = meta.SourceDefNamespace
 	}
+	for k, v := range contextLabels(meta.Context) {
+		labels[k] = v
+	}
 	obj.SetLabels(labels)
 
 	annotations := obj.GetAnnotations()
@@ -1270,7 +1281,140 @@ func ApplySourceCacheMetadata(obj metav1.Object, sourceType string, meta velapro
 	if meta.TemplateName != "" {
 		annotations[sourceCacheTemplateKey] = meta.TemplateName
 	}
+	if meta.TemplateHash != "" {
+		annotations[apitypes.AnnotationSourceTemplateHash] = meta.TemplateHash
+	}
+	if len(meta.KeyInputs) > 0 {
+		if raw, err := json.Marshal(meta.KeyInputs); err == nil {
+			annotations[apitypes.AnnotationSourceKeyInputs] = string(raw)
+		}
+	}
+	if len(meta.Context) > 0 {
+		if raw, err := json.Marshal(meta.Context); err == nil {
+			annotations[apitypes.AnnotationSourceContext] = string(raw)
+		}
+	}
+	if len(meta.Properties) > 0 {
+		if raw, truncated, err := renderProperties(meta.Properties); err == nil {
+			annotations[apitypes.AnnotationSourceProperties] = raw
+			if truncated {
+				// Say so explicitly, so a clipped value is never mistaken for the
+				// real one when someone is comparing two entries.
+				annotations[apitypes.AnnotationSourcePropertiesTruncated] = "true"
+			}
+		}
+	}
 	obj.SetAnnotations(annotations)
+}
+
+// maxAnnotationValueLen caps a single recorded value. Kubernetes budgets 256KB
+// across all annotations on an object; these are diagnostic, so they take a
+// small slice of that and leave the rest to whatever else annotates the entry.
+const maxAnnotationValueLen = 4096
+
+// maxPropertyValueLen caps one property within that budget, so a single large
+// value cannot crowd out every other property.
+const maxPropertyValueLen = 512
+
+// renderProperties marshals the binding's properties for the annotation,
+// replacing any value too large to record with a placeholder.
+//
+// Clamping happens per value rather than on the finished JSON, because clipping
+// a JSON document mid-string leaves something no reader can parse - and an
+// annotation that has to be parsed to be useful is worth keeping valid. The
+// placeholder keeps the shape intact and says what was dropped, so a reader
+// still learns which properties distinguish this entry from its neighbours.
+func renderProperties(props map[string]interface{}) (string, bool, error) {
+	out := make(map[string]interface{}, len(props))
+	truncated := false
+
+	for name, value := range props {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			out[name] = "<unrepresentable>"
+			truncated = true
+			continue
+		}
+		if len(raw) > maxPropertyValueLen {
+			out[name] = fmt.Sprintf("<omitted: %d bytes>", len(raw))
+			truncated = true
+			continue
+		}
+		out[name] = value
+	}
+
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "", false, err
+	}
+	// Still over budget, which takes a great many properties rather than one
+	// large one. Record the names alone: valid JSON, and enough to see what the
+	// binding passed.
+	if len(raw) > maxAnnotationValueLen {
+		all := make([]string, 0, len(props))
+		for name := range props {
+			all = append(all, name)
+		}
+		sort.Strings(all)
+
+		// Sorted, then filled to the cap: enough names to be useful, in an order
+		// that is stable across writes so two entries can be compared. Marshalled
+		// each time rather than length-counted, so the result is valid JSON by
+		// construction rather than by arithmetic about quoting and commas.
+		names := []string{}
+		for _, name := range all {
+			candidate, cerr := json.Marshal(append(names, name))
+			if cerr != nil || len(candidate) > maxAnnotationValueLen {
+				break
+			}
+			names = append(names, name)
+		}
+		raw, err = json.Marshal(names)
+		if err != nil {
+			return "", false, err
+		}
+		truncated = true
+	}
+	return string(raw), truncated, nil
+}
+
+// contextLabels renders the identity's context values as labels, so entries can
+// be selected on them.
+//
+// A value is emitted only when both halves are legal: the field name (with the
+// index folded in, for an indexed read) has to be a valid label key, and the
+// value a valid label value. Neither is guaranteed - an index like
+// "example.org/service-name" would put a second slash in the key, and a label
+// value may hold characters that are legal there and illegal here. Whatever is
+// skipped is still recorded whole in AnnotationSourceContext, so nothing is
+// lost; only selectability is.
+func contextLabels(ctx map[string]interface{}) map[string]string {
+	out := map[string]string{}
+	for field, value := range ctx {
+		switch v := value.(type) {
+		case map[string]interface{}:
+			for index, indexed := range v {
+				addContextLabel(out, field+"."+index, indexed)
+			}
+		default:
+			addContextLabel(out, field, value)
+		}
+	}
+	return out
+}
+
+func addContextLabel(out map[string]string, name string, value interface{}) {
+	text, ok := value.(string)
+	if !ok || text == "" {
+		// A struct cannot be a label value, and an empty one carries nothing a
+		// selector could use.
+		return
+	}
+	key := apitypes.LabelSourceContextPrefix + name
+	if len(validation.IsQualifiedName(key)) > 0 || len(validation.IsValidLabelValue(text)) > 0 {
+		return
+	}
+	out[key] = text
 }
 
 // shouldTouchSourceCache throttles last-accessed updates: it returns true only
