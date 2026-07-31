@@ -21,8 +21,9 @@ import (
 	"testing"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 
-	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 )
 
 var demoSchemas = map[string]string{
@@ -370,27 +371,56 @@ func TestSubtractionIsStillAllowed(t *testing.T) {
 	}
 }
 
-// Membership of the readable context set comes from the cache-key rules, so the
-// two cannot drift into disagreeing about what a consumer may read. Only the
-// types are declared locally.
-func TestContextTypesMatchTheKeyRules(t *testing.T) {
-	rules, err := cachekey.LoadRules()
+// An expression sees what the definition it feeds sees, at the moment that
+// definition is rendered. This builds a real component render context and
+// requires every field in it to be classified - readable with a type, or
+// explicitly not readable with a reason.
+//
+// The point is drift: a field added to the render context upstream must force a
+// decision here rather than silently becoming unavailable, which would be
+// indistinguishable from a typo in an author's expression.
+func TestContextTypesMatchTheRenderContext(t *testing.T) {
+	ctx := velaprocess.NewContext(velaprocess.ContextData{
+		AppName: "checkout", CompName: "web", Namespace: "team-a",
+		AppRevisionName: "checkout-v3", WorkflowName: "deploy", PublishVersion: "v1",
+		Cluster:        "prod",
+		AppLabels:      map[string]string{"team": "payments"},
+		AppAnnotations: map[string]string{"note": "x"},
+	})
+	base, err := ctx.BaseContextFile()
 	if err != nil {
-		t.Fatalf("loading rules: %v", err)
+		t.Fatalf("building the render context: %v", err)
+	}
+	v := cuecontext.New().CompileString(base)
+	if v.Err() != nil {
+		t.Fatalf("compiling the render context: %v", v.Err())
+	}
+	iter, err := v.LookupPath(cue.ParsePath("context")).Fields(cue.All())
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	fromRules := map[string]bool{}
-	for _, f := range rules.Fields() {
-		fromRules[f] = true
-	}
-	for field := range contextTypes {
-		if !fromRules[field] {
-			t.Errorf("contextTypes declares %q, which the cache-key rules do not permit", field)
+	seen := map[string]bool{}
+	for iter.Next() {
+		field := iter.Selector().Unquoted()
+		seen[field] = true
+		_, readable := contextTypes[field]
+		_, excluded := notReadable[field]
+		switch {
+		case readable && excluded:
+			t.Errorf("%q is both readable and excluded; it must be one or the other", field)
+		case !readable && !excluded:
+			t.Errorf("the render context carries %q (%s) but this package neither types it nor "+
+				"explains why it is unavailable - classify it in contextTypes or notReadable",
+				field, iter.Value().IncompleteKind())
 		}
 	}
-	for field := range fromRules {
-		if _, ok := contextTypes[field]; !ok {
-			t.Errorf("the cache-key rules permit %q but contextTypes gives it no type", field)
+
+	// A type declared for a field the render context does not carry would type
+	// cleanly at admission and fail at render.
+	for field := range contextTypes {
+		if !seen[field] {
+			t.Errorf("contextTypes declares %q, which the render context does not carry", field)
 		}
 	}
 }

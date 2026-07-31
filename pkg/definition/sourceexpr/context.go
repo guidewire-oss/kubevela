@@ -58,14 +58,22 @@ const (
 
 // contextTypes declares the type of each readable context field.
 //
-// Membership is not decided here - it comes from the cache-key rules, and
-// TestContextTypesMatchTheKeyRules asserts the two agree so they cannot drift.
-// Reusing that list keeps one curated set of "context a consumer may read",
-// already excludes the fields that must never be readable (context.output,
-// context.status), and gives the same error message for anything outside it.
+// Membership follows one rule: an expression sees what the definition it is
+// feeding sees, at the moment it is rendered. A property expression is
+// substituted immediately before the ComponentDefinition's template runs, so the
+// readable set is that template's context - not the cache-key rules, which are
+// policy about a SourceDefinition's cache identity and curate a different set
+// for a different purpose.
 //
-// The types are declared here because the rules file is policy about the *cache
-// key* and has no business carrying type information.
+// That rule also settles context.name. In a SourceDefinition it is the binding
+// entry (KEP amendment A4); here it is the component, because that is what a
+// ComponentDefinition's context.name is. Each scope is internally consistent
+// with the definition it belongs to, which is the only property that can be kept
+// as more surfaces are added.
+//
+// TestContextTypesMatchTheRenderContext builds a real render context and
+// requires every field in it to be classified here or in notReadable, so a field
+// added upstream forces a decision instead of silently becoming unavailable.
 var contextTypes = map[string]contextKind{
 	"name":           kindString,
 	"cluster":        kindString,
@@ -76,8 +84,30 @@ var contextTypes = map[string]contextKind{
 	"appRevisionNum": kindInt,
 	"publishVersion": kindString,
 	"workflowName":   kindString,
+	"replicaKey":     kindString,
+	"revision":       kindString,
 	"appLabels":      kindIndexedString,
 	"appAnnotations": kindIndexedString,
+}
+
+// notReadable are context fields a property expression deliberately cannot see,
+// each with the reason. Being explicit is what makes the drift test useful: a new
+// field cannot be quietly ignored, it has to be put in one list or the other.
+var notReadable = map[string]string{
+	"appSources":               "internal plumbing for source resolution, not user-facing context",
+	"appSourceTypes":           "internal plumbing for source resolution, not user-facing context",
+	"appSourceTemplates":       "internal plumbing for source resolution, not user-facing context",
+	"appSourceSensitivePaths":  "internal plumbing for source resolution, not user-facing context",
+	"appSourceCacheStore":      "internal plumbing for source resolution, not user-facing context",
+	"sourceResolutionStatuses": "internal plumbing for source resolution, not user-facing context",
+	"components":               "an app-wide list; readable in principle but not yet typed here",
+	"appComponents":            "an app-wide list; readable in principle but not yet typed here",
+	"appPolicies":              "an app-wide list; readable in principle but not yet typed here",
+	"appWorkflow":              "an app-wide object; readable in principle but not yet typed here",
+	"output":                   "produced by the render, so it does not exist when properties are substituted",
+	"outputs":                  "produced by the render, so it does not exist when properties are substituted",
+	"outputSecretName":         "produced by the render, so it does not exist when properties are substituted",
+	"parameter":                "the properties being substituted; reading them from within is circular",
 }
 
 // sentinelContext builds the context sentinels for exactly the fields an

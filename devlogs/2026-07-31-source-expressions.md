@@ -116,11 +116,28 @@ cache identity - reading an unkeyed value would silently break sharing. A proper
 expression feeds no cache and is evaluated per render, so that constraint does not
 apply at all.
 
-**Membership comes from the cache-key rules.** `contextTypes` declares each field's
-type, and `TestContextTypesMatchTheKeyRules` asserts its keys match
-`cachekey.Rules.Fields()` exactly, so the two cannot drift on *what* is readable.
-That keeps one curated set, one error message, and keeps `context.output` and
-`context.status` unreachable by construction.
+**Membership follows the definition being fed.** An expression sees what the
+definition it feeds sees, at the moment that definition is rendered — a property
+expression is substituted immediately before the ComponentDefinition's template
+runs, so the readable set is *that template's* context.
+
+An earlier version reused the cache-key rules list. That was wrong: those rules are
+policy about a SourceDefinition's cache identity and curate a different set for a
+different purpose. Probing a real render context showed 18 fields where the
+cache-key list has 11 — `replicaKey`, `revision` and the `appSource*` internals
+among the difference.
+
+The rule also settles `context.name`, which had been ambiguous. In a
+SourceDefinition it is the binding entry (amendment A4); in a property expression
+it is the component, because that is what a ComponentDefinition's `context.name`
+is. Each scope is internally consistent with the definition it belongs to, which
+is the only property that survives more surfaces being added.
+
+`TestContextTypesMatchTheRenderContext` builds a real context and requires every
+field in it to be classified — readable with a type, or in `notReadable` with a
+reason. A field added upstream then forces a decision instead of silently becoming
+unavailable, which an author could not distinguish from a typo. Verified
+non-vacuous: removing `replicaKey` from the table fails the test.
 
 ### Two more CUE mechanics that did not work
 
