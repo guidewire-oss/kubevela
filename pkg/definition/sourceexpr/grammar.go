@@ -21,6 +21,8 @@ import (
 	"sort"
 	"strings"
 
+	"slices"
+
 	"cuelang.org/go/cue/ast"
 	cueformat "cuelang.org/go/cue/format"
 	"cuelang.org/go/cue/literal"
@@ -47,10 +49,28 @@ import (
 // internals. That is narrower than what a SourceDefinition author may write, and
 // deliberately so - the two operate at different trust levels.
 func Validate(expr string) error {
+	return ValidateRoots(expr, SourceIdent, ContextIdent)
+}
+
+// ValidateRoots is Validate restricted to a subset of the readable roots.
+//
+// It exists because a surface can support one root and not the other. An
+// Application-scoped policy renders before the appfile exists
+// (application_controller.go orders the transforms ahead of GenerateAppFile), so
+// there is no parsed spec.sources[] to resolve against - but `context` is built
+// by hand for that render and is perfectly available. Permitting context and
+// withholding source lets such a surface carry expressions at all, instead of
+// being excluded because half the feature cannot work there.
+//
+// Restricting at validation is what makes that honest: reading `source` on a
+// surface that cannot resolve it is rejected with a reason, rather than
+// substituted with nothing or left inert.
+func ValidateRoots(expr string, allowed ...string) error {
 	node, err := cueparser.ParseExpr("-", expr)
 	if err != nil {
 		return fmt.Errorf("not a valid expression: %w", err)
 	}
+	permitted := func(name string) bool { return slices.Contains(allowed, name) }
 
 	// Default markers are legal only in the one position isDefaultedRead
 	// recognises, so they are collected first and checked against below.
@@ -135,11 +155,17 @@ func Validate(expr string) error {
 				}
 			}
 		case *ast.Ident:
-			// The sandbox. Every identifier is either the one permitted root or a
-			// field name reached through it; a bare identifier is neither.
-			if t.Name != SourceIdent && t.Name != ContextIdent && !isFieldPosition(node, t) {
-				bad = fmt.Errorf("unknown identifier %q: an expression may reference %q and %q, nothing else",
-					t.Name, SourceIdent, ContextIdent)
+			// The sandbox. Every identifier is either a permitted root or a field
+			// name reached through one; a bare identifier is neither.
+			switch {
+			case permitted(t.Name):
+			case isFieldPosition(node, t):
+			case t.Name == SourceIdent || t.Name == ContextIdent:
+				bad = fmt.Errorf("%q cannot be read here; this surface permits %s",
+					t.Name, strings.Join(quoteAll(allowed), " and "))
+			default:
+				bad = fmt.Errorf("unknown identifier %q: an expression may reference %s, nothing else",
+					t.Name, strings.Join(quoteAll(allowed), " and "))
 			}
 		}
 		return true
@@ -350,4 +376,12 @@ func isDefaultedRead(b *ast.BinaryExpr) bool {
 		return true
 	}
 	return false
+}
+
+func quoteAll(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, fmt.Sprintf("%q", n))
+	}
+	return out
 }

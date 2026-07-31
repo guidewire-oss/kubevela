@@ -446,6 +446,40 @@ so values resolved beforehand would come from the pre-transform spec.
 Enabling any surface also needs admission coverage and tests. `ConsumableSurfaces`
 no longer needs a separate edit - it is derived.
 
+### Policies can have `context` without `source`
+
+The ordering problem only exists for `source`. `context` needs no appfile, no
+cache and no resolution order - the scoped path builds one by hand for its own
+render, and it is fully available there. So a surface can support one root and not
+the other, which is something `fromSource` could never express and expressions can.
+
+`ValidateRoots(expr, ContextIdent)` permits
+
+```yaml
+properties:
+  owner: '$(context.appLabels["team"])'
+  name:  '$(context.appName + "-quota")'
+```
+
+and rejects `source.img.image` with *"cannot be read here; this surface permits
+"context""* - a reason, rather than the silent inertness that made review finding
+#10 a bug. `Validate` still defaults to both roots, so nothing else changes.
+
+This turns policy from "excluded because half the feature cannot work there" into
+"has the half that can". It also gives the scoped path something the resource path
+gets for free, without moving source resolution ahead of the transforms and
+inheriting the question of what happens when a scoped policy rewrites
+`spec.sources[]`.
+
+**Still to do before this is real:** per-surface context tables. The scoped policy
+context is built by hand from Namespace, AppName, CompName, AppRevisionName,
+AppLabels and AppAnnotations, plus `policyName`/`policyType`/`policyRevision*`. It
+does *not* carry cluster, publishVersion or workflowName, which `contextTypes`
+currently declares readable. Typing an expression against fields that surface does
+not have would promise a value the render cannot produce - the same class of bug
+as `clusterVersion.minor`, and the drift test already written for the component
+context is the shape of the fix.
+
 ## What the spike does not address
 
 | | |

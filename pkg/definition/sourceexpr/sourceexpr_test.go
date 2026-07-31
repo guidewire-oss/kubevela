@@ -1196,3 +1196,63 @@ func TestContextTypeOfAgreesWithEval(t *testing.T) {
 		}
 	}
 }
+
+// A surface can support one root and not the other, which is what lets a policy
+// carry expressions at all.
+//
+// An Application-scoped policy renders before the appfile exists, so there is no
+// parsed spec.sources[] to resolve against - but its context is built by hand for
+// that render and is fully available. Permitting context and withholding source
+// is the difference between such a surface having the feature and being excluded
+// from it.
+func TestValidateRootsRestrictsPerSurface(t *testing.T) {
+	contextOnly := []string{ContextIdent}
+
+	for _, expr := range []string{
+		`context.appName`,
+		`context.appLabels["team"]`,
+		`context.appName + "-suffix"`,
+		`*context.appLabels["team"] | "none"`,
+	} {
+		if err := ValidateRoots(expr, contextOnly...); err != nil {
+			t.Errorf("expected %q to be allowed with context only, got: %v", expr, err)
+		}
+	}
+
+	// Reading source on such a surface is rejected with a reason, rather than
+	// substituted with nothing or left inert as a literal directive.
+	for _, expr := range []string{
+		`source.img.image`,
+		`context.appName + source.img.image`,
+		`source["img"].image`,
+	} {
+		err := ValidateRoots(expr, contextOnly...)
+		if err == nil {
+			t.Errorf("expected %q to be rejected where sources cannot resolve", expr)
+			continue
+		}
+		if !strings.Contains(err.Error(), "cannot be read here") {
+			t.Errorf("the error should say the surface does not permit it; got: %v", err)
+		}
+	}
+
+	// The default remains both roots, so nothing else changes.
+	if err := Validate(`context.appName + source.img.image`); err != nil {
+		t.Errorf("Validate must still permit both roots: %v", err)
+	}
+}
+
+// Restricting roots must not weaken the sandbox: an unknown identifier is still
+// rejected, and the message names what is permitted here rather than in general.
+func TestValidateRootsKeepsTheSandbox(t *testing.T) {
+	err := ValidateRoots(`parameter.image`, ContextIdent)
+	if err == nil {
+		t.Fatal("an unknown identifier must still be rejected")
+	}
+	if !strings.Contains(err.Error(), `"context"`) {
+		t.Errorf("the message should name what this surface permits; got: %v", err)
+	}
+	if strings.Contains(err.Error(), `"source"`) {
+		t.Errorf("the message should not offer a root this surface forbids; got: %v", err)
+	}
+}
