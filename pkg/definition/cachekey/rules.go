@@ -42,8 +42,13 @@ var rulesFS embed.FS
 
 // keyedField is a context field that contributes to the key.
 type keyedField struct {
-	Order   int  `json:"order"`
+	Order int `json:"order"`
+	// Indexed means the read carries a literal index - context.appLabels["team"] -
+	// so each index read contributes separately.
 	Indexed bool `json:"indexed"`
+	// Segment means the value is also inlined into the readable prefix. It says
+	// nothing about correctness: every field contributes to the hash regardless.
+	Segment bool `json:"segment"`
 }
 
 // Rules is one version of the inference policy, identified by the hash of the

@@ -25,24 +25,37 @@ version: "v1"
 // context a source is compiled against, so it cannot be read even where admission
 // is disabled. Data that is not here reaches a source as a property instead.
 //
-// The assembled key is:
+// The assembled identity is:
 //
-//	<definition>[-<binding>][-<context dimensions...>][-<properties hash>]
+//	<definition>[-<readable segments...>]-<hash>
 //
-// Identity leads - the definition, then the binding entry it was declared as.
-// Context dimensions follow broad to narrow, so keys group by prefix when listed:
-// an operator grepping for a definition on a cluster finds every entry under it.
+// The hash covers every value the template reads, and carries uniqueness on its
+// own. Segments are cosmetic: they exist so an operator can grep, and an empty one
+// is simply dropped - two identities differing only in a dropped segment still
+// differ in the hash. `segment: true` therefore says nothing about correctness,
+// only about what is worth reading.
+//
+// A field is inlined only if it is always renderable: a Kubernetes name, not a
+// struct, not a free-form value. clusterVersion is a struct; label and annotation
+// values may contain characters that are legal there and illegal in an object
+// name. Those contribute to the hash alone.
 keyed: {
 	// The spec.sources[] entry this binding was declared as - the instance, in the
 	// sense context.name carries everywhere else in KubeVela. Not the
 	// SourceDefinition, which is already the key's prefix.
-	name: order: 1
+	name: {order: 1, segment: true}
 
-	cluster: order:        2
+	cluster: {order: 2, segment: true}
+	// A struct - {major, minor, gitVersion, platform} - so it cannot be rendered
+	// into a name at all.
 	clusterVersion: order: 3
 
-	namespace: order:      4
-	appName: order:        5
+	namespace: {order: 4, segment: true}
+	appName: {order:   5, segment: true}
+
+	// Legitimately empty in normal operation - appRevision before the first
+	// revision exists, publishVersion and workflowName unless set - so they are
+	// hashed rather than inlined, and their absence needs no sentinel.
 	appRevision: order:    6
 	appRevisionNum: order: 7
 	publishVersion: order: 8

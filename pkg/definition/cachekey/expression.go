@@ -25,16 +25,19 @@ import (
 
 // KeyExpression renders the CUE expression that becomes storage.key.
 //
-// The result is a complete string literal, ready to place after `key:`. It
-// interpolates the same context the template already reads, so the controller
-// evaluates it exactly as it would an authored key - inference never runs at
-// reconcile time.
+// This is the *readable prefix* of the cache identity, not the whole of it. The
+// resolver appends a hash covering every value the template reads, and that hash
+// carries uniqueness on its own - so a segment here is cosmetic, and one that
+// resolves to nothing can be dropped without two identities colliding.
 //
-// The resolver appends the properties hash, so this is the context portion of
-// the cache identity rather than the whole of it. Length is not checked here:
-// the expression is static text, and how long the resolved key runs is only
-// knowable once the interpolation has values.
-func KeyExpression(definitionName string, dims []Dimension) (string, error) {
+// Only fields the rules mark as segments are inlined: those that always render to
+// a Kubernetes name. A struct, a label value that may contain a dot, or a field
+// that is legitimately empty contributes to the hash instead, which is what
+// removes the need for a sentinel or a default.
+//
+// Length is not checked here: the expression is static text, and how long it
+// resolves to is only knowable once the interpolation has values.
+func KeyExpression(definitionName string, dims []Dimension, rules *Rules) (string, error) {
 	if strings.TrimSpace(definitionName) == "" {
 		return "", fmt.Errorf("definition name is empty; a cache key needs it as a prefix")
 	}
@@ -49,6 +52,9 @@ func KeyExpression(definitionName string, dims []Dimension) (string, error) {
 	b.WriteString(`"`)
 	b.WriteString(definitionName)
 	for _, d := range dims {
+		if entry, ok := rules.keyedEntry(d.Field); !ok || !entry.Segment {
+			continue // contributes to the hash, not to the readable prefix
+		}
 		b.WriteString(`-\(`)
 		b.WriteString(contextIdent)
 		b.WriteString(".")
@@ -64,6 +70,20 @@ func KeyExpression(definitionName string, dims []Dimension) (string, error) {
 	}
 	b.WriteString(`"`)
 	return b.String(), nil
+}
+
+// KeyInputs names every value the identity hash must cover, in key order.
+//
+// The resolver hashes exactly this set. Hashing more - every label on the object,
+// say - would change the identity whenever GitOps stamped an unrelated annotation
+// and leave the cache permanently cold; hashing less would let two bindings that
+// differ in an unrecorded input share an entry.
+func KeyInputs(dims []Dimension) []string {
+	inputs := make([]string, 0, len(dims))
+	for _, d := range dims {
+		inputs = append(inputs, d.String())
+	}
+	return inputs
 }
 
 // cuePathKey is the path the expression tests evaluate.

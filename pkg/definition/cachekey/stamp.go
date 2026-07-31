@@ -61,7 +61,7 @@ func Stamp(definitionName, template string) (string, *Rules, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	expr, err := KeyExpression(definitionName, dims)
+	expr, err := KeyExpression(definitionName, dims, rules)
 	if err != nil {
 		return "", nil, err
 	}
@@ -184,7 +184,7 @@ func Verify(definitionName, template, rulesHash string) error {
 	if err != nil {
 		return err
 	}
-	expected, err := KeyExpression(definitionName, dims)
+	expected, err := KeyExpression(definitionName, dims, rules)
 	if err != nil {
 		return err
 	}
