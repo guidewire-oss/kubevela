@@ -325,17 +325,35 @@ Expressions would inherit exactly that set, because the substitution point
 (`resolveFromSourceParams`) is called from `workloadDef.Complete` and
 `traitDef.Complete` and nowhere else.
 
-**Extending to policy has a specific trap under the context rule above.** A policy
-render builds its context with `CompName: app.Name`
-(`application_policies.go:534`), and `context.name` is `CompName`
-(`handle.go:131`) — so in a policy, `context.name` is the *application* name.
+**On extending to policy — I got this wrong first time, and the cluster corrected
+me.** I read `application_policies.go:534` (`CompName: app.Name`), concluded that
+`context.name` is the application name in a policy render, and wrote it up as a
+trap. It is not.
 
-That is *correct* under "an expression sees what its definition sees": each scope
-is internally consistent. But it means an expression moved from a component to a
-policy silently reads different data, which is the hazard KEP-2.16 recorded
-against `context.name` in the first place. Extending surfaces would want either an
-unambiguous field (`context.appName` already is) or a per-surface readable set,
-not a single shared one.
+There are two policy paths, and that is the one I had not distinguished:
+
+| Path | Used for | `context.name` |
+|---|---|---|
+| `appfile.generatePolicyUnstructuredFromCUEModule` | policies that render resources | the **policy** name |
+| `application_policies.go` `renderPolicyCUETemplate` | `scope: Application` transforms | the application name |
+
+Verified on a live cluster: the `legacy-cue-policy` PolicyDefinition writes a
+ConfigMap named `context.name`, and in app `app-with-legacy-cue` the ConfigMap
+comes out as **`legacy-cue-policy`** — the policy name. So in the path that
+actually renders resources, `context.name` behaves exactly as it does for a
+component: the name of the instance being rendered.
+
+The second path does set `context.name` to the application name, and also pushes
+`context.policyName` (which does not exist in the first path — a probe reading it
+failed with `undefined field: policyName`). That inconsistency is real: the same
+PolicyDefinition CUE sees a different `context.name` depending on which path
+evaluates it. But it is a wart in the Application-scoped transform path, not the
+blanket hazard I described, and that path does not dispatch resources at all.
+
+The lesson for this spike is the method, not the conclusion: reading one code path
+and generalising produced a confident, wrong claim. The readable-context rule
+still holds — an expression sees what its definition sees — but *what* a policy
+sees has to be measured per path rather than inferred.
 
 ## What the spike does not address
 
