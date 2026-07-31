@@ -155,6 +155,33 @@ output: {p: context.appLabels[parameter.k]}
 			wantErr: "index",
 		},
 		{
+			// storage.key is generated from the reads, so it cannot also be one
+			// of them. Scanning it would make a regenerated key depend on the
+			// previous key rather than on the resolution logic.
+			name: "an existing storage.key is not itself a read",
+			template: `
+storage: {
+  key:        "old-\(context.appName)"
+  storageTTL: "15m"
+}
+output: {region: context.cluster}
+`,
+			want: []string{"cluster"},
+		},
+		{
+			// Only key is generated; the rest of storage: is authored and can
+			// legitimately depend on context.
+			name: "the rest of storage: is still scanned",
+			template: `
+storage: {
+  key:        "old-\(context.appName)"
+  storageTTL: context.appLabels["ttl"]
+}
+output: {region: "us-east-1"}
+`,
+			want: []string{"appLabels[ttl]"},
+		},
+		{
 			name:     "an unparseable template is an error",
 			template: `output: {`,
 			wantErr:  "parse",

@@ -29,6 +29,11 @@ import (
 // contextIdent is the CUE identifier a template reads runtime values from.
 const contextIdent = "context"
 
+const (
+	storageField = "storage"
+	keyField     = "key"
+)
+
 // Dimension is one context value a cache key is built from.
 type Dimension struct {
 	// Field is the context field, e.g. "cluster".
@@ -61,6 +66,12 @@ func Infer(template string, rules *Rules) ([]Dimension, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse cue template: %w", err)
 	}
+
+	// storage.key is generated from these reads, so it cannot be one of them:
+	// scanning it would make a regenerated key depend on the previous key rather
+	// than on the resolution logic. The rest of storage: is authored and is
+	// scanned normally.
+	stripGeneratedKey(file)
 
 	found := map[string]Dimension{}
 	var scanErr error
@@ -159,6 +170,33 @@ func Infer(template string, rules *Rules) ([]Dimension, error) {
 		return nil, nil
 	}
 	return dims, nil
+}
+
+// stripGeneratedKey removes storage.key from the tree before scanning.
+func stripGeneratedKey(file *ast.File) {
+	for _, decl := range file.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
+		}
+		if name, _, err := ast.LabelName(field.Label); err != nil || name != storageField {
+			continue
+		}
+		st, ok := field.Value.(*ast.StructLit)
+		if !ok {
+			continue
+		}
+		kept := make([]ast.Decl, 0, len(st.Elts))
+		for _, elt := range st.Elts {
+			if f, ok := elt.(*ast.Field); ok {
+				if name, _, err := ast.LabelName(f.Label); err == nil && name == keyField {
+					continue
+				}
+			}
+			kept = append(kept, elt)
+		}
+		st.Elts = kept
+	}
 }
 
 func isContextIdent(e ast.Expr) bool {
