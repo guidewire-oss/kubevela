@@ -459,7 +459,9 @@ schema: { ... }
 storage: { ... }
 ```
 
-`consumableFrom` is a list of surfaces; the accepted values are `"component"` and `"trait"`. Omit the field entirely to allow every supported surface - there is no catch-all value, so there is nothing to mistype into a silently broader permission. Declaring a surface where `fromSource` is not resolved (a policy or a workflow step) is rejected at admission, so a definition cannot advertise a capability the controller does not have.
+`consumableFrom` is a list of surfaces. Omit the field entirely to allow every supported surface - there is no catch-all value, so there is nothing to mistype into a silently broader permission. Declaring a surface where `fromSource` is not resolved is rejected at admission, so a definition cannot advertise a capability the controller does not have.
+
+The accepted values are not listed here on purpose. They are derived in code from the set of surfaces that actually resolve, less source chaining, which is plumbing between sources rather than a place an Application consumes a value. Naming them in prose is how the two drifted once already: a surface was enabled for resolution while `consumableFrom` still refused it, leaving a definition unable to declare a capability the controller had.
 
 ## Source Chaining
 

@@ -18,6 +18,7 @@ package definition
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/kubevela/workflow/pkg/cue/process"
 )
@@ -44,10 +45,38 @@ const (
 	SurfaceSource = "source"
 )
 
+// resolvingSurfaces is the one list of surfaces where a fromSource directive is
+// substituted. Everything else about surfaces derives from it.
+//
+// It is a single list because the alternative was tried and drifted: enabling a
+// surface here left ConsumableSurfaces still refusing to let a definition name
+// it, so a definition could not declare a capability the controller had. Deriving
+// the second list makes that state unreachable rather than merely fixed.
+var resolvingSurfaces = []string{
+	SurfaceComponent,
+	SurfaceTrait,
+	SurfaceSource,
+	SurfaceWorkflowStep,
+}
+
 // ConsumableSurfaces are the surfaces a SourceDefinition may name in
 // consumableFrom: the places an Application actually consumes a resolved value.
-// Source chaining is excluded - it is plumbing between sources, not consumption.
-var ConsumableSurfaces = []string{SurfaceComponent, SurfaceTrait}
+//
+// Derived from resolvingSurfaces, less source chaining - that is plumbing
+// between sources, not a place an Application consumes a value, so a definition
+// has no reason to name it.
+var ConsumableSurfaces = consumableSurfaces()
+
+func consumableSurfaces() []string {
+	out := make([]string, 0, len(resolvingSurfaces))
+	for _, surface := range resolvingSurfaces {
+		if surface == SurfaceSource {
+			continue
+		}
+		out = append(out, surface)
+	}
+	return out
+}
 
 // SurfaceResolvesFromSource reports whether a fromSource directive on this
 // surface is substituted at reconcile time.
@@ -57,12 +86,7 @@ var ConsumableSurfaces = []string{SurfaceComponent, SurfaceTrait}
 // confusing message or, where the target parameter is open, is silently accepted
 // as a value. Both enforcement points reject it instead.
 func SurfaceResolvesFromSource(surface string) bool {
-	switch surface {
-	case SurfaceComponent, SurfaceTrait, SurfaceSource, SurfaceWorkflowStep:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(resolvingSurfaces, surface)
 }
 
 // UnsupportedSurfaceMessage is the single wording used wherever a directive on

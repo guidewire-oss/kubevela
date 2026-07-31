@@ -226,10 +226,17 @@ func TestParseConsumableFrom(t *testing.T) {
 			want:     []string{"component", "trait"},
 		},
 		{
-			// Nothing resolves fromSource in a workflow step, so a definition
-			// cannot claim to be consumable there.
-			name:     "reject unsupported surface",
+			// Workflow steps resolve via the pre-pass in
+			// generateWorkflowInstance, so a definition may name them.
+			name:     "accept a workflow step",
 			template: "consumableFrom: [\"workflowstep\"]\nschema: {a: string}\n",
+			want:     []string{"workflowstep"},
+		},
+		{
+			// Policy properties still carry the directive inert, so a definition
+			// cannot claim to be consumable there.
+			name:     "reject a surface that does not resolve",
+			template: "consumableFrom: [\"policy\"]\nschema: {a: string}\n",
 			wantErr:  "not a surface that supports fromSource",
 		},
 		{
