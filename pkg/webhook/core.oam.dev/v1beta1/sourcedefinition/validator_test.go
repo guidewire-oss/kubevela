@@ -32,90 +32,80 @@ func TestValidateSourceStorage(t *testing.T) {
 		{
 			name: "accept literal key",
 			template: `
-storage: {
-  key: "cluster-config-reader"
-}
+$internal: {key: "cluster-config-reader"}
 output: { region: "us-east-1" }
 `,
 		},
 		{
 			name: "accept interpolated key",
 			template: `
+$internal: {
+	key:        "cluster-config-reader-\(context.cluster)"
+}
 storage: {
-  key:        "cluster-config-reader-\(context.cluster)"
-  storageTTL: "15m"
+	storageTTL: "15m"
 }
 output: { region: "us-east-1" }
 `,
 		},
 		{
-			name: "reject missing storage block",
+			name: "reject missing $internal block",
 			template: `
 schema: { region: string }
 output: { region: "us-east-1" }
 `,
-			wantErr: "must declare a storage: block",
+			wantErr: "must declare a $internal block",
 		},
 		{
-			name: "reject storage without key",
+			// storage: on its own is fine now - it holds only authored fields. What
+			// is missing is the generated block, which admission cannot invent.
+			name: "reject an authored storage block with no generated one",
 			template: `
 storage: {
   storageTTL: "15m"
 }
 `,
-			wantErr: "must declare a key: field",
+			wantErr: "must declare a $internal block",
 		},
 		{
 			name: "reject empty key",
 			template: `
-storage: {
-  key: ""
-}
+$internal: {key: ""}
 `,
 			wantErr: "must not be empty",
 		},
 		{
 			name: "reject blank key",
 			template: `
-storage: {
-  key: "   "
-}
+$internal: {key: "   "}
 `,
 			wantErr: "must not be empty",
 		},
 		{
 			name: "reject uppercase in literal key",
 			template: `
-storage: {
-  key: "Cluster-Config"
-}
+$internal: {key: "Cluster-Config"}
 `,
 			wantErr: "not allowed in a cache key",
 		},
 		{
 			name: "reject illegal punctuation in literal key",
 			template: `
-storage: {
-  key: "component:default/api"
-}
+$internal: {key: "component:default/api"}
 `,
 			wantErr: "not allowed in a cache key",
 		},
 		{
 			name: "reject illegal literal segment of an interpolated key",
 			template: `
-storage: {
-  key: "backstage:\(parameter.entityRef)"
-}
+$internal: {key: "backstage:\(parameter.entityRef)"}
 `,
 			wantErr: "literal segment",
 		},
 		{
 			name: "reject non-string key",
 			template: `
-storage: {
-  key: 42
-}
+$internal: {key: 42}
 `,
 			wantErr: "must be a string",
 		},
@@ -127,9 +117,7 @@ storage: {
 		{
 			name: "reject key over the length limit",
 			template: `
-storage: {
-  key: "` + strings.Repeat("a", 254) + `"
-}
+$internal: {key: "` + strings.Repeat("a", 254) + `"}
 `,
 			wantErr: "exceeding the 253-character limit",
 		},
@@ -162,7 +150,7 @@ func TestValidateSourceSchema(t *testing.T) {
 schema: {
   region: string
 }
-storage: {key: "k"}
+$internal: {key: "k"}
 `,
 		},
 		{
@@ -178,7 +166,7 @@ schema: {
 		{
 			name: "reject missing schema",
 			template: `
-storage: {key: "k"}
+$internal: {key: "k"}
 output: {region: "us-east-1"}
 `,
 			wantErr: "must declare a schema: block",
@@ -187,7 +175,7 @@ output: {region: "us-east-1"}
 			name: "reject empty schema",
 			template: `
 schema: {}
-storage: {key: "k"}
+$internal: {key: "k"}
 `,
 			wantErr: "at least one field",
 		},

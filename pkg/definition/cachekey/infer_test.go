@@ -158,9 +158,11 @@ output: {p: context.appLabels[parameter.k]}
 			// previous key rather than on the resolution logic.
 			name: "an existing storage.key is not itself a read",
 			template: `
+$internal: {
+	key:        "old-\(context.appName)"
+}
 storage: {
-  key:        "old-\(context.appName)"
-  storageTTL: "15m"
+	storageTTL: "15m"
 }
 output: {region: context.cluster}
 `,
@@ -171,9 +173,11 @@ output: {region: context.cluster}
 			// legitimately depend on context.
 			name: "the rest of storage: is still scanned",
 			template: `
+$internal: {
+	key:        "old-\(context.appName)"
+}
 storage: {
-  key:        "old-\(context.appName)"
-  storageTTL: context.appLabels["ttl"]
+	storageTTL: context.appLabels["ttl"]
 }
 output: {region: "us-east-1"}
 `,

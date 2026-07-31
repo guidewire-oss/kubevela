@@ -17,13 +17,17 @@ spec:
           tag?: string
         }
 
-        // key and keyInputs are generated from the context this template reads,
-        // not authored. Nothing in output depends on the namespace, so the
-        // source is not keyed by it - the binding's properties still separate
-        // entries, so two Applications passing different images do not share one.
-        storage: {
+        // $internal is generated from the context this template reads - do not
+        // edit it. Nothing in output depends on the namespace, so the source is
+        // not keyed by it; the binding's properties still separate entries, so
+        // two Applications passing different images do not share one.
+        $internal: {
           key: "configmap-check-source"
           keyInputs: []
+        }
+
+        // storage: is yours.
+        storage: {
           storageTTL: "15m"
           onStaleFailure: "use-stale"
         }

@@ -67,9 +67,12 @@ output: {tenant: context.namespace}
 			name:    "accepts a key that matches what inference produces",
 			defName: "cluster-lookup",
 			template: `
+$internal: {
+	key:       "cluster-lookup-\(context.cluster)"
+	keyInputs: ["cluster"]
+}
 storage: {
-  key:        "cluster-lookup-\(context.cluster)"
-  storageTTL: "15m"
+	storageTTL: "15m"
 }
 output: {region: context.cluster}
 `,
@@ -82,7 +85,8 @@ output: {region: context.cluster}
 			name:    "rejects a key that does not match",
 			defName: "cluster-lookup",
 			template: `
-storage: {key: "hand-written", storageTTL: "15m"}
+$internal: {key: "hand-written"}
+storage: {storageTTL: "15m"}
 output: {region: context.cluster}
 `,
 			wantErr: "hand-written",
@@ -193,7 +197,7 @@ output: {region: context.cluster}
 // is to delete the line and guess.
 func TestStampMismatchNamesTheExpectedKey(t *testing.T) {
 	const template = `
-storage: {key: "hand-written"}
+$internal: {key: "hand-written"}
 output: {region: context.cluster}
 `
 	_, _, err := Stamp("cluster-lookup", template)
@@ -216,7 +220,8 @@ func TestVerify(t *testing.T) {
 	}
 
 	const good = `
-storage: {key: "cluster-lookup-\(context.cluster)", keyInputs: ["cluster"], storageTTL: "15m"}
+$internal: {key: "cluster-lookup-\(context.cluster)", keyInputs: ["cluster"]}
+storage: {storageTTL: "15m"}
 output: {region: context.cluster}
 `
 
@@ -236,7 +241,7 @@ output: {region: context.cluster}
 
 	t.Run("a tampered key is rejected", func(t *testing.T) {
 		const tampered = `
-storage: {key: "something-else"}
+$internal: {key: "something-else"}
 output: {region: context.cluster}
 `
 		err := Verify("cluster-lookup", tampered, current.Hash)
@@ -278,7 +283,7 @@ output: {region: context.cluster}
 	// onto a single cache entry.
 	t.Run("dropping a hashed-only input is rejected even though the key still matches", func(t *testing.T) {
 		const poisoned = `
-storage: {key: "svc-\(context.cluster)", keyInputs: ["cluster"]}
+$internal: {key: "svc-\(context.cluster)", keyInputs: ["cluster"]}
 output: {
   region: context.cluster
   team:   context.appLabels["team"]
@@ -304,7 +309,7 @@ output: {
 		// The mirror image: hashing a field the template never reads fragments the
 		// cache and makes the identity depend on data nobody consumes.
 		const extra = `
-storage: {key: "cluster-lookup-\(context.cluster)", keyInputs: ["cluster", "namespace"]}
+$internal: {key: "cluster-lookup-\(context.cluster)", keyInputs: ["cluster", "namespace"]}
 output: {region: context.cluster}
 `
 		if err := Verify("cluster-lookup", extra, current.Hash); err == nil {
@@ -314,7 +319,8 @@ output: {region: context.cluster}
 
 	t.Run("a missing keyInputs is rejected", func(t *testing.T) {
 		const noInputs = `
-storage: {key: "cluster-lookup-\(context.cluster)", storageTTL: "15m"}
+$internal: {key: "cluster-lookup-\(context.cluster)"}
+storage: {storageTTL: "15m"}
 output: {region: context.cluster}
 `
 		err := Verify("cluster-lookup", noInputs, current.Hash)
@@ -328,7 +334,7 @@ output: {region: context.cluster}
 
 	t.Run("a malformed keyInputs is rejected rather than read as absent", func(t *testing.T) {
 		const malformed = `
-storage: {key: "cluster-lookup-\(context.cluster)", keyInputs: "cluster"}
+$internal: {key: "cluster-lookup-\(context.cluster)", keyInputs: "cluster"}
 output: {region: context.cluster}
 `
 		if err := Verify("cluster-lookup", malformed, current.Hash); err == nil {
@@ -341,7 +347,7 @@ output: {region: context.cluster}
 		// identity - but a reordered list is still not what inference produces, and
 		// accepting it would mean the stored artifact no longer round-trips.
 		const reordered = `
-storage: {key: "svc-\(context.cluster)-\(context.namespace)", keyInputs: ["namespace", "cluster"]}
+$internal: {key: "svc-\(context.cluster)-\(context.namespace)", keyInputs: ["namespace", "cluster"]}
 output: {
   region: context.cluster
   ns:     context.namespace
@@ -357,8 +363,10 @@ output: {
 // the same reason it rejects a mismatched key: the author's belief about how
 // their source is cached should not be quietly overwritten.
 func TestStampRejectsMismatchedKeyInputs(t *testing.T) {
+	// The key is correct, so only keyInputs is wrong - otherwise this would be
+	// testing the key check instead.
 	const template = `
-storage: {keyInputs: ["cluster"]}
+$internal: {key: "svc-\(context.cluster)", keyInputs: ["cluster"]}
 output: {
   region: context.cluster
   team:   context.appLabels["team"]

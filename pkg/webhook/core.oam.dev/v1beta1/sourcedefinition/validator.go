@@ -51,22 +51,24 @@ func ValidateSourceStorage(template string) error {
 		return fmt.Errorf("SourceDefinition must declare a cue template")
 	}
 
-	storage, err := topLevelField(template, "storage")
+	internal, err := topLevelField(template, cachekey.InternalField)
 	if err != nil {
 		return err
 	}
-	if storage == nil {
-		return fmt.Errorf("SourceDefinition must declare a storage: block with a key: field")
+	if internal == nil {
+		return fmt.Errorf("SourceDefinition must declare a %s block with a %s field; apply it with "+
+			"`vela def apply` and one will be generated", cachekey.InternalField, cachekey.KeyField)
 	}
 
-	structLit, ok := storage.Value.(*ast.StructLit)
+	structLit, ok := internal.Value.(*ast.StructLit)
 	if !ok {
-		return fmt.Errorf("storage: must be a struct declaring a key: field")
+		return fmt.Errorf("%s: must be a struct declaring a %s field", cachekey.InternalField, cachekey.KeyField)
 	}
 
-	keyField := fieldByName(structLit.Elts, "key")
+	keyField := fieldByName(structLit.Elts, cachekey.KeyField)
 	if keyField == nil {
-		return fmt.Errorf("storage: must declare a key: field naming the cache entry")
+		return fmt.Errorf("%s: must declare a %s field naming the cache entry",
+			cachekey.InternalField, cachekey.KeyField)
 	}
 
 	return validateKeyExpr(keyField.Value)
@@ -105,11 +107,11 @@ func validateKeyExpr(expr ast.Expr) error {
 	switch v := expr.(type) {
 	case *ast.BasicLit:
 		if v.Kind != cuetoken.STRING {
-			return fmt.Errorf("storage.key must be a string, got %s", v.Kind)
+			return fmt.Errorf("%s.%s must be a string, got %s", cachekey.InternalField, cachekey.KeyField, v.Kind)
 		}
 		key, err := cueliteral.Unquote(v.Value)
 		if err != nil {
-			return fmt.Errorf("storage.key is not a valid string literal: %w", err)
+			return fmt.Errorf("%s.%s is not a valid string literal: %w", cachekey.InternalField, cachekey.KeyField, err)
 		}
 		return cachekey.ValidateCacheKey(key)
 	case *ast.Interpolation:
@@ -131,7 +133,7 @@ func validateKeyExpr(expr ast.Expr) error {
 			// the literal text is still caught.
 			text := strings.Trim(lit.Value, `"\()`)
 			if bad := cachekey.InvalidCacheKeyChars(text); bad != "" {
-				return fmt.Errorf("storage.key literal segment %q contains characters not allowed in a cache key (%s); only lowercase letters, digits and '-' are permitted", text, bad)
+				return fmt.Errorf("%s.%s literal segment %q contains characters not allowed in a cache key (%s); only lowercase letters, digits and '-' are permitted", cachekey.InternalField, cachekey.KeyField, text, bad)
 			}
 		}
 	}

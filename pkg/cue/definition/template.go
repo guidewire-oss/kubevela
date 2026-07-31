@@ -1042,14 +1042,18 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 	if err != nil {
 		return policy, errors.WithMessagef(err, "evaluate storage block for source %q", sourceName)
 	}
-	storage := val.LookupPath(value.FieldPath("storage"))
-	if !storage.Exists() {
-		return policy, fmt.Errorf("source definition %q must declare a storage: block with a key: field", sourceType)
+	// The generated block. It is written by `vela def` and re-derived at
+	// admission, so a definition that reached the cluster always has one.
+	internal := val.LookupPath(value.FieldPath(cachekey.InternalField))
+	if !internal.Exists() {
+		return policy, fmt.Errorf("source definition %q has no %s block; apply it with `vela def apply` "+
+			"so the cache key is generated", sourceType, cachekey.InternalField)
 	}
 
 	cacheKey := ""
-	if err := storage.LookupPath(value.FieldPath("key")).Decode(&cacheKey); err != nil {
-		return policy, errors.WithMessagef(err, "resolve storage.key for source %q", sourceName)
+	if err := internal.LookupPath(value.FieldPath(cachekey.KeyField)).Decode(&cacheKey); err != nil {
+		return policy, errors.WithMessagef(err, "resolve %s.%s for source %q",
+			cachekey.InternalField, cachekey.KeyField, sourceName)
 	}
 	if err := cachekey.ValidateCacheKey(cacheKey); err != nil {
 		return policy, errors.WithMessagef(err, "source %q", sourceName)
@@ -1057,9 +1061,13 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 	policy.Key = cacheKey
 
 	var keyInputs []string
-	if err := storage.LookupPath(value.FieldPath(cachekey.KeyInputsField)).Decode(&keyInputs); err == nil {
+	if err := internal.LookupPath(value.FieldPath(cachekey.KeyInputsField)).Decode(&keyInputs); err == nil {
 		policy.KeyInputs = keyInputs
 	}
+
+	// storage: is authored and entirely optional - a source with no caching
+	// preferences declares nothing.
+	storage := val.LookupPath(value.FieldPath("storage"))
 
 	ttlRaw := ""
 	if err := storage.LookupPath(value.FieldPath("storageTTL")).Decode(&ttlRaw); err == nil && ttlRaw != "" {

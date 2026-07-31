@@ -1882,9 +1882,7 @@ func TestResolveChainedSourceProperties(t *testing.T) {
 	}
 	resolver.sourceTemplates = map[string]string{
 		"typeA": `
-storage: {
-  key: "test-cache-key-1"
-}
+$internal: {key: "test-cache-key-1"}
 output: {
   nested: {
     image: {
@@ -1899,9 +1897,7 @@ parameter: {
 }
 `,
 		"typeB": `
-storage: {
-  key: "test-cache-key-2"
-}
+$internal: {key: "test-cache-key-2"}
 output: {
   resolved: {
     image: "\(parameter.repo):\(parameter.tag)"
@@ -1939,10 +1935,12 @@ parameter: {
 // compute, which now covers the template as well as the properties - so both
 // sides use the same text.
 const resolver_stale_cache_use_template = `
+$internal: {
+	key: "stale-cache-use"
+}
 storage: {
-  key: "stale-cache-use"
-  storageTTL: "1ms"
-  onStaleFailure: "use-stale"
+	storageTTL: "1ms"
+	onStaleFailure: "use-stale"
 }
 output: {
   value: parameter.value
@@ -1953,10 +1951,12 @@ parameter: {
 `
 
 const resolver_stale_cache_fail_template = `
+$internal: {
+	key: "stale-cache-fail"
+}
 storage: {
-  key: "stale-cache-fail"
-  storageTTL: "1ms"
-  onStaleFailure: "fail"
+	storageTTL: "1ms"
+	onStaleFailure: "fail"
 }
 output: {
   value: parameter.value
@@ -2059,9 +2059,7 @@ func TestResolveSourceSchemaMismatchFails(t *testing.T) {
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
-storage: {
-  key: "test-cache-key-3"
-}
+$internal: {key: "test-cache-key-3"}
 schema: {
   image: string
 }
@@ -2088,9 +2086,7 @@ func TestResolveSourceErrsFieldFails(t *testing.T) {
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
-storage: {
-  key: "test-cache-key-4"
-}
+$internal: {key: "test-cache-key-4"}
 output: {
   value: parameter.value
 }
@@ -2127,9 +2123,7 @@ func TestResolveSourceErrsFieldEmptyIsIgnored(t *testing.T) {
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
-storage: {
-  key: "test-cache-key-5"
-}
+$internal: {key: "test-cache-key-5"}
 output: {
   value: parameter.value
 }

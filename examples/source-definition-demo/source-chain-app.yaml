@@ -30,7 +30,7 @@ spec:
         }
         // Generated, not authored: this template reads no context, so the
         // source is unkeyed and its entries are separated by properties alone.
-        storage: {
+        $internal: {
           key: "cluster-source"
           keyInputs: []
         }
@@ -62,7 +62,7 @@ spec:
         }
         // Generated, not authored: this template reads no context, so the
         // source is unkeyed and its entries are separated by properties alone.
-        storage: {
+        $internal: {
           key: "render-source"
           keyInputs: []
         }

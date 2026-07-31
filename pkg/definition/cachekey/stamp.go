@@ -18,6 +18,7 @@ package cachekey
 
 import (
 	"fmt"
+	"strings"
 
 	"cuelang.org/go/cue/ast"
 	cueformat "cuelang.org/go/cue/format"
@@ -31,7 +32,7 @@ import (
 // changing inference never invalidates a definition already generated.
 const RulesAnnotation = "definition.oam.dev/cache-key-rules"
 
-// KeyInputsField is the generated sibling of storage.key: the values the resolver
+// KeyInputsField is the generated sibling of the key, inside InternalField: the values the resolver
 // folds into the identity hash. It is recorded rather than re-derived so that
 // inference stays a build-time concern, and so the resolver hashes exactly what
 // the template reads rather than, say, every label on the object.
@@ -77,19 +78,23 @@ func Stamp(definitionName, template string) (string, *Rules, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("parse cue template: %w", err)
 	}
-	if existing, ok := existingStorageKey(file); ok && existing != expr {
-		return "", nil, fmt.Errorf("storage.key is computed from the context this template reads, and %s "+
-			"does not match: expected %s. Correct it, or leave it out and it will be written for you",
-			existing, expr)
-	}
 	inputs := KeyInputs(dims)
-	if existing, ok := existingKeyInputs(file); ok && !equalStrings(existing, inputs) {
-		return "", nil, fmt.Errorf("storage.%s is computed from the context this template reads, and %v "+
-			"does not match: expected %v. Correct it, or leave it out and it will be written for you",
-			KeyInputsField, existing, inputs)
+	if existing, ok := existingInternal(file); ok {
+		if existing.hasKey && existing.Key != expr {
+			return "", nil, fmt.Errorf("%s.%s is computed from the context this template reads, and %s "+
+				"does not match: expected %s. Correct it, or leave the %s block out and it will be "+
+				"written for you", InternalField, KeyField, existing.Key, expr, InternalField)
+		}
+		if err := existing.incomplete(); err != nil {
+			return "", nil, err
+		}
+		if existing.MalformedInputs || !equalStrings(existing.KeyInputs, inputs) {
+			return "", nil, fmt.Errorf("%s.%s is computed from the context this template reads, and %v "+
+				"does not match: expected %v. Correct it, or leave the %s block out and it will be "+
+				"written for you", InternalField, KeyInputsField, existing.KeyInputs, inputs, InternalField)
+		}
 	}
-	setStorageKey(file, expr)
-	setKeyInputs(file, inputs)
+	setInternal(file, internal{Key: expr, KeyInputs: inputs})
 
 	out, err := cueformat.Node(file)
 	if err != nil {
@@ -98,154 +103,173 @@ func Stamp(definitionName, template string) (string, *Rules, error) {
 	return string(out), rules, nil
 }
 
-// setStorageKey sets storage.key to expr, creating the storage block if needed
-// and leaving any other fields in it - storageTTL and onStaleFailure are authored.
-func setStorageKey(file *ast.File, expr string) {
-	keyValue := ast.NewLit(cuetoken.STRING, expr)
+// generatedNotice heads the $internal block in every stamped template.
+const generatedNotice = "// Generated from the context this template reads - do not edit. " +
+	"Admission re-derives these and rejects a mismatch."
 
-	for _, decl := range file.Decls {
-		field, ok := decl.(*ast.Field)
-		if !ok {
-			continue
-		}
-		if name, _, err := ast.LabelName(field.Label); err != nil || name != storageField {
-			continue
-		}
-		st, ok := field.Value.(*ast.StructLit)
-		if !ok {
-			continue
-		}
-		for _, elt := range st.Elts {
-			f, ok := elt.(*ast.Field)
-			if !ok {
-				continue
-			}
-			if name, _, err := ast.LabelName(f.Label); err == nil && name == keyField {
-				f.Value = keyValue
-				return
-			}
-		}
-		// storage: exists without a key; put the key first so it reads as the
-		// identity of the block rather than an afterthought.
-		st.Elts = append([]ast.Decl{newKeyField(keyValue)}, st.Elts...)
-		return
-	}
-
-	// No storage: block at all.
-	file.Decls = append(file.Decls, &ast.Field{
-		Label: ast.NewIdent(storageField),
-		Value: &ast.StructLit{Elts: []ast.Decl{newKeyField(keyValue)}},
-	})
+// internal is the generated block: what Stamp writes and Verify re-derives.
+type internal struct {
+	Key       string
+	KeyInputs []string
+	// MalformedInputs records that keyInputs was present but unreadable, so it
+	// fails comparison rather than passing as the empty list.
+	MalformedInputs bool
+	// hasKey and hasInputs distinguish a field that is absent from one that is
+	// present and empty - "" and [] are both legitimate generated values.
+	hasKey, hasInputs bool
 }
 
-// storageField returns the value of a field inside the storage: block.
-func storageFieldValue(file *ast.File, want string) (ast.Expr, bool) {
+// incomplete reports a block missing one of its two generated fields.
+//
+// The block is written whole, so a partial one was hand-edited. Saying that
+// plainly beats comparing the half that is there, which would blame whichever
+// field the check happened to reach first.
+func (in internal) incomplete() error {
+	var missing []string
+	if !in.hasKey {
+		missing = append(missing, KeyField)
+	}
+	if !in.hasInputs {
+		missing = append(missing, KeyInputsField)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the %s block is incomplete: %s missing. %s and %s are generated together, so "+
+		"leave the block out and both will be written for you",
+		InternalField, strings.Join(missing, " and ")+" is", KeyField, KeyInputsField)
+}
+
+// setInternal replaces the $internal block, or prepends one.
+//
+// It is written whole rather than field by field, which is the practical payoff
+// of keeping generated values in their own block: there is no merging to do, and
+// no way for a stale generated field to survive a regeneration. It leads the
+// template so a reader meets the generated part before the authored one.
+func setInternal(file *ast.File, in internal) {
+	elts := make([]ast.Expr, 0, len(in.KeyInputs))
+	for _, s := range in.KeyInputs {
+		elts = append(elts, ast.NewString(s))
+	}
+	block := &ast.Field{
+		Label: ast.NewIdent(InternalField),
+		Value: &ast.StructLit{Elts: []ast.Decl{
+			&ast.Field{Label: ast.NewIdent(KeyField), Value: ast.NewLit(cuetoken.STRING, in.Key)},
+			&ast.Field{Label: ast.NewIdent(KeyInputsField), Value: ast.NewList(elts...)},
+		}},
+	}
+
+	// The block name says it is not yours; the comment says why editing it will
+	// not work. Someone reading a stored definition has no other cue.
+	ast.SetComments(block, []*ast.CommentGroup{{
+		Doc:  true,
+		List: []*ast.Comment{{Text: generatedNotice}},
+	}})
+
+	for i, decl := range file.Decls {
+		field, ok := decl.(*ast.Field)
+		if !ok {
+			continue
+		}
+		if name, _, err := ast.LabelName(field.Label); err == nil && name == InternalField {
+			file.Decls[i] = block
+			return
+		}
+	}
+	// After the package clause and any imports, which CUE requires to come first,
+	// but before the authored fields - so a reader meets the generated block up
+	// front rather than discovering it at the bottom.
+	at := 0
+	for i, decl := range file.Decls {
+		switch decl.(type) {
+		case *ast.Package, *ast.ImportDecl, *ast.CommentGroup:
+			at = i + 1
+		default:
+			file.Decls = append(file.Decls[:at:at], append([]ast.Decl{block}, file.Decls[at:]...)...)
+			return
+		}
+	}
+	file.Decls = append(file.Decls, block)
+}
+
+// existingInternal reads the $internal block already in the template.
+//
+// A block that is present but malformed is reported as present with whatever
+// could be read, so it fails the comparison in Stamp and Verify rather than
+// being skipped: the alternative is that a malformed block reads as absent and
+// slips through.
+func existingInternal(file *ast.File) (internal, bool) {
+	var out internal
+
+	st, ok := internalBlock(file)
+	if !ok {
+		return out, false
+	}
+	for _, elt := range st.Elts {
+		f, ok := elt.(*ast.Field)
+		if !ok {
+			continue
+		}
+		name, _, err := ast.LabelName(f.Label)
+		if err != nil {
+			continue
+		}
+		switch name {
+		case KeyField:
+			out.hasKey = true
+			if text, err := cueformat.Node(f.Value); err == nil {
+				out.Key = string(text)
+			}
+		case KeyInputsField:
+			out.hasInputs = true
+			list, ok := stringList(f.Value)
+			if !ok {
+				// A malformed list must not read as the empty list, which is a
+				// legitimate value for a source that reads no context - it would
+				// then compare equal and be accepted.
+				out.MalformedInputs = true
+				continue
+			}
+			out.KeyInputs = list
+		}
+	}
+	return out, true
+}
+
+func internalBlock(file *ast.File) (*ast.StructLit, bool) {
 	for _, decl := range file.Decls {
 		field, ok := decl.(*ast.Field)
 		if !ok {
 			continue
 		}
-		if name, _, err := ast.LabelName(field.Label); err != nil || name != storageField {
+		if name, _, err := ast.LabelName(field.Label); err != nil || name != InternalField {
 			continue
 		}
 		st, ok := field.Value.(*ast.StructLit)
-		if !ok {
-			continue
-		}
-		for _, elt := range st.Elts {
-			f, ok := elt.(*ast.Field)
-			if !ok {
-				continue
-			}
-			if name, _, err := ast.LabelName(f.Label); err == nil && name == want {
-				return f.Value, true
-			}
-		}
+		return st, ok
 	}
 	return nil, false
 }
 
-// existingStorageKey returns the key already written in the template, as source
-// text, and whether there was one.
-func existingStorageKey(file *ast.File) (string, bool) {
-	value, ok := storageFieldValue(file, keyField)
-	if !ok {
-		return "", false
-	}
-	out, err := cueformat.Node(value)
-	if err != nil {
-		return "", false
-	}
-	return string(out), true
-}
-
-// existingKeyInputs returns the keyInputs list already written in the template.
-//
-// A list that is present but not a list of plain strings is reported as present
-// and empty, so it fails the comparison in Verify rather than being skipped: the
-// alternative is that a malformed list reads as absent and slips through.
-func existingKeyInputs(file *ast.File) ([]string, bool) {
-	value, ok := storageFieldValue(file, KeyInputsField)
+// stringList reads a CUE list of string literals, reporting whether it could.
+func stringList(expr ast.Expr) ([]string, bool) {
+	list, ok := expr.(*ast.ListLit)
 	if !ok {
 		return nil, false
-	}
-	list, ok := value.(*ast.ListLit)
-	if !ok {
-		return nil, true
 	}
 	out := make([]string, 0, len(list.Elts))
 	for _, elt := range list.Elts {
 		lit, ok := elt.(*ast.BasicLit)
 		if !ok || lit.Kind != cuetoken.STRING {
-			return nil, true
+			return nil, false
 		}
 		s, err := literal.Unquote(lit.Value)
 		if err != nil {
-			return nil, true
+			return nil, false
 		}
 		out = append(out, s)
 	}
 	return out, true
-}
-
-// setKeyInputs records the values the identity hash covers, replacing any list
-// already present so regeneration stays idempotent.
-func setKeyInputs(file *ast.File, inputs []string) {
-	elts := make([]ast.Expr, 0, len(inputs))
-	for _, in := range inputs {
-		elts = append(elts, ast.NewString(in))
-	}
-	value := ast.NewList(elts...)
-
-	for _, decl := range file.Decls {
-		field, ok := decl.(*ast.Field)
-		if !ok {
-			continue
-		}
-		if name, _, err := ast.LabelName(field.Label); err != nil || name != storageField {
-			continue
-		}
-		st, ok := field.Value.(*ast.StructLit)
-		if !ok {
-			continue
-		}
-		for _, elt := range st.Elts {
-			f, ok := elt.(*ast.Field)
-			if !ok {
-				continue
-			}
-			if name, _, err := ast.LabelName(f.Label); err == nil && name == KeyInputsField {
-				f.Value = value
-				return
-			}
-		}
-		st.Elts = append(st.Elts, &ast.Field{Label: ast.NewIdent(KeyInputsField), Value: value})
-		return
-	}
-}
-
-func newKeyField(value ast.Expr) *ast.Field {
-	return &ast.Field{Label: ast.NewIdent(keyField), Value: value}
 }
 
 // Verify re-derives the cache key from a stored template and checks the key the
@@ -280,31 +304,30 @@ func Verify(definitionName, template, rulesHash string) error {
 	if err != nil {
 		return fmt.Errorf("parse cue template: %w", err)
 	}
-	existing, ok := existingStorageKey(file)
+	wantInputs := KeyInputs(dims)
+
+	existing, ok := existingInternal(file)
 	if !ok {
-		return fmt.Errorf("storage.key is missing; it is computed from the context this template reads "+
-			"and should be %s. Apply the definition with `vela def apply` and it will be written for you",
-			expected)
+		return fmt.Errorf("the %s block is missing; %s should be %s and %s should be %v, both computed "+
+			"from the context this template reads. Apply the definition with `vela def apply` and it "+
+			"will be written for you",
+			InternalField, KeyField, expected, KeyInputsField, wantInputs)
 	}
-	if existing != expected {
-		return fmt.Errorf("storage.key is computed from the context this template reads, and %s does not "+
-			"match: expected %s", existing, expected)
+	if existing.hasKey && existing.Key != expected {
+		return fmt.Errorf("%s.%s is computed from the context this template reads, and %s does not "+
+			"match: expected %s", InternalField, KeyField, existing.Key, expected)
+	}
+	if err := existing.incomplete(); err != nil {
+		return err
 	}
 
 	// keyInputs needs checking on its own account, not as a formality. Only some
 	// fields are inlined into the key, so dropping a hashed-only one - a label
-	// value, say - leaves storage.key matching perfectly while collapsing entries
-	// that should be distinct onto a single cache entry.
-	wantInputs := KeyInputs(dims)
-	existingInputs, ok := existingKeyInputs(file)
-	if !ok {
-		return fmt.Errorf("storage.%s is missing; it names the values folded into the cache identity and "+
-			"should be %v. Apply the definition with `vela def apply` and it will be written for you",
-			KeyInputsField, wantInputs)
-	}
-	if !equalStrings(existingInputs, wantInputs) {
-		return fmt.Errorf("storage.%s is computed from the context this template reads, and %v does not "+
-			"match: expected %v", KeyInputsField, existingInputs, wantInputs)
+	// value, say - leaves the key matching perfectly while collapsing entries that
+	// should be distinct onto a single cache entry.
+	if existing.MalformedInputs || !equalStrings(existing.KeyInputs, wantInputs) {
+		return fmt.Errorf("%s.%s is computed from the context this template reads, and %v does not "+
+			"match: expected %v", InternalField, KeyInputsField, existing.KeyInputs, wantInputs)
 	}
 	return nil
 }

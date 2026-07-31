@@ -102,11 +102,15 @@ var _ = Describe("SourceDefinition fromSource e2e", func() {
 schema: {
   image: string
 }
+$internal: {
+	key: "image-source"
+}
 storage: {
-  // Generated: this source reads no context, so the key is bare. The image is a
-  // property, and properties are hashed into the cache identity by the resolver -
-  // which is why a value containing ':' and '.' needs no normalising here.
-  key: "image-source"
+	// Generated: this source reads no context
+	so the key is bare. The image is a
+	// property
+	and properties are hashed into the cache identity by the resolver -
+	// which is why a value containing ':' and '.' needs no normalising here.
 }
 output: {
   // +sensitive
@@ -232,13 +236,17 @@ parameter: {
 schema: {
   image: string
 }
+$internal: {
+	key: "stale-image-source"
+}
 storage: {
-  // Generated: the template reads no context, so the key is the definition name.
-  // storage.key is not itself scanned, so a key mentioning context.namespace
-  // would not make namespace a dimension.
-  key: "stale-image-source"
-  storageTTL: "1h"
-  onStaleFailure: "use-stale"
+	// Generated: the template reads no context
+	so the key is the definition name.
+	// storage.key is not itself scanned
+	so a key mentioning context.namespace
+	// would not make namespace a dimension.
+	storageTTL: "1h"
+	onStaleFailure: "use-stale"
 }
 output: {
   image: parameter.image
@@ -383,9 +391,7 @@ schema: {
     }
   }
 }
-storage: {
-  key: "cluster-source"
-}
+$internal: {key: "cluster-source"}
 output: {
   nested: {
     image: {
@@ -424,9 +430,7 @@ schema: {
     region: string
   }
 }
-storage: {
-  key: "render-source"
-}
+$internal: {key: "render-source"}
 output: {
   resolved: {
     image: "\(parameter.repo):\(parameter.tag)"
@@ -515,9 +519,7 @@ schema: {
     replicas: int
   }
 }
-storage: {
-  key: "scale-source"
-}
+$internal: {key: "scale-source"}
 output: {
   scale: {
     replicas: parameter.replicas
@@ -603,9 +605,7 @@ schema: {
   image:  string
   vpcId?: string
 }
-storage: {
-  key: "typed-source"
-}
+$internal: {key: "typed-source"}
 output: {
   image: parameter.image
 }
@@ -710,7 +710,7 @@ parameter: {
 		// Reads context.cluster, so the derived key is "<name>-\(context.cluster)".
 		const readsCluster = `
 schema: {region: string}
-storage: {key: "%s"}
+$internal: {key: "%s"}
 output: {region: context.cluster}
 parameter: {}
 `

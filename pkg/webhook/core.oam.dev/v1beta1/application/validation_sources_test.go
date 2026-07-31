@@ -546,7 +546,7 @@ func TestValidateSourcesRejectsUnsupportedSurfaces(t *testing.T) {
 		Spec: v1beta1.SourceDefinitionSpec{
 			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
 schema: {image: string}
-storage: {key: "source-a"}
+$internal: {key: "source-a"}
 output: {image: parameter.image}
 parameter: {image: string}
 `}},
@@ -632,7 +632,7 @@ func TestValidateSourcesHonoursConsumableFrom(t *testing.T) {
 			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
 consumableFrom: ["component"]
 schema: {image: string}
-storage: {key: "component-only"}
+$internal: {key: "component-only"}
 output: {image: parameter.image}
 parameter: {image: string}
 `}},

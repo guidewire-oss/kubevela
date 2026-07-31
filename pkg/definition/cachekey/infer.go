@@ -29,15 +29,21 @@ import (
 // contextIdent is the CUE identifier a template reads runtime values from.
 const contextIdent = "context"
 
+// InternalField is the block holding everything the tooling generates, kept
+// apart from the authored storage: block so that what a user may edit needs no
+// explaining: one block is theirs, the other is not.
+//
+// The $ prefix follows the convention CueX already uses for $params and
+// $returns. A leading underscore would be the CUE idiom for "internal", but
+// hidden fields are dropped from exported output, and these have to stay
+// visible - GitOps diffs them and admission re-derives them.
+const InternalField = "$internal"
+
 const (
 	storageField = "storage"
-	keyField     = "key"
+	// KeyField is the generated cache key, inside InternalField.
+	KeyField = "key"
 )
-
-// generatedStorageFields are written by Stamp, so they are not part of the
-// resolution logic and must not be scanned - a regenerated key would otherwise
-// depend on the previous one.
-var generatedStorageFields = map[string]bool{keyField: true, KeyInputsField: true}
 
 // Dimension is one context value a cache key is built from.
 type Dimension struct {
@@ -72,11 +78,11 @@ func Infer(template string, rules *Rules) ([]Dimension, error) {
 		return nil, fmt.Errorf("parse cue template: %w", err)
 	}
 
-	// storage.key is generated from these reads, so it cannot be one of them:
+	// $internal is generated from these reads, so it cannot be one of them:
 	// scanning it would make a regenerated key depend on the previous key rather
-	// than on the resolution logic. The rest of storage: is authored and is
-	// scanned normally.
-	stripGeneratedKey(file)
+	// than on the resolution logic. Everything else, storage: included, is
+	// authored and is scanned normally.
+	stripGenerated(file)
 
 	found := map[string]Dimension{}
 	var scanErr error
@@ -173,30 +179,20 @@ func Infer(template string, rules *Rules) ([]Dimension, error) {
 }
 
 // stripGeneratedKey removes storage.key from the tree before scanning.
-func stripGeneratedKey(file *ast.File) {
+// stripGenerated removes the $internal block, so inference sees only what the
+// author wrote. Dropping the whole block is the point of having one: there is no
+// per-field list to keep in step with what Stamp writes.
+func stripGenerated(file *ast.File) {
+	kept := make([]ast.Decl, 0, len(file.Decls))
 	for _, decl := range file.Decls {
-		field, ok := decl.(*ast.Field)
-		if !ok {
-			continue
-		}
-		if name, _, err := ast.LabelName(field.Label); err != nil || name != storageField {
-			continue
-		}
-		st, ok := field.Value.(*ast.StructLit)
-		if !ok {
-			continue
-		}
-		kept := make([]ast.Decl, 0, len(st.Elts))
-		for _, elt := range st.Elts {
-			if f, ok := elt.(*ast.Field); ok {
-				if name, _, err := ast.LabelName(f.Label); err == nil && generatedStorageFields[name] {
-					continue
-				}
+		if field, ok := decl.(*ast.Field); ok {
+			if name, _, err := ast.LabelName(field.Label); err == nil && name == InternalField {
+				continue
 			}
-			kept = append(kept, elt)
 		}
-		st.Elts = kept
+		kept = append(kept, decl)
 	}
+	file.Decls = kept
 }
 
 // unsupportedContext is the single rejection for context a source may not read.
