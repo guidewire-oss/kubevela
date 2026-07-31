@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 	"github.com/oam-dev/kubevela/pkg/logging"
 	webhookutils "github.com/oam-dev/kubevela/pkg/webhook/utils"
 )
@@ -96,6 +97,16 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 	// output check are skipped, leaving fromSource unvalidated in either layer.
 	if err := ValidateSourceSchema(cueTemplate); err != nil {
 		logger.WithStep("validate-schema").WithError(err).Error(err, "SourceDefinition schema block is invalid - a schema is required to validate fromSource paths")
+		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
+	}
+
+	// storage.key is computed from the context the template reads. The CLI writes
+	// it, but nothing stops an object being edited or written by hand, so re-derive
+	// it here rather than trusting what arrived. The rules recorded on the object
+	// are used in preference to the current ones, so changing inference does not
+	// invalidate definitions already committed and re-applied by GitOps.
+	if err := cachekey.Verify(obj.Name, cueTemplate, obj.GetAnnotations()[cachekey.RulesAnnotation]); err != nil {
+		logger.WithStep("validate-cache-key").WithError(err).Error(err, "SourceDefinition cache key does not match the context its template reads")
 		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
 	}
 

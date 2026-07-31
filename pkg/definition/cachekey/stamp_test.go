@@ -206,3 +206,69 @@ output: {region: context.cluster}
 		}
 	}
 }
+
+// Verify is the admission-side half of the contract: the CLI writes the key, and
+// this re-derives it to check nothing edited the artifact afterwards.
+func TestVerify(t *testing.T) {
+	current, err := LoadRules()
+	if err != nil {
+		t.Fatalf("loading rules: %v", err)
+	}
+
+	const good = `
+storage: {key: "cluster-lookup-\(context.cluster)", storageTTL: "15m"}
+output: {region: context.cluster}
+`
+
+	t.Run("a matching key with the rules that produced it", func(t *testing.T) {
+		if err := Verify("cluster-lookup", good, current.Hash); err != nil {
+			t.Fatalf("expected acceptance, got: %v", err)
+		}
+	})
+
+	t.Run("a matching key with no recorded rules falls back to the current ones", func(t *testing.T) {
+		// Hand-written YAML carries no annotation. It still has to match, just
+		// against today's policy rather than a pinned one.
+		if err := Verify("cluster-lookup", good, ""); err != nil {
+			t.Fatalf("expected acceptance, got: %v", err)
+		}
+	})
+
+	t.Run("a tampered key is rejected", func(t *testing.T) {
+		const tampered = `
+storage: {key: "something-else"}
+output: {region: context.cluster}
+`
+		err := Verify("cluster-lookup", tampered, current.Hash)
+		if err == nil {
+			t.Fatal("expected a tampered key to be rejected")
+		}
+		for _, want := range []string{"something-else", `cluster-lookup-\(context.cluster)`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error should name %q; got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("a missing key is rejected", func(t *testing.T) {
+		const noKey = `
+storage: {storageTTL: "15m"}
+output: {region: context.cluster}
+`
+		if err := Verify("cluster-lookup", noKey, current.Hash); err == nil {
+			t.Fatal("expected a template with no storage.key to be rejected")
+		}
+	})
+
+	t.Run("rules that this build does not have are rejected", func(t *testing.T) {
+		// Better to refuse than to validate against different rules than the ones
+		// that generated the key - that would defeat recording it.
+		err := Verify("cluster-lookup", good, "deadbeef")
+		if err == nil {
+			t.Fatal("expected an unknown rules hash to be rejected")
+		}
+		if !strings.Contains(err.Error(), "deadbeef") {
+			t.Fatalf("error should name the missing hash; got: %v", err)
+		}
+	})
+}

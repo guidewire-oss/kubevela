@@ -155,3 +155,56 @@ func existingStorageKey(file *ast.File) (string, bool) {
 func newKeyField(value ast.Expr) *ast.Field {
 	return &ast.Field{Label: ast.NewIdent(keyField), Value: value}
 }
+
+// Verify re-derives the cache key from a stored template and checks the key the
+// template carries matches it.
+//
+// This is the admission-side half of the contract. The CLI writes the key, but
+// nothing stops a stored object being edited or written by hand, so the key is
+// re-derived rather than trusted.
+//
+// rulesHash names the policy that produced the key, taken from the object's
+// annotation. It is used in preference to the current rules so that changing
+// inference does not invalidate definitions already generated and committed -
+// which matters because GitOps re-applies them continuously. An empty hash means
+// the object was not produced by `vela def`, and the current rules apply: the key
+// still has to be right, just by today's policy.
+func Verify(definitionName, template, rulesHash string) error {
+	rules, err := rulesFor(rulesHash)
+	if err != nil {
+		return err
+	}
+
+	dims, err := Infer(template, rules)
+	if err != nil {
+		return err
+	}
+	expected, err := KeyExpression(definitionName, dims)
+	if err != nil {
+		return err
+	}
+
+	file, err := cueparser.ParseFile("-", template, cueparser.ParseComments)
+	if err != nil {
+		return fmt.Errorf("parse cue template: %w", err)
+	}
+	existing, ok := existingStorageKey(file)
+	if !ok {
+		return fmt.Errorf("storage.key is missing; it is computed from the context this template reads "+
+			"and should be %s. Apply the definition with `vela def apply` and it will be written for you",
+			expected)
+	}
+	if existing != expected {
+		return fmt.Errorf("storage.key is computed from the context this template reads, and %s does not "+
+			"match: expected %s", existing, expected)
+	}
+	return nil
+}
+
+// rulesFor loads the named policy, or the current one when nothing is named.
+func rulesFor(rulesHash string) (*Rules, error) {
+	if rulesHash == "" {
+		return LoadRules()
+	}
+	return LoadRulesByHash(rulesHash)
+}
