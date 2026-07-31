@@ -29,6 +29,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -51,6 +52,10 @@ type Rules struct {
 	// Hash identifies this policy. It is stamped onto generated definitions and
 	// used to load the same rules again when validating them.
 	Hash string
+	// Version is a readable name for the same policy, declared in the rules file
+	// so it cannot drift from the content it names. Stamped alongside the hash
+	// for whoever is reading an annotation rather than computing one.
+	Version string
 
 	keyed     map[string]keyedField
 	forbidden map[string]string
@@ -111,9 +116,7 @@ func loadRuleFile(name string) (*Rules, error) {
 		return nil, fmt.Errorf("reading %s: %w", name, err)
 	}
 
-	sum := sha256.Sum256(raw)
 	rules := &Rules{
-		Hash:      hex.EncodeToString(sum[:])[:8],
 		keyed:     map[string]keyedField{},
 		forbidden: map[string]string{},
 	}
@@ -128,7 +131,45 @@ func loadRuleFile(name string) (*Rules, error) {
 	if err := v.LookupPath(cue.ParsePath("forbidden")).Decode(&rules.forbidden); err != nil {
 		return nil, fmt.Errorf("decoding forbidden fields from %s: %w", name, err)
 	}
+	if err := v.LookupPath(cue.ParsePath("version")).Decode(&rules.Version); err != nil {
+		return nil, fmt.Errorf("decoding version from %s: %w", name, err)
+	}
+	if rules.Version == "" {
+		return nil, fmt.Errorf("%s declares no version; it names the policy for anyone reading a stamped definition", name)
+	}
+
+	hash, err := rules.policyHash()
+	if err != nil {
+		return nil, fmt.Errorf("hashing %s: %w", name, err)
+	}
+	rules.Hash = hash
 	return rules, nil
+}
+
+// policyHash fingerprints what these rules *do*, not the file they came from.
+//
+// Comments, the declared version and the wording of a rejection are not part of
+// the policy, and hashing the raw bytes would make editing any of them change the
+// identity - invalidating every definition already stamped, for no behavioural
+// reason. Only the fields that decide a key are covered: which are keyed, in what
+// order, whether they are indexed, and which are forbidden.
+func (r *Rules) policyHash() (string, error) {
+	forbidden := make([]string, 0, len(r.forbidden))
+	for field := range r.forbidden {
+		forbidden = append(forbidden, field)
+	}
+	sort.Strings(forbidden)
+
+	// json.Marshal sorts map keys, so this does not depend on iteration order.
+	raw, err := json.Marshal(struct {
+		Keyed     map[string]keyedField `json:"keyed"`
+		Forbidden []string              `json:"forbidden"`
+	}{Keyed: r.keyed, Forbidden: forbidden})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])[:8], nil
 }
 
 // IsClassified reports whether these rules make a decision about a context field.

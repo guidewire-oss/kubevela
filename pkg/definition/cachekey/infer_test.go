@@ -261,3 +261,59 @@ func TestEveryContextKeywordIsClassified(t *testing.T) {
 			"that read it — and worse, a field meant to be keyed becomes an unkeyed dependency.", unclassified)
 	}
 }
+
+// The hash identifies the policy, not the file. Editing a comment, the declared
+// version, or the wording of a rejection must not change it: those are not
+// behaviour, and changing the identity forces every stamped definition to be
+// regenerated. A change to what is keyed, its order, or what is forbidden must.
+func TestPolicyHashCoversBehaviourOnly(t *testing.T) {
+	base, err := LoadRules()
+	if err != nil {
+		t.Fatalf("loading rules: %v", err)
+	}
+
+	// Same policy, different prose.
+	prose := &Rules{
+		Version:   "something else entirely",
+		keyed:     base.keyed,
+		forbidden: map[string]string{},
+	}
+	for field := range base.forbidden {
+		prose.forbidden[field] = "a completely different explanation"
+	}
+	proseHash, err := prose.policyHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proseHash != base.Hash {
+		t.Errorf("rewording must not change the identity: %q became %q", base.Hash, proseHash)
+	}
+
+	// Different policy: one more forbidden field.
+	changed := &Rules{keyed: base.keyed, forbidden: map[string]string{}}
+	for field, reason := range base.forbidden {
+		changed.forbidden[field] = reason
+	}
+	changed.forbidden["somethingNew"] = "newly classified"
+	changedHash, err := changed.policyHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedHash == base.Hash {
+		t.Error("classifying another field must change the identity")
+	}
+
+	// Different policy: same fields, different order.
+	reordered := &Rules{forbidden: base.forbidden, keyed: map[string]keyedField{}}
+	for field, entry := range base.keyed {
+		entry.Order += 100
+		reordered.keyed[field] = entry
+	}
+	reorderedHash, err := reordered.policyHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reorderedHash == base.Hash {
+		t.Error("reordering the key segments must change the identity")
+	}
+}

@@ -30,6 +30,11 @@ import (
 // changing inference never invalidates a definition already generated.
 const RulesAnnotation = "definition.oam.dev/cache-key-rules"
 
+// RulesVersionAnnotation records the readable name of the same policy. The hash
+// above is what validation looks up; this is for whoever is reading the object
+// and wants to know which policy applied without computing anything.
+const RulesVersionAnnotation = "definition.oam.dev/cache-key-rules-version"
+
 // Stamp writes the inferred cache key into a SourceDefinition template and
 // returns it alongside the hash of the rules used.
 //
@@ -46,27 +51,27 @@ const RulesAnnotation = "definition.oam.dev/cache-key-rules"
 // It is idempotent - the generated key is not itself read when inferring - so
 // re-stamping an already stamped template yields the same bytes. That matters
 // because a re-apply of an unchanged definition must not show a diff.
-func Stamp(definitionName, template string) (string, string, error) {
+func Stamp(definitionName, template string) (string, *Rules, error) {
 	rules, err := LoadRules()
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 
 	dims, err := Infer(template, rules)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 	expr, err := KeyExpression(definitionName, dims)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 
 	file, err := cueparser.ParseFile("-", template, cueparser.ParseComments)
 	if err != nil {
-		return "", "", fmt.Errorf("parse cue template: %w", err)
+		return "", nil, fmt.Errorf("parse cue template: %w", err)
 	}
 	if existing, ok := existingStorageKey(file); ok && existing != expr {
-		return "", "", fmt.Errorf("storage.key is computed from the context this template reads, and %s "+
+		return "", nil, fmt.Errorf("storage.key is computed from the context this template reads, and %s "+
 			"does not match: expected %s. Correct it, or leave it out and it will be written for you",
 			existing, expr)
 	}
@@ -74,9 +79,9 @@ func Stamp(definitionName, template string) (string, string, error) {
 
 	out, err := cueformat.Node(file)
 	if err != nil {
-		return "", "", fmt.Errorf("format stamped template: %w", err)
+		return "", nil, fmt.Errorf("format stamped template: %w", err)
 	}
-	return string(out), rules.Hash, nil
+	return string(out), rules, nil
 }
 
 // setStorageKey sets storage.key to expr, creating the storage block if needed

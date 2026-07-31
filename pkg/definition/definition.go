@@ -376,12 +376,13 @@ func (def *Definition) FromCUE(val *cue.Value, templateString string) error {
 	// rules were used so the same ones validate it later. Doing this here rather
 	// than in a command covers every path that builds a definition from CUE.
 	if def.GetType() == sourceDefType {
-		stamped, rulesHash, err := cachekey.Stamp(def.GetName(), templateString)
+		stamped, rules, err := cachekey.Stamp(def.GetName(), templateString)
 		if err != nil {
 			return fmt.Errorf("deriving the cache key for SourceDefinition %s: %w", def.GetName(), err)
 		}
 		templateString = stamped
-		annotations[cachekey.RulesAnnotation] = rulesHash
+		annotations[cachekey.RulesAnnotation] = rules.Hash
+		annotations[cachekey.RulesVersionAnnotation] = rules.Version
 	}
 
 	def.SetAnnotations(annotations)

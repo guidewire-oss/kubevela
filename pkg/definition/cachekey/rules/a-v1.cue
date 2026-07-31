@@ -12,6 +12,11 @@
 // their rules. To change the policy, add a new file alongside this one; this one
 // must remain for as long as any definition references it.
 
+// version: a readable name for this policy, for correlating a stamped definition
+// with the rules that produced it without computing hashes. The hash remains the
+// identity - this is for the human reading the annotation.
+version: "v1"
+
 // keyed: fields that contribute to the cache key, lowest order first.
 //
 // Ordered broad to narrow so keys group by prefix when listed: an operator

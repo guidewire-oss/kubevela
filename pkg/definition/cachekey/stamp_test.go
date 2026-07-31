@@ -109,7 +109,7 @@ output: {p: context.policyName}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, hash, err := Stamp(tc.defName, tc.template)
+			got, rules, err := Stamp(tc.defName, tc.template)
 
 			if tc.wantErr != "" {
 				if err == nil {
@@ -123,8 +123,8 @@ output: {p: context.policyName}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if hash == "" {
-				t.Fatal("expected the rules hash to be returned, so it can be recorded on the object")
+			if rules == nil || rules.Hash == "" || rules.Version == "" {
+				t.Fatal("expected the rules to be returned, so hash and version can be recorded on the object")
 			}
 			if !strings.Contains(normalise(got), normalise(tc.wantKey)) {
 				t.Fatalf("expected the template to contain:\n  %s\ngot:\n%s", tc.wantKey, got)
@@ -146,19 +146,19 @@ schema: {region: string}
 storage: {storageTTL: "15m"}
 output: {region: context.cluster, svc: context.appLabels["team"]}
 `
-	once, hash1, err := Stamp("cluster-lookup", template)
+	once, rules1, err := Stamp("cluster-lookup", template)
 	if err != nil {
 		t.Fatalf("first stamp: %v", err)
 	}
-	twice, hash2, err := Stamp("cluster-lookup", once)
+	twice, rules2, err := Stamp("cluster-lookup", once)
 	if err != nil {
 		t.Fatalf("second stamp: %v", err)
 	}
 	if once != twice {
 		t.Fatalf("stamping is not idempotent:\n--- once ---\n%s\n--- twice ---\n%s", once, twice)
 	}
-	if hash1 != hash2 {
-		t.Fatalf("rules hash changed between stamps: %q then %q", hash1, hash2)
+	if rules1.Hash != rules2.Hash {
+		t.Fatalf("rules hash changed between stamps: %q then %q", rules1.Hash, rules2.Hash)
 	}
 }
 
