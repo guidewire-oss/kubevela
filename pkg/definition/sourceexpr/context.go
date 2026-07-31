@@ -119,9 +119,16 @@ func sentinelContext(refs []Reference) (map[string]interface{}, error) {
 		case kindInt:
 			out[field] = 1
 		case kindStruct:
-			// clusterVersion. Its shape is fixed, so the sentinel can be too.
+			// clusterVersion. Its shape is fixed, so the sentinel can be too -
+			// but it has to match what parseClusterVersion actually builds.
+			// minor is an int64 there (strconv.ParseInt), not a string, and
+			// declaring it a string made admission promise a type render would
+			// not produce.
 			out[field] = map[string]interface{}{
-				"major": "1", "minor": "31", "gitVersion": "x", "platform": "x",
+				"major":      "1",
+				"minor":      1,
+				"gitVersion": "x",
+				"platform":   "x",
 			}
 		}
 	}

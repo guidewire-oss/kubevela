@@ -407,7 +407,10 @@ func TestContextTypeOf(t *testing.T) {
 		{name: "a label with a dotted key", expr: `context.appLabels["example.org/team"]`, want: cue.StringKind},
 		{name: "combined with a literal", expr: `context.appLabels["cluster-name"] + "-suffix"`, want: cue.StringKind},
 		{name: "combined with a source", expr: `context.cluster + "/" + source["other"].name`, want: cue.StringKind},
-		{name: "a nested struct field", expr: `context.clusterVersion.minor`, want: cue.StringKind},
+		// minor is an int64 in parseClusterVersion, major a string. The sentinel
+		// has to match, or admission promises a type render will not produce.
+		{name: "a nested struct field", expr: `context.clusterVersion.minor`, want: cue.IntKind},
+		{name: "a nested string field", expr: `context.clusterVersion.major`, want: cue.StringKind},
 		{name: "a numeric field", expr: `context.appRevisionNum * 2`, want: cue.IntKind},
 		{
 			// The same curated set the cache-key rules define, so a field that is
@@ -1089,6 +1092,77 @@ func TestExpressionCannotEscapeTheWrapper(t *testing.T) {
 		}
 		if _, err := evalFragment(expr, values, nil); err == nil {
 			t.Errorf("evalFragment accepted an expression that adds a field: %q", expr)
+		}
+	}
+}
+
+// The context equivalent of TestTypeOfAgreesWithEval, and the test that would
+// have caught clusterVersion.minor being declared a string when
+// parseClusterVersion builds it with strconv.ParseInt.
+//
+// The context values below mirror what process.NewContext actually pushes; a
+// sentinel that disagrees with them makes admission promise a type the render
+// will not produce.
+func TestContextTypeOfAgreesWithEval(t *testing.T) {
+	ctx := map[string]interface{}{
+		"name":           "web",
+		"cluster":        "prod",
+		"namespace":      "team-a",
+		"appName":        "checkout",
+		"appRevision":    "checkout-v3",
+		"appRevisionNum": int64(3),
+		"publishVersion": "v1",
+		"workflowName":   "deploy",
+		"appLabels":      map[string]interface{}{"team": "payments"},
+		"appAnnotations": map[string]interface{}{"note": "x"},
+		"clusterVersion": map[string]interface{}{
+			"major": "1", "minor": int64(31), "gitVersion": "v1.31.0", "platform": "linux/amd64",
+		},
+	}
+
+	for _, expr := range []string{
+		`context.name`,
+		`context.cluster`,
+		`context.namespace`,
+		`context.appName`,
+		`context.appRevision`,
+		`context.appRevisionNum`,
+		`context.publishVersion`,
+		`context.workflowName`,
+		`context.appLabels["team"]`,
+		`context.appAnnotations["note"]`,
+		`context.clusterVersion.major`,
+		`context.clusterVersion.minor`,
+		`context.clusterVersion.gitVersion`,
+		`context.clusterVersion.platform`,
+	} {
+		kind, err := TypeOf(expr, nil)
+		if err != nil {
+			t.Errorf("%s: typing: %v", expr, err)
+			continue
+		}
+		value, err := Eval("$("+expr+")", nil, ctx)
+		if err != nil {
+			t.Errorf("%s: evaluating: %v", expr, err)
+			continue
+		}
+
+		var actual cue.Kind
+		switch value.(type) {
+		case string:
+			actual = cue.StringKind
+		case bool:
+			actual = cue.BoolKind
+		case int, int64:
+			actual = cue.IntKind
+		case float64:
+			actual = cue.FloatKind
+		default:
+			t.Errorf("%s: unexpected result type %T", expr, value)
+			continue
+		}
+		if actual != kind {
+			t.Errorf("%s: admission promised %s, render produced %s (%#v)", expr, kind, actual, value)
 		}
 	}
 }
