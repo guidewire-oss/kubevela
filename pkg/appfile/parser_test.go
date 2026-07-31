@@ -1068,19 +1068,20 @@ func TestValidateFromSourceSurfaces(t *testing.T) {
 			wantErr: "not supported in policy properties",
 		},
 		{
-			name:    "workflow step with fromSource is rejected",
-			af:      &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("notify", raw(`{"url":{"fromSource":"cfg.webhook"}}`))}},
-			wantErr: "not supported in workflowstep properties",
+			// EXPERIMENT: workflow steps now resolve, via a pre-pass in
+			// generateWorkflowInstance that substitutes before the workflow
+			// engine sees the properties. See the source-expressions devlog.
+			name: "workflow step with fromSource is accepted",
+			af:   &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("notify", raw(`{"url":{"fromSource":"cfg.webhook"}}`))}},
 		},
 		{
-			name: "sub-step with fromSource is rejected",
+			name: "sub-step with fromSource is accepted",
 			af: &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{{
 				WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{Name: "group", Type: "step-group"},
 				SubSteps: []wfTypesv1alpha1.WorkflowStepBase{
 					{Name: "inner", Type: "notification", Properties: raw(`{"url":{"fromSource":"cfg.webhook"}}`)},
 				},
 			}}},
-			wantErr: "not supported in workflowstep properties",
 		},
 		{
 			// The directive is valid at any depth, so the walk must be recursive

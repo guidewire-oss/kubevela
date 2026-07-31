@@ -377,17 +377,36 @@ The comment in `source_surfaces.go` - "substitution is wired into
 workloadDef.Complete and traitDef.Complete and nowhere else" - is inaccurate:
 policies inherit it by sharing the workload engine.
 
-**Workflow steps: genuinely do not resolve.** The same experiment gave
+**Workflow steps: they work too, and I was wrong that they could not.** The first
+attempt gave
 
 ```
 notify: failed ... msg.$params.message: conflicting values string and
         {fromSource:"tiers.tier"} (mismatched types string and struct)
 ```
 
-The consumer received the literal directive - exactly review finding #10's
-symptom, still true here because steps are executed by the `kubevela/workflow`
-module, not by `workloadDef.Complete`. Supporting them means substituting before
-the workflow engine evaluates step properties, which is work in another module.
+- the literal directive reaching the consumer, review finding #10's symptom. I
+concluded that supporting steps meant changing the `kubevela/workflow` module.
+That was wrong: the substitution does not have to happen *inside* the engine, only
+*before* it.
+
+`generateWorkflowInstance` is where KubeVela hands steps over
+(`Steps: af.WorkflowSteps`), and it already rewrites step properties there via
+`convertStepProperties`. A pre-pass in the same place resolves the directives, and
+the engine receives ordinary data - it never learns that sources exist. With that,
+the step succeeded and printed `silver`, the resolved value.
+
+The pre-pass needed one thing the codebase did not have: an exported entry point
+to the resolver. `ResolveFromSourceParams` is that - and it is exactly the
+"reusable internal API, callable from any rendering context without duplicating
+the cache lookup, key computation, or CueX execution paths" that KEP-2.16 names as
+the critical requirement for extending surfaces.
+
+**Caveat worth chasing before this is real.** The pre-pass mutates
+`RawExtension.Raw` on the steps in place, and `instance.Steps` shares its backing
+array with `af.WorkflowSteps`. That is fine while the appfile is rebuilt per
+reconcile, but it is a mutation of shared state and would bite if an appfile were
+ever cached across reconciles.
 
 **Two guards, and they disagreed.** `validation_sources.go:134` consults
 `SurfaceResolvesFromSource`; `parser.go:826` did not - it rejected policy and
@@ -396,9 +415,11 @@ parser still refusing. That duplication is now removed: the parser consults the
 same predicate, so the set of resolving surfaces is stated once. Behaviour is
 unchanged - the list still reads component, trait, source.
 
-Enabling policies would additionally need `ConsumableSurfaces` extended (it is
-KEP-documented as component and trait), admission coverage, and tests. That is a
-deliberate feature decision, not something to fall out of a spike.
+So all four surfaces are reachable: components and traits today, policies by
+relaxing a guard, workflow steps by a pre-pass at the handoff. Enabling any of
+them properly still needs `ConsumableSurfaces` extended (KEP-documented as
+component and trait), admission coverage, and tests - a deliberate feature
+decision rather than something that falls out of a spike.
 
 ## What the spike does not address
 

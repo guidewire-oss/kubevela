@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	wfTypesv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -578,28 +577,6 @@ parameter: {image: string}
 				},
 			},
 			wantMsg: "not supported in policy properties",
-		},
-		{
-			name: "workflow step properties",
-			app: &v1beta1.Application{
-				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
-				Spec: v1beta1.ApplicationSpec{
-					Sources:    source,
-					Components: validComp,
-					Workflow: &v1beta1.Workflow{
-						Steps: []wfTypesv1alpha1.WorkflowStep{
-							{
-								WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{
-									Name:       "notify",
-									Type:       "notification",
-									Properties: rawJSON(`{"url":{"fromSource":"img.image"}}`),
-								},
-							},
-						},
-					},
-				},
-			},
-			wantMsg: "not supported in workflowstep properties",
 		},
 	}
 

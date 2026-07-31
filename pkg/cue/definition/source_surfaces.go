@@ -16,7 +16,11 @@ limitations under the License.
 
 package definition
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/kubevela/workflow/pkg/cue/process"
+)
 
 // Surfaces an Application can carry a fromSource directive on.
 //
@@ -54,7 +58,7 @@ var ConsumableSurfaces = []string{SurfaceComponent, SurfaceTrait}
 // as a value. Both enforcement points reject it instead.
 func SurfaceResolvesFromSource(surface string) bool {
 	switch surface {
-	case SurfaceComponent, SurfaceTrait, SurfaceSource:
+	case SurfaceComponent, SurfaceTrait, SurfaceSource, SurfaceWorkflowStep:
 		return true
 	default:
 		return false
@@ -89,4 +93,14 @@ func HasFromSourceDirective(node interface{}) bool {
 		}
 	}
 	return false
+}
+
+// ResolveFromSourceParams substitutes fromSource directives in a properties
+// blob, for callers outside the component and trait render paths.
+//
+// EXPERIMENT: added to test whether workflow steps can be supported by
+// substituting before the workflow engine sees them, rather than by changing
+// that engine. See devlogs/2026-07-31-source-expressions.md.
+func ResolveFromSourceParams(ctx process.Context, params interface{}) (interface{}, error) {
+	return resolveFromSourceParams(ctx, params)
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +49,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/config"
 	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1beta1/application/assemble"
 	ctrlutil "github.com/oam-dev/kubevela/pkg/controller/utils"
+	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
@@ -175,6 +177,14 @@ func generateWorkflowInstance(af *appfile.Appfile, app *v1beta1.Application) *wf
 		Steps: af.WorkflowSteps,
 		Mode:  af.WorkflowMode,
 	}
+	// EXPERIMENT: substitute fromSource in step properties before the workflow
+	// engine ever sees them. If this works, supporting workflow steps needs no
+	// change to the kubevela/workflow module at all - only a pre-pass here,
+	// which is the same shape as convertStepProperties below.
+	if err := resolveWorkflowStepSources(af, instance.Steps); err != nil {
+		return instance
+	}
+
 	instance.Status = copyWorkflowStatusToInstance(app, af.WorkflowMode)
 	switch app.Status.Phase {
 	case common.ApplicationRunning:
@@ -563,4 +573,49 @@ func generateContextDataFromApp(goCtx context.Context, app *v1beta1.Application,
 		data.AppAnnotations = app.Annotations
 	}
 	return data
+}
+
+// resolveWorkflowStepSources substitutes fromSource directives in workflow step
+// properties, using the same resolver the component and trait paths use.
+//
+// EXPERIMENT - see devlogs/2026-07-31-source-expressions.md. The interesting
+// property is that this runs entirely inside kubevela: the workflow engine
+// receives ordinary data and does not know sources exist.
+func resolveWorkflowStepSources(af *appfile.Appfile, steps []wfTypesv1alpha1.WorkflowStep) error {
+	substitute := func(name string, raw *runtime.RawExtension) error {
+		if raw == nil || len(raw.Raw) == 0 {
+			return nil
+		}
+		var decoded interface{}
+		if err := json.Unmarshal(raw.Raw, &decoded); err != nil {
+			return nil
+		}
+		if !veladefinition.HasFromSourceDirective(decoded) {
+			return nil
+		}
+		ctxData := appfile.GenerateContextDataFromAppFile(af, name)
+		pCtx := velaprocess.NewContext(ctxData)
+		resolved, err := veladefinition.ResolveFromSourceParams(pCtx, decoded)
+		if err != nil {
+			return err
+		}
+		out, err := json.Marshal(resolved)
+		if err != nil {
+			return err
+		}
+		raw.Raw = out
+		return nil
+	}
+
+	for i := range steps {
+		if err := substitute(steps[i].Name, steps[i].Properties); err != nil {
+			return err
+		}
+		for j := range steps[i].SubSteps {
+			if err := substitute(steps[i].SubSteps[j].Name, steps[i].SubSteps[j].Properties); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
