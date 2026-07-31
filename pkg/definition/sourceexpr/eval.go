@@ -56,8 +56,8 @@ func Eval(raw string, resolved map[string]map[string]interface{}, ctx map[string
 		return nil, err
 	}
 
-	if parsed.Whole() {
-		return evalFragment(scope, parsed.Fragments[0].Expr, ctx)
+	if expr, ok := parsed.SoleExpr(); ok {
+		return evalFragment(scope, expr, ctx)
 	}
 
 	out := ""

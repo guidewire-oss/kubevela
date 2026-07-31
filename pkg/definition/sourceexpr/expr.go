@@ -75,13 +75,46 @@ func (p Parsed) HasExpr() bool {
 // Whole reports whether the value is a single expression and nothing else.
 //
 // This is what decides the substituted value's type. A whole value is replaced
-// by the expression's typed result, so `replicas: '$(source.s.count)'` yields an
-// int even though YAML carried it as a string. An expression embedded in
+// by the expression's typed result, so `replicas: '$(source["s"].count)'` yields
+// an int even though YAML carried it as a string. An expression embedded in
 // surrounding text can only produce a string, since that is what concatenation
-// means. Terraform and Helm draw the same line, and it is the only rule that
-// makes a typed substitution possible without annotations.
+// means. Terraform and Helm draw the same line.
+//
+// Surrounding whitespace does not count as text. Without that, a single trailing
+// space - invisible in YAML and easy to leave behind when editing - would flip
+// the substituted type from int to string, and the resulting mismatch would
+// surface against the parameter, far from the space that caused it. Adding a
+// visible character is a deliberate act; adding a space is not.
 func (p Parsed) Whole() bool {
-	return len(p.Fragments) == 1 && p.Fragments[0].IsExpr()
+	seen := false
+	for _, f := range p.Fragments {
+		if f.IsExpr() {
+			if seen {
+				return false
+			}
+			seen = true
+			continue
+		}
+		if strings.TrimSpace(f.Text) != "" {
+			return false
+		}
+	}
+	return seen
+}
+
+// SoleExpr returns the expression of a whole value. It is the expression
+// fragment, which is not necessarily the first: leading whitespace is a text
+// fragment and still leaves the value whole.
+func (p Parsed) SoleExpr() (string, bool) {
+	if !p.Whole() {
+		return "", false
+	}
+	for _, f := range p.Fragments {
+		if f.IsExpr() {
+			return f.Expr, true
+		}
+	}
+	return "", false
 }
 
 // Parse splits a property value into literal and expression fragments.

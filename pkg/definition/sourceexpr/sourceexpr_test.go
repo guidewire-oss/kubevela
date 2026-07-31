@@ -567,3 +567,56 @@ func TestEmbeddedIntBecomesString(t *testing.T) {
 		t.Fatalf("an embedded value must render as text, got %#v", embedded)
 	}
 }
+
+// Surrounding whitespace must not change the substituted type.
+//
+// A single trailing space is invisible in YAML and trivial to leave behind when
+// editing. If it flipped an int into a string, the failure would surface as a
+// type mismatch against the parameter - nowhere near the space that caused it.
+func TestWhitespaceCannotChangeTheType(t *testing.T) {
+	resolved := map[string]map[string]interface{}{"s": {"count": 3}}
+
+	for _, raw := range []string{
+		`$(source["s"].count)`,
+		`$(source["s"].count) `,
+		` $(source["s"].count)`,
+		"\t$(source[\"s\"].count)\n",
+	} {
+		got, err := Eval(raw, resolved, nil)
+		if err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+		if got != int64(3) {
+			t.Errorf("%q substituted %#v (%T); whitespace must not make it a string", raw, got, got)
+		}
+	}
+
+	// A visible character still makes it a string - that is a deliberate act.
+	got, err := Eval(`$(source["s"].count)x`, resolved, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "3x" {
+		t.Errorf("expected %q, got %#v", "3x", got)
+	}
+}
+
+// Values with no expression are returned exactly as written, whitespace and all.
+// Only a value containing the delimiter is touched.
+func TestPlainStringsAreUntouched(t *testing.T) {
+	for _, raw := range []string{
+		"nginx:1.25.0",
+		"  leading and trailing  ",
+		"a string with (parens) and a $ sign",
+		"100%",
+		"",
+	} {
+		got, err := Eval(raw, nil, nil)
+		if err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+		if got != raw {
+			t.Errorf("expected %q to be returned unchanged, got %#v", raw, got)
+		}
+	}
+}
