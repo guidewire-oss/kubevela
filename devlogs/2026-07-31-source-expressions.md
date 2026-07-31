@@ -415,11 +415,36 @@ parser still refusing. That duplication is now removed: the parser consults the
 same predicate, so the set of resolving surfaces is stated once. Behaviour is
 unchanged - the list still reads component, trait, source.
 
-So all four surfaces are reachable: components and traits today, policies by
-relaxing a guard, workflow steps by a pre-pass at the handoff. Enabling any of
-them properly still needs `ConsumableSurfaces` extended (KEP-documented as
-component and trait), admission coverage, and tests - a deliberate feature
-decision rather than something that falls out of a spike.
+### Why policy was *not* then enabled
+
+Enabling it was attempted and reverted, because "policy" is not one surface.
+
+| Policy kind | Path | Resolves? |
+|---|---|---|
+| renders resources (default) | `appfile.generatePolicyUnstructuredFromCUEModule` → workload engine | **yes** |
+| `scope: Application` | `application_policies.go` `renderPolicyCUETemplate` | **no** |
+
+The scoped path cannot resolve, and not for want of plumbing:
+`application_controller.go` calls `ApplyApplicationScopeTransforms` at line 166
+and `GenerateAppFile` at line 181. **Scoped policies render before the appfile
+exists**, so there is no parsed `spec.sources[]`, no templates and no cache store
+to resolve against. Its context is built by hand and carries none of them.
+
+`SurfaceResolvesFromSource` is one boolean per surface, so it cannot say "policy,
+but only the kind that renders resources". Adding `SurfacePolicy` would therefore
+let an author write `fromSource` in an Application-scoped policy where it stays
+silently inert - review finding #10 exactly, which is the thing the guard exists
+to prevent.
+
+Enabling policy properly needs the check to be scope-aware: admission would look
+up the PolicyDefinition (it already looks up SourceDefinitions) and reject only
+`scope: Application`. Supporting scoped policies at all is a bigger question,
+because moving source resolution before the transforms raises an ordering
+problem - a scoped policy can rewrite the Application, including `spec.sources[]`,
+so values resolved beforehand would come from the pre-transform spec.
+
+Enabling any surface also needs admission coverage and tests. `ConsumableSurfaces`
+no longer needs a separate edit - it is derived.
 
 ## What the spike does not address
 
