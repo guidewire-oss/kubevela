@@ -355,6 +355,51 @@ and generalising produced a confident, wrong claim. The readable-context rule
 still holds — an expression sees what its definition sees — but *what* a policy
 sees has to be measured per path rather than inferred.
 
+## Can this be rigged into policy and workflow rendering?
+
+Measured on a live cluster rather than reasoned about, and the two halves came out
+differently.
+
+**Policies: already work.** With the two guards relaxed, a policy consuming
+`fromSource: "tiers.tier"` resolved to `"gold"` and wrote its ConfigMap; the app
+reached `running`. No plumbing was needed, for two reasons found by tracing:
+
+- policies are built by `makeComponent(..., types.TypePolicy, ...)` →
+  `convertTemplate2Component` → **`NewWorkloadAbstractEngine`**, so
+  `workloadDef.Complete` - and therefore `resolveFromSourceParams` - already runs
+  for policy properties;
+- the policy render context is built by the same
+  `GenerateContextDataFromAppFile`, so it already carries `Sources`,
+  `SourceTypes`, `SourceTemplates` and the cache store.
+
+So the restriction on policies is a **policy decision, not a technical limit**.
+The comment in `source_surfaces.go` - "substitution is wired into
+workloadDef.Complete and traitDef.Complete and nowhere else" - is inaccurate:
+policies inherit it by sharing the workload engine.
+
+**Workflow steps: genuinely do not resolve.** The same experiment gave
+
+```
+notify: failed ... msg.$params.message: conflicting values string and
+        {fromSource:"tiers.tier"} (mismatched types string and struct)
+```
+
+The consumer received the literal directive - exactly review finding #10's
+symptom, still true here because steps are executed by the `kubevela/workflow`
+module, not by `workloadDef.Complete`. Supporting them means substituting before
+the workflow engine evaluates step properties, which is work in another module.
+
+**Two guards, and they disagreed.** `validation_sources.go:134` consults
+`SurfaceResolvesFromSource`; `parser.go:826` did not - it rejected policy and
+workflow-step directives unconditionally. Relaxing only the predicate left the
+parser still refusing. That duplication is now removed: the parser consults the
+same predicate, so the set of resolving surfaces is stated once. Behaviour is
+unchanged - the list still reads component, trait, source.
+
+Enabling policies would additionally need `ConsumableSurfaces` extended (it is
+KEP-documented as component and trait), admission coverage, and tests. That is a
+deliberate feature decision, not something to fall out of a spike.
+
 ## What the spike does not address
 
 | | |

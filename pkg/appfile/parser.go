@@ -823,6 +823,9 @@ func validateFromSourceSurfaces(af *Appfile) error {
 		if !definition.HasFromSourceDirective(decoded) {
 			return nil
 		}
+		if definition.SurfaceResolvesFromSource(surface) {
+			return nil
+		}
 		return fmt.Errorf("%s %q: %s", surface, name, definition.UnsupportedSurfaceMessage(surface))
 	}
 
