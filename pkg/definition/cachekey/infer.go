@@ -89,14 +89,9 @@ func Infer(template string, rules *Rules) ([]Dimension, error) {
 			scanErr = err
 			return false
 		}
-		if reason, forbidden := rules.forbiddenReason(field); forbidden {
-			scanErr = fmt.Errorf("a source template may not read context.%s: %s", field, reason)
-			return false
-		}
 		entry, keyed := rules.keyedEntry(field)
 		if !keyed {
-			scanErr = fmt.Errorf("context.%s is not classified by the cache-key rules, so it cannot be "+
-				"keyed on; a source template may not read it", field)
+			scanErr = unsupportedContext(field)
 			return false
 		}
 		if entry.Indexed {
@@ -197,6 +192,15 @@ func stripGeneratedKey(file *ast.File) {
 		}
 		st.Elts = kept
 	}
+}
+
+// unsupportedContext is the single rejection for context a source may not read.
+// Anything outside the keyed list is unsupported, and the answer is always the
+// same - pass it in as a property - so there is one message rather than a reason
+// maintained per field.
+func unsupportedContext(field string) error {
+	return fmt.Errorf("context.%s is not a supported value in SourceDefinitions; "+
+		"additional data can be passed through properties", field)
 }
 
 func isContextIdent(e ast.Expr) bool {

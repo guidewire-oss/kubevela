@@ -57,8 +57,7 @@ type Rules struct {
 	// for whoever is reading an annotation rather than computing one.
 	Version string
 
-	keyed     map[string]keyedField
-	forbidden map[string]string
+	keyed map[string]keyedField
 }
 
 // LoadRules returns the current rules - the latest file in the embedded set.
@@ -116,10 +115,7 @@ func loadRuleFile(name string) (*Rules, error) {
 		return nil, fmt.Errorf("reading %s: %w", name, err)
 	}
 
-	rules := &Rules{
-		keyed:     map[string]keyedField{},
-		forbidden: map[string]string{},
-	}
+	rules := &Rules{keyed: map[string]keyedField{}}
 
 	v := cuecontext.New().CompileBytes(raw)
 	if v.Err() != nil {
@@ -127,9 +123,6 @@ func loadRuleFile(name string) (*Rules, error) {
 	}
 	if err := v.LookupPath(cue.ParsePath("keyed")).Decode(&rules.keyed); err != nil {
 		return nil, fmt.Errorf("decoding keyed fields from %s: %w", name, err)
-	}
-	if err := v.LookupPath(cue.ParsePath("forbidden")).Decode(&rules.forbidden); err != nil {
-		return nil, fmt.Errorf("decoding forbidden fields from %s: %w", name, err)
 	}
 	if err := v.LookupPath(cue.ParsePath("version")).Decode(&rules.Version); err != nil {
 		return nil, fmt.Errorf("decoding version from %s: %w", name, err)
@@ -148,23 +141,13 @@ func loadRuleFile(name string) (*Rules, error) {
 
 // policyHash fingerprints what these rules *do*, not the file they came from.
 //
-// Comments, the declared version and the wording of a rejection are not part of
-// the policy, and hashing the raw bytes would make editing any of them change the
-// identity - invalidating every definition already stamped, for no behavioural
-// reason. Only the fields that decide a key are covered: which are keyed, in what
-// order, whether they are indexed, and which are forbidden.
+// Comments and the declared version are not part of the policy, and hashing the
+// raw bytes would make editing either change the identity - invalidating every
+// definition already stamped, for no behavioural reason. Only the keyed list is
+// covered: which context is readable, in what order, and whether it is indexed.
 func (r *Rules) policyHash() (string, error) {
-	forbidden := make([]string, 0, len(r.forbidden))
-	for field := range r.forbidden {
-		forbidden = append(forbidden, field)
-	}
-	sort.Strings(forbidden)
-
 	// json.Marshal sorts map keys, so this does not depend on iteration order.
-	raw, err := json.Marshal(struct {
-		Keyed     map[string]keyedField `json:"keyed"`
-		Forbidden []string              `json:"forbidden"`
-	}{Keyed: r.keyed, Forbidden: forbidden})
+	raw, err := json.Marshal(r.keyed)
 	if err != nil {
 		return "", err
 	}
@@ -172,25 +155,23 @@ func (r *Rules) policyHash() (string, error) {
 	return hex.EncodeToString(sum[:])[:8], nil
 }
 
-// IsClassified reports whether these rules make a decision about a context field.
-// Anything unclassified is rejected in a source template: failing closed means a
-// field added later cannot silently become an unkeyed dependency.
-func (r *Rules) IsClassified(field string) bool {
-	if _, ok := r.keyed[field]; ok {
-		return true
-	}
-	_, ok := r.forbidden[field]
-	return ok
-}
-
-// forbiddenReason returns why a field may not be read, and whether it is forbidden.
-func (r *Rules) forbiddenReason(field string) (string, bool) {
-	reason, ok := r.forbidden[field]
-	return reason, ok
-}
-
-// keyedField returns the ordering entry for a field, and whether it is keyed.
+// keyedEntry returns the ordering entry for a context field, and whether the
+// field may be read at all. Anything absent is unsupported.
 func (r *Rules) keyedEntry(field string) (keyedField, bool) {
 	e, ok := r.keyed[field]
 	return e, ok
+}
+
+// Fields returns every readable context field, in key order. The resolver builds
+// a source's context from this, so a field that is not keyed is not merely
+// rejected - it is absent, and cannot be read even where admission is disabled.
+func (r *Rules) Fields() []string {
+	fields := make([]string, 0, len(r.keyed))
+	for field := range r.keyed {
+		fields = append(fields, field)
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		return r.keyed[fields[i]].Order < r.keyed[fields[j]].Order
+	})
+	return fields
 }

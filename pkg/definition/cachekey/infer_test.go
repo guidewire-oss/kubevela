@@ -17,8 +17,6 @@ limitations under the License.
 package cachekey
 
 import (
-	"os"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -62,7 +60,8 @@ output: {
   c: context.appName
 }
 `,
-			want: []string{"cluster", "appName", "name"},
+			// name is identity, so it leads; the rest follow broad to narrow.
+			want: []string{"name", "cluster", "appName"},
 		},
 		{
 			// Scanning only output: would miss this, and the value would still
@@ -113,15 +112,14 @@ output: {region: "us-east-1"}
 			want: []string{"cluster"},
 		},
 		{
-			name: "consumer identity is keyed, sorted last",
+			// A source's output must not depend on which consumer asked, so the
+			// component's identity is not readable. One that genuinely varies per
+			// component takes it as a property.
+			name: "consumer identity is not readable",
 			template: `
-output: {
-  a: context.componentType
-  b: context.cluster
-  c: context.name
-}
+output: {t: context.componentType}
 `,
-			want: []string{"cluster", "name", "componentType"},
+			wantErr: "componentType",
 		},
 		{
 			name: "policy context is rejected",
@@ -226,88 +224,44 @@ output: {region: "us-east-1"}
 	}
 }
 
-// Every context keyword must be classified. Without this, adding a field to
-// keyword.go and forgetting the rules file would make it silently unkeyed - the
-// failure that serves one consumer another's data.
-func TestEveryContextKeywordIsClassified(t *testing.T) {
-	rules, err := LoadRules()
-	if err != nil {
-		t.Fatalf("loading embedded rules: %v", err)
-	}
-
-	// Read the constants rather than a list maintained here, so the source of
-	// truth cannot drift from its copy.
-	const keywordFile = "../../cue/process/keyword.go"
-	raw, err := os.ReadFile(keywordFile)
-	if err != nil {
-		t.Fatalf("reading %s: %v", keywordFile, err)
-	}
-	re := regexp.MustCompile(`Context[A-Za-z]+\s*=\s*"([a-zA-Z]+)"`)
-	matches := re.FindAllStringSubmatch(string(raw), -1)
-	if len(matches) == 0 {
-		t.Fatalf("found no context keywords in %s — the scan is broken, not the rules", keywordFile)
-	}
-
-	var unclassified []string
-	for _, m := range matches {
-		if !rules.IsClassified(m[1]) {
-			unclassified = append(unclassified, m[1])
-		}
-	}
-	if len(unclassified) > 0 {
-		t.Errorf("context keywords with no classification: %v\n"+
-			"Add each to keyed or forbidden in the rules file. An unclassified field is "+
-			"rejected in a source template, so leaving it out silently blocks definitions "+
-			"that read it — and worse, a field meant to be keyed becomes an unkeyed dependency.", unclassified)
-	}
-}
-
-// The hash identifies the policy, not the file. Editing a comment, the declared
-// version, or the wording of a rejection must not change it: those are not
-// behaviour, and changing the identity forces every stamped definition to be
-// regenerated. A change to what is keyed, its order, or what is forbidden must.
+// The hash identifies the policy, not the file. Editing a comment or the declared
+// version must not change it - that would force every stamped definition to be
+// regenerated for no behavioural reason. A change to what is readable, or to the
+// order it contributes in, must.
 func TestPolicyHashCoversBehaviourOnly(t *testing.T) {
 	base, err := LoadRules()
 	if err != nil {
 		t.Fatalf("loading rules: %v", err)
 	}
 
-	// Same policy, different prose.
-	prose := &Rules{
-		Version:   "something else entirely",
-		keyed:     base.keyed,
-		forbidden: map[string]string{},
-	}
-	for field := range base.forbidden {
-		prose.forbidden[field] = "a completely different explanation"
-	}
+	prose := &Rules{Version: "something else entirely", keyed: base.keyed}
 	proseHash, err := prose.policyHash()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if proseHash != base.Hash {
-		t.Errorf("rewording must not change the identity: %q became %q", base.Hash, proseHash)
+		t.Errorf("renaming the version must not change the identity: %q became %q", base.Hash, proseHash)
 	}
 
-	// Different policy: one more forbidden field.
-	changed := &Rules{keyed: base.keyed, forbidden: map[string]string{}}
-	for field, reason := range base.forbidden {
-		changed.forbidden[field] = reason
+	// One more readable field.
+	added := &Rules{keyed: map[string]keyedField{}}
+	for f, e := range base.keyed {
+		added.keyed[f] = e
 	}
-	changed.forbidden["somethingNew"] = "newly classified"
-	changedHash, err := changed.policyHash()
+	added.keyed["somethingNew"] = keyedField{Order: 99}
+	addedHash, err := added.policyHash()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changedHash == base.Hash {
-		t.Error("classifying another field must change the identity")
+	if addedHash == base.Hash {
+		t.Error("making another field readable must change the identity")
 	}
 
-	// Different policy: same fields, different order.
-	reordered := &Rules{forbidden: base.forbidden, keyed: map[string]keyedField{}}
-	for field, entry := range base.keyed {
-		entry.Order += 100
-		reordered.keyed[field] = entry
+	// Same fields, different order.
+	reordered := &Rules{keyed: map[string]keyedField{}}
+	for f, e := range base.keyed {
+		e.Order += 100
+		reordered.keyed[f] = e
 	}
 	reorderedHash, err := reordered.policyHash()
 	if err != nil {
@@ -315,5 +269,27 @@ func TestPolicyHashCoversBehaviourOnly(t *testing.T) {
 	}
 	if reorderedHash == base.Hash {
 		t.Error("reordering the key segments must change the identity")
+	}
+}
+
+// Everything outside the keyed list gets the same rejection, naming the field and
+// pointing at properties.
+func TestUnsupportedContextIsOneMessage(t *testing.T) {
+	rules, err := LoadRules()
+	if err != nil {
+		t.Fatalf("loading rules: %v", err)
+	}
+	for _, field := range []string{"policyName", "appSourceCacheStore", "componentType", "somethingNobodyHasAddedYet"} {
+		_, err := Infer("output: {p: context."+field+"}\n", rules)
+		if err == nil {
+			t.Errorf("context.%s should be unsupported", field)
+			continue
+		}
+		if !strings.Contains(err.Error(), "context."+field) {
+			t.Errorf("rejection should name the field; got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "properties") {
+			t.Errorf("rejection should point at properties; got: %v", err)
+		}
 	}
 }
