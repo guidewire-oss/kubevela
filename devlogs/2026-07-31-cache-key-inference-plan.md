@@ -2,7 +2,9 @@
 
 Date: 2026-07-31
 Branch: `feature/source-definitions`
-Status: **plan — agreed, not started**
+Status: **DONE** — steps 1-7 implemented and verified against a live cluster
+(9 of 9 source e2e specs, then 13 of 13 once the derived-key specs were added).
+Superseded in part by the amendment at the end of this file.
 
 ## What changes
 
