@@ -1018,3 +1018,54 @@ func TestUndefendedWhenReadBothWays(t *testing.T) {
 		t.Fatalf("the undefended read must still be reported, got %v", got)
 	}
 }
+
+// The scopes an expression is evaluated against are assembled by concatenating
+// CUE source text, and binding names and label keys come from the Application
+// spec - so they are attacker-controlled if the author is hostile. A name that
+// escaped its quotes would inject arbitrary CUE into the scope.
+//
+// Quoting is handled by %q and json.Marshal. This pins it, because the failure
+// would be silent: the injected fields would simply be there.
+func TestScopeQuotingResistsInjection(t *testing.T) {
+	const breakout = `a": {pwned: "yes"}, "b`
+
+	schemas := map[string]string{
+		breakout: `{x: string}`,
+		"normal": `{x: string}`,
+	}
+
+	// The injected field must not exist in the scope.
+	if _, err := TypeOf(`source.pwned`, schemas); err == nil {
+		t.Fatal("a hostile binding name injected a field into the sentinel scope")
+	}
+	// The legitimate one still works, so the escaping did not simply break
+	// everything.
+	if _, err := TypeOf(`source.normal.x`, schemas); err != nil {
+		t.Fatalf("escaping must not break an ordinary name: %v", err)
+	}
+
+	// The same at render, through the values scope and the context scope.
+	values := map[string]map[string]interface{}{
+		breakout: {"x": "v"},
+		"normal": {"x": "v"},
+	}
+	ctx := map[string]interface{}{
+		"appLabels": map[string]interface{}{`k": 1, "j`: "v"},
+	}
+	got, err := Eval(`$(source.normal.x)`, values, ctx)
+	if err != nil {
+		t.Fatalf("hostile keys must not break evaluation: %v", err)
+	}
+	if got != "v" {
+		t.Fatalf("expected %q, got %#v", "v", got)
+	}
+
+	// A hostile label key is reachable as data, not as structure.
+	label, err := Eval(`$(context.appLabels["k\": 1, \"j"])`, nil, ctx)
+	if err != nil {
+		t.Fatalf("a label key containing quotes must still be readable: %v", err)
+	}
+	if label != "v" {
+		t.Fatalf("expected %q, got %#v", "v", label)
+	}
+}
