@@ -366,3 +366,106 @@ by a second check.
   getting right rather than merely working.
 - **`context.name` changes meaning** for any definition already using it. The only ones
   are in this repo.
+
+---
+
+# Amendment 2: the hash carries uniqueness, segments carry legibility
+
+Date: 2026-07-31
+Status: **plan — agreed, not started**
+
+## The problem this solves
+
+Inlining context values into the key made every one of them a correctness
+question, because a segment carried both uniqueness *and* readability:
+
+| Value | Inlined |
+|---|---|
+| `appLabels["team"] = "platform.team"` | `.` is legal in a label, illegal in a key - rejected at resolve |
+| `appLabels["team"]` absent | interpolation fails, so a template that *handles* absence with `!= _|_` cannot be written |
+| `appLabels["team"] = ""` | empty segment, so `def--x` cannot be told from another combination |
+| `appRevision` on first reconcile | legitimately empty - same collapse |
+| `publishVersion`, `workflowName` | usually empty - same again |
+| `clusterVersion` | a struct: `{major, minor, gitVersion, platform}` - not renderable at all |
+
+Each has a per-field workaround - sanitise, default, sentinel - and every sentinel
+can collide with a real value. `none` is a real label value; so is anything else
+short enough to be tempting.
+
+## The change
+
+Separate the two jobs a key segment was doing.
+
+```
+cluster-lookup-backstage-prod-cluster-team-a-checkout-a1b2c3d4
+└──────────────── readable prefix ─────────────────┘└─ hash ─┘
+     for humans; any empty part simply omitted       everything,
+                                                     always present
+```
+
+**The hash covers every contributing value** - properties, indexed reads,
+structured fields, the readable ones too, and the definition's template. Uniqueness
+comes entirely from it.
+
+**Segments are cosmetic.** An empty one is dropped with no consequence, because two
+keys differing only in an omitted segment still differ in the hash. No sentinel, no
+default, no per-field emptiness rule, and no charset question: a value that cannot
+be rendered simply is not inlined.
+
+Hashed as a structured document, never concatenated - so a property named
+`appLabels[team]` cannot collide with an actual label read:
+
+```json
+{
+  "template":   "<hash of spec.schematic.cue.template>",
+  "properties": {"entityRef": "component:default/api"},
+  "context":    {"cluster": "prod", "appLabels": {"team": "platform", "tier": null}}
+}
+```
+
+`null` for absent, `""` for present-but-empty, any value distinct from both - which
+is what a template branching on `!= _|_` needs, since the key now draws the same
+distinction the template does.
+
+**Only the labels a template reads are hashed**, never all of them. GitOps tooling
+stamps labels and annotations constantly - `argocd.argoproj.io/instance`,
+`app.kubernetes.io/managed-by`, build checksums - and hashing those would change the
+identity on every unrelated deploy and leave the cache permanently cold.
+
+## Two consequences worth having
+
+**Truncation stops being lossy.** An over-long key trims the prefix and keeps the
+hash intact, which cannot collide. Today the whole string is re-hashed, discarding
+readability exactly when the key is longest.
+
+**Finding #11 closes for free.** The template hash is in the document, so changing a
+definition - schema *or* fetch logic - changes the identity, old entries stop being
+addressed, and the next resolution repopulates. No read-path check, and it catches a
+changed URL with an unchanged output shape, which a schema hash alone would miss.
+The cost is that editing a definition cold-starts its cache, which is correct: the
+old values were produced by different code.
+
+## Rules file
+
+One flag, replacing the `indexed`-only distinction:
+
+```cue
+keyed: {
+  name:           {order: 1, segment: true}   // also inlined, for legibility
+  cluster:        {order: 2, segment: true}
+  clusterVersion: {order: 3}                  // hashed only - a struct
+  appLabels:      {order: 10, indexed: true}  // hashed per index read
+}
+```
+
+Everything contributes to the hash; `segment` only says what is worth reading.
+
+## Steps
+
+| # | Step | Test |
+|---|---|---|
+| 1 | Rules gain `segment`; `clusterVersion` and the indexed fields stop being inlined | unit |
+| 2 | Generation emits the inlined segments and records which indexed reads exist | unit; the recorded list is verified at admission like the key |
+| 3 | `cacheIdentity` hashes the structured document; truncation trims the prefix | unit, incl. absent vs empty vs set |
+| 4 | Resolver supplies the indexed values and the template hash | unit |
+| 5 | Regenerate; confirm a definition edit orphans its entries | e2e |
