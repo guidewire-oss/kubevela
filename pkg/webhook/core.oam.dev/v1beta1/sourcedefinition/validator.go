@@ -27,6 +27,7 @@ import (
 	cuetoken "cuelang.org/go/cue/token"
 
 	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 )
 
 // ValidateSourceStorage checks the `storage:` block of a SourceDefinition template.
@@ -110,7 +111,7 @@ func validateKeyExpr(expr ast.Expr) error {
 		if err != nil {
 			return fmt.Errorf("storage.key is not a valid string literal: %w", err)
 		}
-		return veladefinition.ValidateCacheKey(key)
+		return cachekey.ValidateCacheKey(key)
 	case *ast.Interpolation:
 		// Elts alternate literal, expression, literal, ... Only the literals are
 		// knowable now; an interpolated value cannot rescue an illegal literal.
@@ -129,7 +130,7 @@ func validateKeyExpr(expr ast.Expr) error {
 			// checking. Trim only touches the ends, so an illegal character *inside*
 			// the literal text is still caught.
 			text := strings.Trim(lit.Value, `"\()`)
-			if bad := veladefinition.InvalidCacheKeyChars(text); bad != "" {
+			if bad := cachekey.InvalidCacheKeyChars(text); bad != "" {
 				return fmt.Errorf("storage.key literal segment %q contains characters not allowed in a cache key (%s); only lowercase letters, digits and '-' are permitted", text, bad)
 			}
 		}

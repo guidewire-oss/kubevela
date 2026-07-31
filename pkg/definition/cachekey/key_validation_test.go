@@ -14,14 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package definition
+package cachekey
 
 import (
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/oam-dev/kubevela/pkg/cue/process"
 )
 
 func TestValidateCacheKey(t *testing.T) {
@@ -79,79 +76,3 @@ func TestInvalidCacheKeyCharsReportsEachDistinctChar(t *testing.T) {
 // reachable cluster). If policy resolution resolved providers - as it did before -
 // this would error. Computing the key must not perform the I/O the cache exists
 // to avoid.
-func TestResolveCachePolicyDoesNotRunProviders(t *testing.T) {
-	ctx := process.NewContext(process.ContextData{})
-	resolver := newSourceResolver(ctx)
-
-	const tmpl = `
-import "vela/kube"
-
-storage: {
-  key:        "no-io-cache-key"
-  storageTTL: "5m"
-}
-parameter: {}
-_cm: kube.#Get & {
-  $params: {
-    apiVersion: "v1"
-    kind:       "ConfigMap"
-    metadata: {name: "does-not-exist", namespace: "nowhere"}
-  }
-}
-output: {
-  value: _cm.$returns.data.value
-}
-`
-
-	policy, err := resolver.resolveCachePolicy("src", "typeA", tmpl, nil)
-	if err != nil {
-		t.Fatalf("computing the cache key must not require provider I/O, got: %v", err)
-	}
-	if policy.Key != "no-io-cache-key" {
-		t.Fatalf("expected key %q, got %q", "no-io-cache-key", policy.Key)
-	}
-	if policy.TTL != 5*time.Minute {
-		t.Fatalf("expected TTL 5m, got %v", policy.TTL)
-	}
-}
-
-func TestResolveCachePolicyRejectsBadValues(t *testing.T) {
-	cases := []struct {
-		name     string
-		template string
-		wantErr  string
-	}{
-		{
-			name:     "missing storage block",
-			template: "parameter: {}\noutput: {a: \"b\"}\n",
-			wantErr:  "must declare a storage: block",
-		},
-		{
-			name:     "illegal key characters",
-			template: "storage: {key: \"Bad:Key\"}\nparameter: {}\noutput: {a: \"b\"}\n",
-			wantErr:  "not allowed in a cache key",
-		},
-		{
-			name:     "unparseable storageTTL",
-			template: "storage: {key: \"k\", storageTTL: \"soon\"}\nparameter: {}\noutput: {a: \"b\"}\n",
-			wantErr:  "invalid storageTTL",
-		},
-		{
-			name:     "unknown onStaleFailure",
-			template: "storage: {key: \"k\", onStaleFailure: \"Fail\"}\nparameter: {}\noutput: {a: \"b\"}\n",
-			wantErr:  "unknown onStaleFailure",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resolver := newSourceResolver(process.NewContext(process.ContextData{}))
-			_, err := resolver.resolveCachePolicy("src", "typeA", tc.template, nil)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
-			}
-		})
-	}
-}

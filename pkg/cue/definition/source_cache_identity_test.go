@@ -19,6 +19,8 @@ package definition
 import (
 	"strings"
 	"testing"
+
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 )
 
 // The generated storage.key covers the context a source reads. Properties are
@@ -77,7 +79,7 @@ func TestCacheIdentityDiscriminatesOnProperties(t *testing.T) {
 	if !strings.HasPrefix(a, key+"-") {
 		t.Fatalf("the readable key must lead: got %q", a)
 	}
-	if err := ValidateCacheKey(a); err != nil {
+	if err := cachekey.ValidateCacheKey(a); err != nil {
 		t.Fatalf("the assembled identity must be a legal object name: %v", err)
 	}
 }
@@ -107,16 +109,16 @@ func TestCacheIdentityOverflow(t *testing.T) {
 	// The generated key is static text, so its resolved length is only knowable
 	// here. An over-long identity is hashed rather than truncated: truncation
 	// would let two distinct keys collide.
-	long := strings.Repeat("a", MaxCacheKeyLen)
+	long := strings.Repeat("a", cachekey.MaxCacheKeyLen)
 
 	got, err := cacheIdentity(long, map[string]interface{}{"x": "y"})
 	if err != nil {
 		t.Fatalf("an over-long key must be reduced, not rejected: %v", err)
 	}
-	if len(got) > MaxCacheKeyLen {
-		t.Fatalf("identity is %d characters, over the %d limit", len(got), MaxCacheKeyLen)
+	if len(got) > cachekey.MaxCacheKeyLen {
+		t.Fatalf("identity is %d characters, over the %d limit", len(got), cachekey.MaxCacheKeyLen)
 	}
-	if err := ValidateCacheKey(got); err != nil {
+	if err := cachekey.ValidateCacheKey(got); err != nil {
 		t.Fatalf("the reduced identity must still be legal: %v", err)
 	}
 

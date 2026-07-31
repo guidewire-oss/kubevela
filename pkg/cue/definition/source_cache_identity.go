@@ -17,6 +17,8 @@ limitations under the License.
 package definition
 
 import (
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -53,11 +55,11 @@ func cacheIdentity(key string, props map[string]interface{}) (string, error) {
 	// now. Reduce rather than reject: an over-long key is an accident of the
 	// values, not an authoring error the user can act on. Hash the whole thing
 	// rather than truncating, because truncation lets distinct keys collide.
-	if len(identity) > MaxCacheKeyLen {
+	if len(identity) > cachekey.MaxCacheKeyLen {
 		sum := sha256.Sum256([]byte(identity))
 		full := hex.EncodeToString(sum[:])
 		// Keep a readable prefix where there is room for one.
-		prefixLen := MaxCacheKeyLen - len(full) - 1
+		prefixLen := cachekey.MaxCacheKeyLen - len(full) - 1
 		if prefixLen > 0 && prefixLen <= len(identity) {
 			return identity[:prefixLen] + "-" + full, nil
 		}

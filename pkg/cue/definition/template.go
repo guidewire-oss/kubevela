@@ -30,6 +30,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/oam-dev/kubevela/pkg/cue/definition/health"
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 	"github.com/oam-dev/kubevela/pkg/features"
 
 	upstreamcuex "github.com/kubevela/pkg/cue/cuex"
@@ -945,7 +946,9 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 			return cached, nil
 		}
 	}
-	c, err := r.ctx.BaseContextFile()
+	// A source is compiled against the context the cache-key rules make readable,
+	// not the component's - so it cannot depend on anything the key ignores.
+	c, err := sourceContext(r.ctx, sourceName)
 	if err != nil {
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
 		return nil, err
@@ -1018,7 +1021,7 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 			paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(raw))
 		}
 	}
-	c, err := r.ctx.BaseContextFile()
+	c, err := sourceContext(r.ctx, sourceName)
 	if err != nil {
 		return policy, err
 	}
@@ -1041,7 +1044,7 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 	if err := storage.LookupPath(value.FieldPath("key")).Decode(&cacheKey); err != nil {
 		return policy, errors.WithMessagef(err, "resolve storage.key for source %q", sourceName)
 	}
-	if err := ValidateCacheKey(cacheKey); err != nil {
+	if err := cachekey.ValidateCacheKey(cacheKey); err != nil {
 		return policy, errors.WithMessagef(err, "source %q", sourceName)
 	}
 	policy.Key = cacheKey

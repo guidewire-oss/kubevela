@@ -24,6 +24,7 @@ spec:
     - name: deployment-name
       type: deployment-namer
       properties:
+        component: web
         region:
           fromSource: cluster.region
         zone:

@@ -21,8 +21,6 @@ import (
 	"strings"
 
 	"cuelang.org/go/cue"
-
-	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 )
 
 // KeyExpression renders the CUE expression that becomes storage.key.
@@ -42,7 +40,7 @@ func KeyExpression(definitionName string, dims []Dimension) (string, error) {
 	}
 	// The prefix is the one part of the key that is fixed at generation time, so
 	// it is also the one part that can be checked now.
-	if bad := veladefinition.InvalidCacheKeyChars(definitionName); bad != "" {
+	if bad := InvalidCacheKeyChars(definitionName); bad != "" {
 		return "", fmt.Errorf("definition name %q contains characters not allowed in a cache key (%s); "+
 			"only lowercase letters, digits and '-' are permitted", definitionName, bad)
 	}
