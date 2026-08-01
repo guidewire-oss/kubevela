@@ -295,7 +295,12 @@ func References(expr string) ([]Reference, error) {
 	ast.Walk(node, func(n ast.Node) bool {
 		if b, ok := n.(*ast.BinaryExpr); ok && b.Op == token.OR {
 			if u, ok := b.X.(*ast.UnaryExpr); ok && u.Op == token.MUL {
-				defaulted[u.X] = true
+				// The marker may sit over an asserted read - *(x & string) | "d" -
+				// so the read itself is what gets recorded, not the wrapper. Miss
+				// this and the read is reported as needing a default it already has.
+				if read, ok := readUnderMarker(u.X); ok {
+					defaulted[read] = true
+				}
 			}
 		}
 		return true
@@ -443,14 +448,77 @@ func isDefaultedRead(b *ast.BinaryExpr) bool {
 	if !ok || u.Op != token.MUL {
 		return false
 	}
-	switch u.X.(type) {
-	case *ast.SelectorExpr, *ast.IndexExpr:
-	default:
+	if !isReadOrAssertedRead(u.X) {
 		return false
 	}
 	switch b.Y.(type) {
 	case *ast.BasicLit:
 		return true
+	}
+	return false
+}
+
+// readUnderMarker digs the read out from under a default marker, past the
+// parentheses and the type assertion it may be wrapped in.
+func readUnderMarker(e ast.Expr) (ast.Expr, bool) {
+	if p, ok := e.(*ast.ParenExpr); ok {
+		e = p.X
+	}
+	switch t := e.(type) {
+	case *ast.SelectorExpr, *ast.IndexExpr:
+		return e, true
+	case *ast.BinaryExpr:
+		if t.Op != token.AND {
+			return nil, false
+		}
+		for _, pair := range [][2]ast.Expr{{t.X, t.Y}, {t.Y, t.X}} {
+			read, typ := pair[0], pair[1]
+			id, ok := typ.(*ast.Ident)
+			if !ok || !assertedTypes[id.Name] {
+				continue
+			}
+			switch read.(type) {
+			case *ast.SelectorExpr, *ast.IndexExpr:
+				return read, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// isReadOrAssertedRead accepts a read, or a read with a type asserted onto it.
+//
+// Both have to be allowed under a default marker, because the two conditions
+// they answer are independent: an open field needs an assertion to have a type
+// at all, and a value that may be absent needs a fallback. A field that is both
+// - `outputs: [string]: _`, where the key may not exist and its type is not
+// declared - has no other way to be written:
+//
+//	*(source.cfg.outputs.settings.data.region & string) | "unknown"
+func isReadOrAssertedRead(e ast.Expr) bool {
+	if p, ok := e.(*ast.ParenExpr); ok {
+		e = p.X
+	}
+	switch t := e.(type) {
+	case *ast.SelectorExpr, *ast.IndexExpr:
+		return true
+	case *ast.BinaryExpr:
+		if t.Op != token.AND {
+			return false
+		}
+		// Either order: `x & string` and `string & x` mean the same thing, which
+		// is what Assertions already accepts.
+		for _, pair := range [][2]ast.Expr{{t.X, t.Y}, {t.Y, t.X}} {
+			read, typ := pair[0], pair[1]
+			id, ok := typ.(*ast.Ident)
+			if !ok || !assertedTypes[id.Name] {
+				continue
+			}
+			switch read.(type) {
+			case *ast.SelectorExpr, *ast.IndexExpr:
+				return true
+			}
+		}
 	}
 	return false
 }

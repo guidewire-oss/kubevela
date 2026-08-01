@@ -1891,3 +1891,70 @@ func TestListIndexTypeOfAgreesWithEval(t *testing.T) {
 		})
 	}
 }
+
+// Asserting a type and supplying a default are answers to independent
+// questions - "what type is this" and "what if it is missing" - so a field that
+// is both open and possibly-absent has to be able to ask for both.
+//
+// `outputs: [string]: _` is exactly that shape: the map declares no key, so a
+// read may find nothing, and the element type is `_`, so it has no type either.
+func TestAssertedReadWithDefault(t *testing.T) {
+	schemas := map[string]string{"objs": `{outputs: [string]: _}`}
+
+	// A key read out of an open map enters an open region. Before this was
+	// recognised, the read was neither typed nor assertable: `& string` failed
+	// with "undefined field", and a bare default quietly typed as the fallback's
+	// type rather than the value's.
+	if got, err := TypeOf(`source.objs.outputs.settings.data.region & string`, schemas); err != nil || got != cue.StringKind {
+		t.Fatalf("an asserted read into an open map should be string, got %v (%v)", got, err)
+	}
+	if _, err := TypeOf(`*source.objs.outputs.settings.data.region | "unknown"`, schemas); err == nil {
+		t.Error("a default alone must not stand in for a type in an open region")
+	}
+
+	// Both together, in either operand order.
+	for _, expr := range []string{
+		`*(source.objs.outputs.settings.data.region & string) | "unknown"`,
+		`*(string & source.objs.outputs.settings.data.region) | "unknown"`,
+	} {
+		got, err := TypeOf(expr, schemas)
+		if err != nil || got != cue.StringKind {
+			t.Errorf("%s: expected string, got %v (%v)", expr, got, err)
+		}
+		undefended, err := UndefendedReads("$("+expr+")", schemas)
+		if err != nil || len(undefended) != 0 {
+			t.Errorf("%s: the default should defend the read, got %v (%v)", expr, undefended, err)
+		}
+	}
+
+	// The assertion on its own still leaves the read undefended: the key may not
+	// be there, which the type says nothing about.
+	undefended, err := UndefendedReads(`$(source.objs.outputs.settings.data.region & string)`, schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(undefended) != 1 || undefended[0].String() != "source.objs.outputs.settings.data.region" {
+		t.Fatalf("an asserted read should still need a default, got %v", undefended)
+	}
+
+	// And render agrees, including the case the default exists for.
+	resolved := map[string]map[string]interface{}{
+		"objs": {"outputs": map[string]interface{}{
+			"settings": map[string]interface{}{"data": map[string]interface{}{"region": "eu-west-1"}},
+		}},
+	}
+	for _, tc := range []struct{ raw, want string }{
+		{`$(source.objs.outputs.settings.data.region & string)`, "eu-west-1"},
+		{`$(*(source.objs.outputs.settings.data.region & string) | "unknown")`, "eu-west-1"},
+		{`$(*(source.objs.outputs.absent.data.region & string) | "unknown")`, "unknown"},
+	} {
+		got, err := Eval(tc.raw, resolved, nil)
+		if err != nil {
+			t.Errorf("%s: %v", tc.raw, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: expected %q, got %#v", tc.raw, tc.want, got)
+		}
+	}
+}

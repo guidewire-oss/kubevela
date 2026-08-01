@@ -211,7 +211,23 @@ func PathIsOpen(ref Reference, schemas map[string]string) bool {
 			continue
 		}
 		_, next, found, err := fieldByName(cur, segment)
-		if err != nil || !found {
+		if err != nil {
+			return false
+		}
+		if !found {
+			// A key read out of an open map. `outputs: [string]: _` declares the
+			// map and never a key, so the segment resolves to the pattern's type -
+			// and if that is `_`, everything below it is open.
+			//
+			// Reporting false here made the read untypeable rather than
+			// assertable: TypeOf would not demand an assertion, so nothing
+			// materialised the path, and `outputs.settings.data.region & string`
+			// failed with "undefined field: data" while the same read with a
+			// default quietly typed as the default's type instead of the value's.
+			if pattern := cur.LookupPath(cue.MakePath(cue.AnyString)); pattern.Exists() {
+				cur = pattern
+				continue
+			}
 			return false
 		}
 		cur = next
