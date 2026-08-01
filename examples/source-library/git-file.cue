@@ -1,0 +1,39 @@
+import "vela/registry"
+
+// The file's contents, verbatim.
+//
+// `schema: _` was the first instinct - the source is generic over whatever the
+// file happens to be. But admission rejects it, and rightly: the schema is what
+// fromSource paths and resolved output are both validated against, so a source
+// declaring nothing bypasses both layers (KEP review finding #3).
+//
+// Nothing is lost by declaring it, because the shape genuinely is fixed: this
+// source hands back the bytes. Interpreting them is the consumer's business, and
+// a platform wanting a typed contract over a *particular* file should wrap this
+// in a definition that names that file's fields.
+schema: {
+	content: string
+}
+
+storage: {
+	// A file in a registry changes rarely, and fetching one is a network round
+	// trip against someone else's service.
+	storageTTL:     "30m"
+	onStaleFailure: "use-stale"
+}
+
+parameter: {
+	// +usage=Name of a registry configured in this cluster
+	registry: string
+	// +usage=Path of the file within that registry
+	path: string
+}
+
+_file: registry.#ReadFile & {
+	$params: {
+		registry: parameter.registry
+		path:     parameter.path
+	}
+}
+
+output: content: _file.$returns.content

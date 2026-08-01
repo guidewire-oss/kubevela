@@ -81,7 +81,9 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 	cueTemplate := obj.Spec.Schematic.CUE.Template
 
 	logger.WithStep("validate-cue").Info("Validating CUE template syntax and semantics for SourceDefinition schematic")
-	if err := webhookutils.ValidateCuexTemplate(ctx, cueTemplate); err != nil {
+	// Without executing the providers: a source exists to fetch something, and
+	// admission has no parameters to hand them. See the function for why.
+	if err := webhookutils.ValidateCuexTemplateWithoutProviders(ctx, cueTemplate); err != nil {
 		logger.WithStep("validate-cue").WithError(err).Error(err, "CUE template contains syntax errors or invalid constructs - template compilation failed")
 		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
 	}
