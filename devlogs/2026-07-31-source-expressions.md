@@ -1,7 +1,9 @@
 # Spike: CUE expressions in component properties instead of `fromSource`
 
 **Branch:** `wip/source-expressions`, off `feature/source-definitions` at `f9e6edfc0`.
-**Status:** mechanism proven in `pkg/definition/sourceexpr/`, nothing wired into resolution.
+**Status:** mechanism proven in `pkg/definition/sourceexpr/`. Wired into one
+surface - Application-scoped policies, context only - and verified on a cluster.
+Component, trait and workflow-step wiring is still to do.
 
 ## The gap this addresses
 
@@ -470,6 +472,48 @@ This turns policy from "excluded because half the feature cannot work there" int
 gets for free, without moving source resolution ahead of the transforms and
 inheriting the question of what happens when a scoped policy rewrites
 `spec.sources[]`.
+
+### Wired: `$(context...)` in Application-scoped policies
+
+`renderPolicyCUETemplate` now substitutes context expressions in a policy's
+properties before compiling the template, using `ScopedPolicyContext` and
+context-only roots.
+
+```yaml
+policies:
+  - name: quota
+    type: my-policy
+    properties:
+      owner:     '$(context.appLabels["team"])'
+      quotaName: '$(context.appName + "-quota")'
+```
+
+Verified on a live cluster, with the policy writing the resolved values back as
+labels so they are observable:
+
+```
+resolved-owner: payments          <- $(context.appLabels["team"])
+resolved-quota: app-good3-quota   <- $(context.appName + "-quota")
+```
+
+**Two false results on the way there, both worth recording.** The first test
+asserted only that the app reached `running`, which proves nothing: an
+unsubstituted `$(...)` is still a valid string, so the policy succeeds either way.
+The second used a policy whose literal parameter should have conflicted - and
+*both* the positive and negative controls passed, because
+`EnableApplicationScopedPolicies` defaults to false and the whole path was
+silently skipped. The controller log said so plainly
+("Application-scoped policies disabled by feature gate") and the app status did
+not.
+
+What finally proved it was the negative control's error text:
+
+```
+parameter.owner: conflicting values "payments" and "not-the-label"
+```
+
+CUE unifying against `"payments"` - the resolved label - rather than against the
+literal `"$(context.appLabels[\"team\"])"`.
 
 ### Per-surface context schemas
 
