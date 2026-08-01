@@ -1,23 +1,30 @@
-import "vela/registry"
+import (
+	"encoding/json"
+	"encoding/yaml"
+	"strings"
+	"vela/registry"
+)
 
-// The file's contents, verbatim.
+// A file from a registry, parsed if we can recognise it.
 //
-// `schema: _` was the first instinct - the source is generic over whatever the
-// file happens to be. But admission rejects it, and rightly: the schema is what
-// fromSource paths and resolved output are both validated against, so a source
-// declaring nothing bypasses both layers (KEP review finding #3).
+// `content: _` rather than a declared shape: this source is generic over
+// whatever file it is pointed at, so there is nothing honest to declare about
+// the value. The field itself is still declared, which is what keeps `schema:`
+// a struct and keeps the surface - a consumer reads `content`, and nothing else
+// exists to read.
 //
-// Nothing is lost by declaring it, because the shape genuinely is fixed: this
-// source hands back the bytes. Interpreting them is the consumer's business, and
-// a platform wanting a typed contract over a *particular* file should wrap this
-// in a definition that names that file's fields.
+// This is a deliberate trade. A source that names its fields gets output
+// validation and typed expressions; this one gives those up in exchange for
+// working on any file. A platform that cares about a particular file should
+// write a definition that parses it and declares its fields - the parse is one
+// line, as below.
 schema: {
-	content: string
+	content: _
 }
 
 storage: {
-	// A file in a registry changes rarely, and fetching one is a network round
-	// trip against someone else's service.
+	// A file in a repository changes rarely, and fetching one is a round trip
+	// against someone else's service.
 	storageTTL:     "30m"
 	onStaleFailure: "use-stale"
 }
@@ -36,4 +43,15 @@ _file: registry.#ReadFile & {
 	}
 }
 
-output: content: _file.$returns.content
+// Structured formats are parsed so a consumer can read a field out of them;
+// anything else comes back as the bytes it is. Detection is by suffix, which is
+// the only signal available - the registry readers return content, not a media
+// type.
+_isYAML: strings.HasSuffix(parameter.path, ".yaml") || strings.HasSuffix(parameter.path, ".yml")
+_isJSON: strings.HasSuffix(parameter.path, ".json")
+
+output: content: [
+	if _isYAML {yaml.Unmarshal(_file.$returns.content)},
+	if _isJSON {json.Unmarshal(_file.$returns.content)},
+	_file.$returns.content,
+][0]

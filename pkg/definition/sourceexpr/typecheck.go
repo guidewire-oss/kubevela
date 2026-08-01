@@ -61,6 +61,15 @@ func TypeOfIn(expr string, schemas map[string]string, ctxSchema ContextSchema, r
 		return cue.BottomKind, err
 	}
 
+	// A read into a `_` field cannot be typed. Say so by returning the unknown
+	// kind rather than guessing - admission then declines to judge this one
+	// instead of rejecting something valid.
+	for _, ref := range refs {
+		if PathIsOpen(ref, schemas) {
+			return cue.BottomKind, nil
+		}
+	}
+
 	ctx := newContext()
 	sources, err := sentinelSources(ctx, schemas, refs)
 	if err != nil {

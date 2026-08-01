@@ -191,6 +191,12 @@ func sentinelFor(v cue.Value) (interface{}, error) {
 		// An empty list types as a list without committing to an element type,
 		// which is all that is needed while list indexing is rejected.
 		return []interface{}{}, nil
+	case cue.TopKind:
+		// `_` - a deliberately open field. There is nothing to represent, and
+		// nothing downstream will use this: TypeOf bails before evaluating when a
+		// read enters an open region. An empty struct keeps scope construction
+		// from failing for the fields around it.
+		return map[string]interface{}{}, nil
 	case cue.StructKind:
 		iter, err := v.Fields(cue.Optional(true))
 		if err != nil {

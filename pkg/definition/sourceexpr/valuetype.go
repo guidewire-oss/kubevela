@@ -70,6 +70,11 @@ func ValueTypeIn(raw string, schemas map[string]string, roots ...string) (cue.Ki
 		if err != nil {
 			return cue.BottomKind, err
 		}
+		if kind == cue.BottomKind {
+			// Unknown, because the read entered an open field. Whether it can be
+			// concatenated is unknowable here; render will say.
+			continue
+		}
 		if !isTextual(kind) {
 			return cue.BottomKind, fmt.Errorf("%s is a %s and cannot be combined with text; "+
 				"reference a scalar field, or use the expression on its own so the value keeps its type",

@@ -1557,3 +1557,53 @@ func TestIntegersSurviveTheJSONRoundTrip(t *testing.T) {
 		t.Fatalf("expected 1.5, got %#v", got)
 	}
 }
+
+// A schema may declare a field without declaring its shape - `content: _` is how
+// a generic source says "whatever this file happens to be". Nothing can be typed
+// through that, so the answer is "unknown" rather than a guess, and admission
+// declines to judge rather than rejecting something valid.
+func TestOpenFieldTypesAsUnknown(t *testing.T) {
+	schemas := map[string]string{
+		"file":  `{content: _}`,
+		"typed": `{name: string}`,
+	}
+
+	// Reading into the open field, at any depth.
+	for _, expr := range []string{
+		`source.file.content`,
+		`source.file.content.name`,
+		`source.file.content.spec.replicas`,
+	} {
+		kind, err := TypeOf(expr, schemas)
+		if err != nil {
+			t.Errorf("%s: a read into an open field must not error, got: %v", expr, err)
+			continue
+		}
+		if kind != cue.BottomKind {
+			t.Errorf("%s: expected the unknown kind, got %s", expr, kind)
+		}
+	}
+
+	// Unknown must not block a substitution, whatever the target expects.
+	if !kindsCompatibleForTest(cue.BottomKind, cue.IntKind) {
+		t.Error("unknown must be compatible with any target, or a generic source could feed nothing")
+	}
+
+	// Embedding one in text is allowed too - whether it has a text form is
+	// unknowable here, and render will say.
+	if _, err := ValueType(`prefix-$(source.file.content.name)`, schemas); err != nil {
+		t.Errorf("an open read embedded in text must not be rejected at admission: %v", err)
+	}
+
+	// A declared field beside an open one still types normally, so the escape
+	// hatch does not leak into the rest of the schema.
+	if kind, err := TypeOf(`source.typed.name`, schemas); err != nil || kind != cue.StringKind {
+		t.Errorf("a declared field must still type: %s (%v)", kind, err)
+	}
+}
+
+// kindsCompatibleForTest mirrors the webhook's rule, which lives in another
+// package: unknown on either side does not block.
+func kindsCompatibleForTest(src, dst cue.Kind) bool {
+	return src == cue.BottomKind || dst == cue.BottomKind || src&dst != 0
+}
