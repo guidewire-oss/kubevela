@@ -546,6 +546,41 @@ spec.policies[0].properties:  owner: "source" cannot be read here;
     this surface permits "context"
 ```
 
+### Complex types
+
+A struct or list expression keeps its type when it is the whole value, so it can
+feed a struct or list parameter. Verified end to end:
+
+```yaml
+image:            '$(source.s.obj.team + "/nginx:1.25.0")'
+labels:           '$(source.s.obj)'
+imagePullSecrets: '$(source.s.items)'
+```
+
+renders
+
+```
+image=payments/nginx:1.25.0
+pullSecrets=[{"name":"alpha"},{"name":"beta"}]
+podLabels={... "team":"payments","tier":"gold"}
+```
+
+Admission types all of it: a struct into a string parameter is *"expression … is
+object but component expects string"*, a list is *"is list"*, and concatenating
+either is refused because neither has a single text form.
+
+**This turned up a pre-existing bug in `fromSource`'s own admission validation,
+unrelated to expressions.** Properties are flattened to dotted paths with
+indices, so `items: ["a","b"]` becomes `items.0` / `items.1` - and looking those
+up in a schema declaring `items: [...string]` found nothing, because an open list
+has no concrete element at any index, only an element type. A perfectly valid
+list-valued source property was therefore rejected as undeclared. Reproduced with
+no expressions anywhere, so it predates this work.
+
+`cueStruct.lookup` now falls back to `cue.AnyIndex` when a numeric segment has no
+concrete element. A fixed list still reports out-of-range as undeclared, rather
+than silently resolving through an element type it does not have.
+
 ### `$(context...)` in Application-scoped policies
 
 `renderPolicyCUETemplate` now substitutes context expressions in a policy's

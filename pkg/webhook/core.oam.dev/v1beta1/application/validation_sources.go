@@ -595,10 +595,19 @@ func (c *cueStruct) lookup(path string) (cue.Value, bool) {
 			return cur, false
 		}
 		if idx, err := strconv.Atoi(seg); err == nil {
-			cur = cur.LookupPath(cue.MakePath(cue.Index(idx)))
-			if !cur.Exists() {
-				return cur, false
+			next := cur.LookupPath(cue.MakePath(cue.Index(idx)))
+			if !next.Exists() {
+				// An open list - [...string] - has no concrete element at any
+				// index, only an element type. Without this a source property
+				// like items: ["a","b"] is flattened to items.0 / items.1 and
+				// then reported as undeclared, which is how a perfectly valid
+				// list-valued property was being rejected at admission.
+				next = cur.LookupPath(cue.MakePath(cue.AnyIndex))
 			}
+			if !next.Exists() {
+				return next, false
+			}
+			cur = next
 			continue
 		}
 		next := cur.LookupPath(cue.MakePath(cue.Str(seg)))

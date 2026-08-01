@@ -1370,3 +1370,71 @@ func TestScopedPolicyContextIsASubset(t *testing.T) {
 		t.Error("a scoped policy cannot resolve sources and must refuse to read them")
 	}
 }
+
+// Complex types: a struct or list expression keeps its type when it is the whole
+// value, so it can feed a struct or list parameter. Only concatenation forces a
+// string, and a struct has no text form to concatenate.
+func TestComplexTypes(t *testing.T) {
+	schemas := map[string]string{
+		"s": `{obj: {team: string, tier: string}, items: [...string], name: string}`,
+	}
+	resolved := map[string]map[string]interface{}{
+		"s": {
+			"obj":   map[string]interface{}{"team": "payments", "tier": "gold"},
+			"items": []interface{}{"alpha", "beta"},
+			"name":  "web",
+		},
+	}
+
+	for _, tc := range []struct {
+		raw  string
+		kind cue.Kind
+	}{
+		{`$(source.s.obj)`, cue.StructKind},
+		{`$(source.s.items)`, cue.ListKind},
+		{`$(source.s.obj.team)`, cue.StringKind},
+		{`$(source.s.obj.team + "/x")`, cue.StringKind},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			got, err := ValueType(tc.raw, schemas)
+			if err != nil {
+				t.Fatalf("typing: %v", err)
+			}
+			if got != tc.kind {
+				t.Fatalf("expected %s, got %s", tc.kind, got)
+			}
+
+			value, err := Eval(tc.raw, resolved, nil)
+			if err != nil {
+				t.Fatalf("evaluating: %v", err)
+			}
+			// The rendered value must have the shape admission promised.
+			switch tc.kind {
+			case cue.StructKind:
+				if _, ok := value.(map[string]interface{}); !ok {
+					t.Fatalf("expected a struct, got %T", value)
+				}
+			case cue.ListKind:
+				if _, ok := value.([]interface{}); !ok {
+					t.Fatalf("expected a list, got %T", value)
+				}
+			case cue.StringKind:
+				if _, ok := value.(string); !ok {
+					t.Fatalf("expected a string, got %T", value)
+				}
+			}
+		})
+	}
+
+	// A struct has no single text form, so concatenating one is refused at
+	// admission rather than rendered as something the author did not ask for.
+	for _, raw := range []string{
+		`$(source.s.obj)-suffix`,
+		`prefix-$(source.s.items)`,
+		`$(source.s.obj)$(source.s.items)`,
+	} {
+		if _, err := ValueType(raw, schemas); err == nil {
+			t.Errorf("expected %q to be refused: a struct or list cannot be combined with text", raw)
+		}
+	}
+}

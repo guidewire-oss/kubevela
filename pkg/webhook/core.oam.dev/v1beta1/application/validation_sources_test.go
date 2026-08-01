@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 	"strings"
 	"testing"
 
@@ -664,4 +666,47 @@ parameter: {image: string}
 			t.Fatalf("expected a consumableFrom rejection, got:\n%s", joined)
 		}
 	})
+}
+
+// An open list - [...string] - has no concrete element at any index, only an
+// element type. Properties are flattened to dotted paths with indices, so
+// items: ["a","b"] becomes items.0 and items.1, and looking those up in a schema
+// declaring items: [...string] found nothing - which rejected a perfectly valid
+// list-valued property as undeclared.
+//
+// This affected fromSource before expressions existed; it is not an
+// expression-specific bug.
+func TestCueStructLookupHandlesOpenLists(t *testing.T) {
+	v := cuecontext.New().CompileString(`root: {
+		open:  [...string]
+		fixed: [string, int]
+		nested: [...{name: string}]
+	}`)
+	c := &cueStruct{root: v.LookupPath(cue.ParsePath("root"))}
+
+	for _, tc := range []struct {
+		path string
+		want cue.Kind
+	}{
+		{"open.0", cue.StringKind},
+		{"open.7", cue.StringKind}, // any index, since the type is what matters
+		{"fixed.0", cue.StringKind},
+		{"fixed.1", cue.IntKind},
+		{"nested.0.name", cue.StringKind},
+	} {
+		got, declared := c.kindAt(tc.path)
+		if !declared {
+			t.Errorf("%s should resolve through the list's element type", tc.path)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: expected %s, got %s", tc.path, tc.want, got)
+		}
+	}
+
+	// A fixed list still reports out-of-range as undeclared, rather than
+	// silently falling back to an element type it does not have.
+	if _, declared := c.kindAt("fixed.5"); declared {
+		t.Error("an index beyond a fixed list must not resolve")
+	}
 }
