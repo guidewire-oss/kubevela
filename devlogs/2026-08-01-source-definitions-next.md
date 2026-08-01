@@ -256,7 +256,7 @@ one Secret: properties, template name, `outputs[0].kind`, `outputs[1].name`, an
 out-of-range index falling to its default, and a real ConfigMap value read
 through the looped source.
 
-### 6b. `environment` — the env an Application is deployed into  ✅ DONE
+### 6b. `vela-env` — the env an Application is deployed into  ✅ DONE
 
 A vela env is a Namespace with two labels: `usage.oam.dev/control-plane: env`
 marks it as one, `namespace.oam.dev/env: <name>` names it (`pkg/utils/env`). That
@@ -276,12 +276,21 @@ tenancy" - a different capability wearing the same name. Admission refuses a
 `namespace` property outright rather than ignoring it, verified.
 
 **`name` always resolves** - the env label when there is one, the namespace's own
-name when there is not. That is what keeps it out of the optional-field rule:
+name when there is not, with **`managed`** saying which happened. That pairing is
+the point: the fallback makes `name` convenient, but it also makes `name ==
+namespace` evidence of nothing - equally an env genuinely called `default` and a
+namespace nobody ran `vela env init` against. Anything gating on being in a real
+environment asks `managed` rather than inferring. Verified: `default` reads
+`name=default, managed=false`, the case that was previously indistinguishable.
+
+Named `vela-env` to sit with `vela-config` - both read a KubeVela concept, and
+the prefix is what separates them from the generic transport sources
+(`configmap`, `git-file`, `http-get`). That is what keeps it out of the optional-field rule:
 `$(source.env.name)` needs no fallback, where an optional `name` would have made
 every consumer carry a `| "unmanaged"` for a case most do not have. Verified both
 ways: `staging-ns` reads `staging`, plain `default` reads `default`.
 
-Key is `environment-\(context.namespace)` with no cluster component - correct,
+Key is `vela-env-\(context.namespace)` with no cluster component - correct,
 since the read is always from the hub and does not vary by where a workload
 lands.
 
