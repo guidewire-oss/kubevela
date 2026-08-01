@@ -17,7 +17,9 @@ limitations under the License.
 package application
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -84,5 +86,126 @@ func validateExpressions(app *v1beta1.Application) field.ErrorList {
 		}
 	}
 
+	return errs
+}
+
+// validateExpressionTargetTypes type-checks each property containing a $(...)
+// expression against the parameter it feeds.
+//
+// This is the same contract validateFromSourceTargetTypes enforces for the
+// directive, and it is the point of typing expressions at all: the result type is
+// derived from the source schemas at admission, so a mismatch is refused before
+// the Application exists rather than surfacing as a CUE error mid-render.
+//
+// It reuses the directive's machinery deliberately - the same schema validators,
+// the same target parameter lookup, the same kindsCompatible - so the two forms
+// cannot drift into disagreeing about what is a valid substitution.
+//
+// Best-effort per target, matching the directive's behaviour: where the target
+// parameter type cannot be determined the check is skipped rather than guessed.
+func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, app *v1beta1.Application,
+	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) field.ErrorList {
+	var errs field.ErrorList
+	targetParams := map[string]*cueStruct{}
+
+	loadTarget := func(kind, defType string) *cueStruct {
+		key := kind + "/" + defType
+		if pv, ok := targetParams[key]; ok {
+			return pv
+		}
+		pv, _ := h.loadTargetParameter(ctx, app.Namespace, kind, defType)
+		targetParams[key] = pv
+		return pv
+	}
+
+	// schemasFor maps each binding name to its SourceDefinition's schema text,
+	// which is what sentinel typing needs. Bindings whose definition cannot be
+	// loaded are left out; an expression reading one is then reported by the
+	// evaluator as an unknown source rather than silently accepted.
+	schemasFor := func() map[string]string {
+		out := map[string]string{}
+		for name, sourceType := range sourceNameToType {
+			if sourceType == "" {
+				continue
+			}
+			sv, ok := schemaValidators[sourceType]
+			if !ok {
+				var err error
+				sv, err = h.loadSourceSchemaValidator(ctx, app.Namespace, sourceType)
+				if err != nil {
+					continue
+				}
+				schemaValidators[sourceType] = sv
+			}
+			if sv == nil || sv.schemaExpr == "" {
+				continue
+			}
+			out[name] = sv.schemaExpr
+		}
+		return out
+	}()
+
+	check := func(leaves []inputLeaf, param *cueStruct, targetDesc string, roots ...string) {
+		for _, lf := range leaves {
+			raw, ok := lf.literal.(string)
+			if !ok || lf.path == "" {
+				continue
+			}
+			parsed, err := sourceexpr.Parse(raw)
+			if err != nil || !parsed.HasExpr() {
+				continue
+			}
+
+			srcKind, err := sourceexpr.ValueTypeIn(raw, schemasFor, roots...)
+			if err != nil {
+				errs = append(errs, field.Invalid(lf.fieldPath, raw, err.Error()))
+				continue
+			}
+			if param == nil {
+				continue
+			}
+			dstKind, declared := param.kindAt(lf.path)
+			if !declared {
+				// The consuming template may accept it via an open struct; do not
+				// over-report, exactly as the directive's check does not.
+				continue
+			}
+			if !kindsCompatible(srcKind, dstKind) {
+				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+					fmt.Sprintf("type mismatch: expression %s is %s but %s expects %s",
+						raw, kindName(srcKind), targetDesc, kindName(dstKind))))
+				continue
+			}
+
+			// The same rule the directive follows: a default is required only
+			// when a value that may be absent feeds a required parameter.
+			undefended, uerr := sourceexpr.UndefendedReads(raw, schemasFor)
+			if uerr != nil || len(undefended) == 0 {
+				continue
+			}
+			if required, _ := param.requiredAt(lf.path); required {
+				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+					fmt.Sprintf("%s may be absent and feeds required %s; supply a default with *%s | <fallback>",
+						undefended[0], targetDesc, undefended[0])))
+			}
+		}
+	}
+
+	both := []string{sourceexpr.SourceIdent, sourceexpr.ContextIdent}
+	for i, comp := range app.Spec.Components {
+		if comp.Properties != nil && len(comp.Properties.Raw) > 0 {
+			base := field.NewPath("spec", "components").Index(i).Child("properties")
+			check(flattenLeafPaths(comp.Properties.Raw, base), loadTarget("component", comp.Type),
+				fmt.Sprintf("component %q parameter", comp.Type), both...)
+		}
+		for j, tr := range comp.Traits {
+			if tr.Properties == nil || len(tr.Properties.Raw) == 0 {
+				continue
+			}
+			base := field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties")
+			check(flattenLeafPaths(tr.Properties.Raw, base), loadTarget("trait", tr.Type),
+				fmt.Sprintf("trait %q parameter", tr.Type), both...)
+		}
+	}
 	return errs
 }

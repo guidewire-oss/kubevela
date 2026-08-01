@@ -51,6 +51,10 @@ func withSurface(refs []fromSourceReference, surface string) []fromSourceReferen
 
 type sourceSchemaValidator struct {
 	schema cue.Value
+	// schemaExpr is the schema block as source text, retained because typing an
+	// expression needs a schema it can build sentinels from, and re-extracting it
+	// would mean a second definition lookup.
+	schemaExpr string
 }
 
 // ValidateSources validates source bindings and fromSource references.
@@ -190,6 +194,9 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 	// Target contract: each fromSource output field's type must be compatible
 	// with the consuming component/trait parameter it is substituted into.
 	errs = append(errs, h.validateFromSourceTargetTypes(ctx, app, sourceNameToType, schemaValidators)...)
+
+	// The same contract for expressions, which reach the target the same way.
+	errs = append(errs, h.validateExpressionTargetTypes(ctx, app, sourceNameToType, schemaValidators)...)
 
 	return errs
 }
@@ -569,7 +576,7 @@ func (h *ValidatingHandler) loadSourceSchemaValidator(ctx context.Context, appNa
 	if !schema.Exists() {
 		return nil, nil
 	}
-	return &sourceSchemaValidator{schema: schema}, nil
+	return &sourceSchemaValidator{schema: schema, schemaExpr: schemaExpr}, nil
 }
 
 // cueStruct wraps a struct cue.Value with dotted-path lookup helpers. It backs

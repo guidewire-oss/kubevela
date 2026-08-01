@@ -515,7 +515,29 @@ reg type=reg-source config=reg-source-6760c6ec props={"host":"...","tag":"1.4.2"
 That also means `+sensitive` redaction still applies, since it matches on the
 recorded path.
 
-**Admission** rejects what is decidable without values:
+**Admission type-checks against the target parameter**, which is the core
+requirement and what `fromSource` already does. `validateExpressionTargetTypes`
+reuses the directive's machinery deliberately - the same schema validators, the
+same `loadTargetParameter`, the same `kindsCompatible` - so the two forms cannot
+drift into disagreeing about what is a valid substitution.
+
+| Property | Verdict |
+|---|---|
+| `port: '$(source.sc.name)'` (string → int) | rejected: *type mismatch: expression … is string but component "webservice" parameter expects int* |
+| `port: '$(source.sc.replicas)'` | accepted |
+| `image: '$(source.sc.replicas)'` (int → string) | rejected |
+| `image: '$(source.sc.name + ":1.0")'` | accepted |
+| `image: '$(source.sc.note)'` where `note?` is optional | rejected: *may be absent and feeds required …* |
+| `image: '$(*source.sc.note \| "none")'` | accepted |
+
+The last two are the same target-aware rule the directive follows: a default is
+required only when a value that may be absent feeds a *required* parameter.
+
+It also fails open in the same places the directive does - an undeclared target
+parameter is skipped rather than guessed at, since the consuming template may
+accept it through an open struct.
+
+**Admission** also rejects what is decidable without any schema:
 
 ```
 spec.components[0].properties: image: unknown identifier "parameter":

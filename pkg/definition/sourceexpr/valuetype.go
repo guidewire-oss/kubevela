@@ -40,6 +40,12 @@ import (
 // alone, without evaluating anything - so a parameter expecting an int can be
 // told at admission that "$(a) $(b)" will never satisfy it.
 func ValueType(raw string, schemas map[string]string) (cue.Kind, error) {
+	return ValueTypeIn(raw, schemas, SourceIdent, ContextIdent)
+}
+
+// ValueTypeIn is ValueType restricted to the roots a surface permits, so a policy
+// property is typed against context alone.
+func ValueTypeIn(raw string, schemas map[string]string, roots ...string) (cue.Kind, error) {
 	parsed, err := Parse(raw)
 	if err != nil {
 		return cue.BottomKind, err
@@ -48,7 +54,7 @@ func ValueType(raw string, schemas map[string]string) (cue.Kind, error) {
 		return cue.StringKind, nil
 	}
 	if expr, ok := parsed.SoleExpr(); ok {
-		return TypeOf(expr, schemas)
+		return TypeOfIn(expr, schemas, ComponentContext, roots...)
 	}
 
 	// Interleaved with text, so the result is a string. Every fragment is still
@@ -60,7 +66,7 @@ func ValueType(raw string, schemas map[string]string) (cue.Kind, error) {
 		if !f.IsExpr() {
 			continue
 		}
-		kind, err := TypeOf(f.Expr, schemas)
+		kind, err := TypeOfIn(f.Expr, schemas, ComponentContext, roots...)
 		if err != nil {
 			return cue.BottomKind, err
 		}
