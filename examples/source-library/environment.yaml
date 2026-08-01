@@ -4,7 +4,7 @@ metadata:
   name: environment
   namespace: vela-system
   annotations:
-    definition.oam.dev/description: "The KubeVela environment an Application is deployed into - its name, backing namespace, and the labels and annotations a platform keeps there."
+    definition.oam.dev/description: "The KubeVela environment an Application is deployed into - its name, namespace, and the labels and annotations a platform keeps there. Reads the Application's own namespace only."
     definition.oam.dev/cache-key-rules: "7fdfcad2"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
@@ -31,16 +31,23 @@ spec:
         // means; reading a label key off a namespace says how it is stored, and ties
         // every Application to that storage choice.
         //
-        // `name` is optional and deliberately so: a namespace that was never `vela env
-        // init`-ed carries no env label, so the read may find nothing and a consumer
-        // must supply a default. That is honest - not every namespace is an environment.
+        // Parameterless, deliberately. The namespace read is always the Application's
+        // own, so there is no way to ask this source about somebody else's - a namespace
+        // is a boundary, and its labels are a platform's notes about that tenant. Taking
+        // a namespace parameter would turn "what environment am I in" into "read any
+        // namespace's tenancy", which is a different capability wearing the same name.
+        //
+        // `name` always resolves: an env's label when there is one, and the namespace's
+        // own name when there is not. So consumers need no default for it, and a
+        // namespace that was never `vela env init`-ed still reads sensibly rather than
+        // forcing every Application to carry a fallback for a case it does not have.
         //
         // `labels` and `annotations` are open maps, so a key read carries the usual
         // default obligation when it feeds a required parameter. This is where platforms
         // keep tenancy - team, cost centre, tier - and a definition wanting a typed
         // contract over those should name its fields rather than hand out raw keys.
         schema: {
-        	name?:     string
+        	name:      string
         	namespace: string
         	labels: [string]:      string
         	annotations: [string]: string
@@ -53,29 +60,21 @@ spec:
         	onStaleFailure: "use-stale"
         }
 
-        parameter: {
-        	// +usage=Namespace backing the environment. Defaults to the Application's own.
-        	namespace?: string
-        }
+        parameter: {}
 
         _ns: kube.#Get & {
         	$params: resource: {
         		apiVersion: "v1"
         		kind:       "Namespace"
-        		metadata: name: [
-        			if parameter.namespace != _|_ {parameter.namespace},
-        			context.namespace,
-        		][0]
+        		metadata: name: context.namespace
         	}
         }
 
         _labels: *_ns.$returns.metadata.labels | {}
 
         output: {
-        	if _labels["namespace.oam.dev/env"] != _|_ {
-        		name: _labels["namespace.oam.dev/env"]
-        	}
-        	namespace: _ns.$returns.metadata.name
+        	name:      *_labels["namespace.oam.dev/env"] | context.namespace
+        	namespace: context.namespace
         	labels:    _labels
         	annotations: *_ns.$returns.metadata.annotations | {}
         }
