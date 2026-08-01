@@ -544,7 +544,15 @@ func createGitlabHelper(content *utils.Content, token string) (*gitlabHelper, er
 
 // readRepo will read relative path (relative to Meta.Path)
 func (h *gitHelper) readRepo(relativePath string) (*github.RepositoryContent, []*github.RepositoryContent, error) {
-	file, items, _, err := h.Client.Repositories.GetContents(context.Background(), h.Meta.GithubContent.Owner, h.Meta.GithubContent.Repo, path.Join(h.Meta.GithubContent.Path, relativePath), nil)
+	// Honour the ref the registry URL pinned. Parse fills GithubContent.Ref from
+	// the /tree/<branch>/ form, and passing nil here meant a registry pointed at
+	// a branch silently read the default one instead - the same bug Gitee and
+	// GitLab do not have, because they already pass their Ref through.
+	var opts *github.RepositoryContentGetOptions
+	if ref := h.Meta.GithubContent.Ref; ref != "" {
+		opts = &github.RepositoryContentGetOptions{Ref: ref}
+	}
+	file, items, _, err := h.Client.Repositories.GetContents(context.Background(), h.Meta.GithubContent.Owner, h.Meta.GithubContent.Repo, path.Join(h.Meta.GithubContent.Path, relativePath), opts)
 	if err != nil {
 		return nil, nil, WrapErrRateLimit(err)
 	}
