@@ -3,28 +3,42 @@ import "vela/velaconfig"
 // A Config: the properties it was created with, the template it satisfies, and
 // references to whatever that template produced.
 //
+// The shape mirrors a ConfigTemplate's: `output` is the Secret the template
+// renders for the Config itself, `outputs` are the extra objects it declares,
+// under the names the template gave them.
+//
 // `properties: _` because a Config's shape is set by whichever ConfigTemplate
 // created it, which this source has no way to know. A platform wanting a typed
 // contract over a particular Config should write a definition that names its
 // fields - the read is one line, as below.
 //
-// `outputs` is references only. A Config's outputs are routinely Secrets, so a
-// source returning their contents would turn "read a setting" into "read any
-// non-sensitive credential in the cluster". Resolving them is a separate
-// definition (vela-config-outputs), so a platform can install this one and not
-// that one, or restrict that one with `consumableFrom`.
+// Both output fields are references only. A Config's outputs are routinely
+// Secrets, so a source returning their contents would turn "read a setting" into
+// "read any non-sensitive credential in the cluster". Resolving them is a
+// separate definition (vela-config-outputs), so a platform can install this one
+// and not that one, or restrict that one with `consumableFrom`.
 schema: {
 	properties: _
 	template: {
 		name:       string
 		namespace?: string
 	}
-	outputs: [...{
+	// Written out twice rather than shared through a `#ref` definition: the
+	// schema block is lifted out of the template on its own to validate a
+	// source's output, so a sibling definition is not in scope there and
+	// resolves to "reference #ref not found".
+	output: {
 		apiVersion: string
 		kind:       string
 		name:       string
 		namespace?: string
-	}]
+	}
+	outputs: [string]: {
+		apiVersion: string
+		kind:       string
+		name:       string
+		namespace?: string
+	}
 }
 
 storage: {
@@ -53,5 +67,6 @@ _cfg: velaconfig.#Read & {
 output: {
 	properties: _cfg.$returns.properties
 	template:   _cfg.$returns.template
+	output:     _cfg.$returns.output
 	outputs:    _cfg.$returns.outputs
 }

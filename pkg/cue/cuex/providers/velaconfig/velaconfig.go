@@ -76,10 +76,20 @@ type ObjectRef struct {
 }
 
 // ReadResult is what a Config yields when read.
+//
+// The shape follows a ConfigTemplate's own: `output` is the single Secret a
+// template renders for the Config itself, and `outputs` are the additional
+// objects it declares, each under the name the template gave it.
+//
+// Outputs are keyed by that name rather than positionally because position is
+// not an identity. pkg/config builds the stored reference list by ranging a Go
+// map, so its order is whatever that iteration produced and can change when the
+// Config is updated - `outputs[0]` would silently start meaning something else.
 type ReadResult struct {
 	Properties map[string]interface{} `json:"properties"`
 	Template   TemplateRef            `json:"template"`
-	Outputs    []ObjectRef            `json:"outputs"`
+	Output     ObjectRef              `json:"output"`
+	Outputs    map[string]ObjectRef   `json:"outputs"`
 }
 
 // ReadParams is the params for a Config read.
@@ -112,10 +122,10 @@ func Read(ctx context.Context, params *ReadParams) (*ReadReturns, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config %q in %q: %w", in.Name, namespace, err)
 	}
-	// A Config with no extra outputs must still present an empty list rather
+	// A Config with no extra outputs must still present an empty map rather
 	// than null, so a template can range over it unconditionally.
 	if res.Outputs == nil {
-		res.Outputs = []ObjectRef{}
+		res.Outputs = map[string]ObjectRef{}
 	}
 
 	return &ReadReturns{Returns: *res}, nil

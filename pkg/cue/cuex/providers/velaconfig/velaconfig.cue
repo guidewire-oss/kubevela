@@ -7,10 +7,14 @@ package velaconfig
 // through this provider rather than through the Secret it happens to live in
 // means the source keeps working when Config graduates to a CRD.
 //
-// `outputs` lists the objects the Config's template produced, as references
-// only. Those objects are frequently Secrets, so materialising them is left to
-// the definition - see examples/source-library/vela-config-outputs.cue, which
-// ranges over these references with kube.#Get.
+// The result follows a ConfigTemplate's own shape: `output` is the Secret the
+// template renders for the Config itself, and `outputs` are the extra objects it
+// declares, keyed by the name the template gave each one.
+//
+// Both are references, never contents. A Config's outputs are frequently
+// Secrets, so materialising them is left to the definition - see
+// examples/source-library/vela-config-outputs.cue, which ranges over these
+// references with kube.#Get.
 #Read: {
 	#do:       "read"
 	#provider: "velaconfig"
@@ -32,14 +36,20 @@ package velaconfig
 			name:       string
 			namespace?: string
 		}
-		// +usage=References to the objects the template produced
-		outputs: [...{
-			apiVersion: string
-			kind:       string
-			name:       string
-			namespace?: string
-		}]
+		// +usage=Reference to the Secret the template's `output` rendered into
+		output: #ObjectRef
+		// +usage=References to the template's `outputs`, under the names it gave them
+		outputs: [string]: #ObjectRef
 		...
 	}
+	...
+}
+
+// #ObjectRef identifies an object without carrying it.
+#ObjectRef: {
+	apiVersion: string
+	kind:       string
+	name:       string
+	namespace?: string
 	...
 }

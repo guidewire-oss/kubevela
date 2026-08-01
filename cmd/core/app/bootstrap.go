@@ -19,6 +19,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/kubevela/pkg/util/singleton"
 	"k8s.io/klog/v2"
@@ -99,24 +100,87 @@ func (velaConfigReader) ReadConfig(ctx context.Context, namespace, name string) 
 		return nil, err
 	}
 
-	outputs := make([]cuexvelaconfig.ObjectRef, 0, len(cfg.ObjectReferences))
-	for _, ref := range cfg.ObjectReferences {
-		outputs = append(outputs, cuexvelaconfig.ObjectRef{
-			APIVersion: ref.APIVersion,
-			Kind:       ref.Kind,
-			Name:       ref.Name,
-			Namespace:  ref.Namespace,
-		})
-	}
-
-	return &cuexvelaconfig.ReadResult{
+	result := &cuexvelaconfig.ReadResult{
 		Properties: props,
 		Template: cuexvelaconfig.TemplateRef{
 			Name:      cfg.Template.Name,
 			Namespace: cfg.Template.Namespace,
 		},
-		Outputs: outputs,
-	}, nil
+		// A template's `output` is rendered into the Config's own Secret, whose
+		// identity is the Config's. Naming it costs nothing - no render, no
+		// lookup - and it makes the one object every Config has addressable
+		// alongside the rest.
+		Output: cuexvelaconfig.ObjectRef{
+			APIVersion: "v1",
+			Kind:       "Secret",
+			Name:       name,
+			Namespace:  namespace,
+		},
+		Outputs: map[string]cuexvelaconfig.ObjectRef{},
+	}
+
+	// A template with no `outputs:` block skips the render below entirely, which
+	// is the common case and the one worth keeping cheap.
+	if len(cfg.ObjectReferences) == 0 {
+		return result, nil
+	}
+
+	names := renderedOutputNames(ctx, factory, cfg, namespace, name, props)
+	for _, ref := range cfg.ObjectReferences {
+		// The stored reference is the authority on identity - it names what was
+		// actually applied. The render only supplies the label.
+		key, ok := names[objectIdentity(ref.APIVersion, ref.Kind, ref.Namespace, ref.Name)]
+		if !ok {
+			key = fmt.Sprintf("%s/%s", ref.Kind, ref.Name)
+		}
+		result.Outputs[key] = cuexvelaconfig.ObjectRef{
+			APIVersion: ref.APIVersion,
+			Kind:       ref.Kind,
+			Name:       ref.Name,
+			Namespace:  ref.Namespace,
+		}
+	}
+	return result, nil
+}
+
+// renderedOutputNames recovers the name a template gave each of its outputs.
+//
+// Nothing stored on a Config carries them: pkg/config keeps OutputObjects keyed
+// by name in memory but serialises only a flat list of references, so the names
+// exist solely in the template. Re-rendering is the one way to get them back.
+//
+// That is not free - ParseConfig recompiles the template, which resolves every
+// provider call in it including a `validation:` block, and some validators reach
+// the network. The source's storageTTL is what makes it tolerable: this runs on
+// a cache miss, not per reconcile.
+//
+// A failure here is not fatal. The names are a convenience; identity comes from
+// the stored references either way, so the caller falls back to Kind/name keys
+// rather than failing a read that would otherwise have succeeded.
+func renderedOutputNames(ctx context.Context, factory config.Factory, cfg *config.Config,
+	namespace, name string, props map[string]interface{},
+) map[string]string {
+	rendered, err := factory.ParseConfig(ctx,
+		config.NamespacedName{Name: cfg.Template.Name, Namespace: cfg.Template.Namespace},
+		config.Metadata{
+			NamespacedName: config.NamespacedName{Name: name, Namespace: namespace},
+			Properties:     props,
+		})
+	if err != nil {
+		klog.V(2).InfoS("Cannot re-render config template to name its outputs; falling back to Kind/name",
+			"config", name, "namespace", namespace, "err", err)
+		return nil
+	}
+
+	names := make(map[string]string, len(rendered.OutputObjects))
+	for label, obj := range rendered.OutputObjects {
+		names[objectIdentity(obj.GetAPIVersion(), obj.GetKind(), obj.GetNamespace(), obj.GetName())] = label
+	}
+	return names
+}
+
+func objectIdentity(apiVersion, kind, namespace, name string) string {
+	return strings.Join([]string{apiVersion, kind, namespace, name}, "|")
 }
 
 func bootstrapProviderRegistry() {
