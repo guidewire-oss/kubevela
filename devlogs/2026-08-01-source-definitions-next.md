@@ -167,19 +167,67 @@ carries the template and references but merely *blanks* a sensitive Config. So
 ReadConfig is called first as the gate. `OutputObjects` is always empty on read -
 `convertSecret2Config` populates it "only on config render stage".
 
-#### `vela-config-outputs` — the objects themselves
+#### Output values are never returned — decided
 
-A second definition, ranging over those references with `kube.#Get`. **A provider
-call inside a comprehension over another provider's output resolves in the same
-pass**, verified directly - so this is CUE and no Go.
+`vela-config-outputs`, which fetched the referenced objects with `kube.#Get`, was
+built and then **deleted**. A source will not return the contents of a Config's
+output, at all: not as an opt-in definition, not behind `consumableFrom`.
 
-The split is not tidiness. A Config's outputs are routinely Secrets, so this
-definition can hand a workload's properties the rendered credentials of any
-Config not marked sensitive - the same capability that stopped us shipping a
-generic `secret` source (§5). Keeping it separate makes that actionable: install
-`vela-config` without it, or gate it with `consumableFrom`. The provider itself
-never returns object contents, so the decision lives in a definition a platform
-team writes and reviews.
+Two reasons, and the second is the one that settled it:
+
+1. Those outputs are routinely Secrets, so returning them hands a workload's
+   properties a credential it was never granted - the same capability that
+   stopped us shipping a generic `secret` source (§5).
+2. **Every resolved value is copied into the source's own cache entry**, a Secret
+   in `vela-system` keyed cluster-wide. Confirmed by reading one: it held the
+   full `data` of the fetched Secret. So the credential outlives the render and
+   is shared by every consumer resolving to the same key - a second copy with a
+   completely different blast radius from the original.
+
+Anything needing the value should reach it by a mechanism built for that: a
+mounted Secret, a CSI driver, `secretKeyRef`.
+
+Worth keeping even though the definition is gone: **a provider call inside a
+comprehension over another provider's output resolves in the same pass**,
+verified directly. Chained fetches need no staging.
+
+#### What a reference is actually for
+
+Wiring by name, which keeps the value out of the Application, out of the rendered
+workload and out of the cache, and lets Kubernetes resolve it at pod start:
+
+```yaml
+- name: API_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: '$(*source.cfg.outputs.creds.name | "missing-creds")'
+      key: token
+```
+
+Verified on a cluster: with the credential wired that way, neither the
+Deployment, the Application nor the cache entry contains it.
+
+#### `properties` is the real exposure
+
+Not the outputs - that was the wrong thing to be guarding first. `properties` are
+the **inputs** a template took, which for a credential-bearing template *are* the
+credential. The shipped `image-registry` template declares `sensitive: false` and
+takes `auth.password` among its parameters, so `ReadConfig`'s guard never fires
+for it. A `vela-config` cache entry was found holding `"token":"s3cr3t"`.
+
+It is now marked `+sensitive`. Values still render - that is the point of a
+source - but no longer appear in status.
+
+That needed a fix to masking itself: `maskSet` was matched *exactly*, so a marker
+on `properties` covered a read of `properties` and published `properties.token`
+beside it. Masks now cover what sits under them. The marker can only be written
+where a schema declares a field, and `properties: _` declares none, so the struct
+is the only place to put one - exact matching made it useless in precisely the
+case it exists for.
+
+Mitigating context, not an excuse: the `read-config` workflow step already
+exposes the same properties, so this is not a new capability in KubeVela. What is
+new is the cached copy.
 
 **Shape follows a ConfigTemplate's own**: `output` is the Secret rendered for the
 Config itself, `outputs` are the extra objects under the names the template gave
