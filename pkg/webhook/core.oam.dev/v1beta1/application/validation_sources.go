@@ -57,6 +57,10 @@ type sourceSchemaValidator struct {
 func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Application) field.ErrorList {
 	var errs field.ErrorList
 
+	// Expression syntax and sandbox first: it needs no definition lookups, so a
+	// typo is reported even when the rest of validation cannot run.
+	errs = append(errs, validateExpressions(app)...)
+
 	sourceNameToType := map[string]string{}
 	sourceNameToIndex := map[string]int{}
 	for i, src := range app.Spec.Sources {

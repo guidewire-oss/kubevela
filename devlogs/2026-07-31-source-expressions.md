@@ -1,9 +1,10 @@
 # Spike: CUE expressions in component properties instead of `fromSource`
 
 **Branch:** `wip/source-expressions`, off `feature/source-definitions` at `f9e6edfc0`.
-**Status:** mechanism proven in `pkg/definition/sourceexpr/`. Wired into one
-surface - Application-scoped policies, context only - and verified on a cluster.
-Component, trait and workflow-step wiring is still to do.
+**Status:** wired into every surface that can carry it, and verified on a cluster.
+Components, traits, source chaining and workflow steps get both roots;
+Application-scoped policies get context only. Admission validates expression
+syntax and the sandbox.
 
 ## The gap this addresses
 
@@ -473,7 +474,57 @@ gets for free, without moving source resolution ahead of the transforms and
 inheriting the question of what happens when a scoped policy rewrites
 `spec.sources[]`.
 
-### Wired: `$(context...)` in Application-scoped policies
+### Wired
+
+| Surface | Roots | How |
+|---|---|---|
+| component, trait | `source` + `context` | `resolveFromSourceNode` gained a string case |
+| source chaining | `source` + `context` | same path |
+| workflow step | `source` + `context` | pre-pass in `generateWorkflowInstance` |
+| Application-scoped policy | `context` only | `renderPolicyCUETemplate` |
+
+End to end on a cluster, from a component using both forms:
+
+```yaml
+image: '$(source.reg.host + "/checkout:" + source.reg.tag)'
+env:
+  - {name: OWNER, value: '$(context.appLabels["team"])'}
+  - {name: WHERE, value: '$(context.appName).$(context.namespace)'}
+```
+
+renders
+
+```
+image=registry.example.com/checkout:1.4.2
+OWNER=payments
+WHERE=expr-all.exprall
+```
+
+The first is the case `fromSource` structurally cannot express - it yields a whole
+value or nothing, so combining a resolved value with a literal needed a parameter
+on the SourceDefinition.
+
+**Status reporting is preserved**, which was the thing most likely to be quietly
+lost. An expression reading a source drives the same `resolver.resolve` and the
+same `recordConsumedValue` a directive does, so the binding still reports:
+
+```
+reg type=reg-source config=reg-source-6760c6ec props={"host":"...","tag":"1.4.2"}
+```
+
+That also means `+sensitive` redaction still applies, since it matches on the
+recorded path.
+
+**Admission** rejects what is decidable without values:
+
+```
+spec.components[0].properties: image: unknown identifier "parameter":
+    an expression may reference "source" and "context", nothing else
+spec.policies[0].properties:  owner: "source" cannot be read here;
+    this surface permits "context"
+```
+
+### `$(context...)` in Application-scoped policies
 
 `renderPolicyCUETemplate` now substitutes context expressions in a policy's
 properties before compiling the template, using `ScopedPolicyContext` and

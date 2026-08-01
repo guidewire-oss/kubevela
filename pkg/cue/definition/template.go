@@ -31,6 +31,7 @@ import (
 
 	"github.com/oam-dev/kubevela/pkg/cue/definition/health"
 	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/features"
 
 	upstreamcuex "github.com/kubevela/pkg/cue/cuex"
@@ -726,9 +727,77 @@ func resolveFromSourceNode(node interface{}, resolver *sourceResolver) (interfac
 			val[i] = resolved
 		}
 		return val, nil
+	case string:
+		return evaluateSourceExpression(val, resolver)
 	default:
 		return node, nil
 	}
+}
+
+// evaluateSourceExpression substitutes $(...) expressions in a property value.
+//
+// It sits alongside the fromSource directive rather than replacing it: a value
+// with no delimiter comes back byte-identical, so nothing that works today
+// changes. What it adds is the ability to combine a resolved value with anything
+// else, which the directive cannot do - it yields a whole value or nothing.
+//
+// Resolving here rather than at admission matters for status: reading a source
+// through an expression must drive the same resolution and the same consumed-value
+// recording that fromSource does, or a binding used only by an expression would
+// show as unresolved.
+func evaluateSourceExpression(raw string, resolver *sourceResolver) (interface{}, error) {
+	parsed, err := sourceexpr.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !parsed.HasExpr() {
+		return raw, nil
+	}
+
+	resolved := map[string]map[string]interface{}{}
+	for _, fragment := range parsed.Fragments {
+		if !fragment.IsExpr() {
+			continue
+		}
+		refs, rerr := sourceexpr.References(fragment.Expr)
+		if rerr != nil {
+			return nil, rerr
+		}
+		for _, ref := range refs {
+			if !ref.IsSource() {
+				continue
+			}
+			name := ref.Path[0]
+			values, verr := resolver.resolve(name)
+			if verr != nil {
+				return nil, verr
+			}
+			resolved[name] = values
+
+			// Record what the expression read, so status reports it exactly as a
+			// fromSource directive would - including +sensitive redaction, which
+			// matches on the recorded path.
+			path := strings.Join(ref.Path[1:], ".")
+			if value, ok := lookupMapPath(values, path); ok {
+				resolver.recordConsumedValue(name, resolver.sourceTypes[name], path, value)
+			}
+		}
+	}
+
+	return sourceexpr.EvalIn(raw, resolved, resolver.expressionContext(),
+		sourceexpr.ComponentContext, sourceexpr.SourceIdent, sourceexpr.ContextIdent)
+}
+
+// expressionContext pulls the fields ComponentContext declares readable out of
+// the render's process context.
+func (r *sourceResolver) expressionContext() map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, field := range sourceexpr.ComponentContext.Fields() {
+		if v := r.ctx.GetData(field); v != nil {
+			out[field] = v
+		}
+	}
+	return out
 }
 
 func evaluateFromSourceSelector(selector interface{}, resolver *sourceResolver) (interface{}, error) {
