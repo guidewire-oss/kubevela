@@ -320,6 +320,34 @@ Traits keyed by type (`traits.scaler.healthy`). The shape this cannot represent
 is a component with two traits of the same type - their statuses unify and
 conflict. Rare enough to be worth the readability, and it fails loudly.
 
+**Placement is part of a component's identity.** KubeVela keys a service status
+on (name, namespace, cluster, env), so a topology policy spreading one component
+across three clusters writes three entries under the same name. Both sources
+were initially wrong about this - `vela-component` filtered on name and took
+`[0]`, returning whichever sorted first while looking like it had answered, and
+`vela-app` listed such a component three times. Same class of bug as `outputs[0]`
+on a Config, and worth watching for in any source that reads a list keyed on more
+than it looks.
+
+`vela-app` now deduplicates `components`, adds `clusters`, and nests `services`
+by component then cluster, with per-component `healthy` rolled up as the AND
+across placements. `vela-component` takes a `cluster` parameter selecting the
+placement - *not* a routing parameter like `configmap`'s, since the Application
+is always read from the hub - defaulting to `local`, which is what an empty
+cluster field means.
+
+Its two failure modes are separate because the fixes differ:
+
+```
+application default/platform-stack reports no component nope
+component gateway of application default/platform-stack is not placed in
+  cluster beijing; it is in: local
+```
+
+Multi-cluster shaping was worked out against synthetic status in a CUE probe -
+one cluster here - so **genuine multi-cluster is untested**, the same caveat that
+stands on `configmap`'s cluster parameter.
+
 **The one place in the library that is not `use-stale`.** `storageTTL: 1m`,
 `onStaleFailure: fail`. Status is where a cached answer is actively misleading: a
 consumer gating on `healthy` needs to know it is unhealthy *now*, and stale
