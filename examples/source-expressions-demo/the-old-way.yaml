@@ -1,0 +1,301 @@
+# The same application, written without SourceDefinitions or property
+# expressions. This is the "before": every fetch is a workflow step, every value
+# is passed by hand, and nothing is type-checked until it renders.
+#
+# It is not a strawman - it is what you have to write today. Where something is
+# genuinely not expressible, that is called out rather than faked.
+#
+# Compare with app/checkout.yaml, which is 105 lines including comments.
+
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: checkout
+  namespace: checkout-prod
+  labels:
+    owner: payments-oncall
+spec:
+  components:
+    - name: api
+      type: webservice
+      properties:
+        # ─── HOLE 1 ────────────────────────────────────────────────────────────
+        # These are placeholders. They must be here because `properties` is
+        # validated against the ComponentDefinition's parameter schema at
+        # admission, but every one of them is about to be overwritten by a
+        # workflow input. So the values admission checks are NOT the values that
+        # get deployed. The type safety here is theatre.
+        image: "placeholder:latest"
+        port: 8080
+        imagePullPolicy: IfNotPresent
+
+        # ─── HOLE 2 ────────────────────────────────────────────────────────────
+        # The standard platform labels have to be copy-pasted into every
+        # Application, because there is nowhere else to put them. When the
+        # platform changes the convention, every app is wrong until it is edited.
+        # In the new version this was one struct, resolved from a shared source.
+        labels:
+          platform.io/team: payments            # duplicated from the namespace
+          platform.io/environment: production   # duplicated from the namespace
+          platform.io/managed-by: kubevela
+
+        # Likewise: the developer now has to know the pull secret's name.
+        imagePullSecrets:
+          - platform-registry-creds
+
+        env:
+          - name: SERVICE_NAME
+            value: "placeholder"
+          - name: MESH_DOMAIN
+            value: "placeholder"
+          - name: OWNER
+            value: "placeholder"
+          - name: WHERE
+            # ─── HOLE 3 ────────────────────────────────────────────────────────
+            # context IS available inside a ComponentDefinition, but not in an
+            # Application's properties. So a value as simple as
+            # "<app>.<namespace>" cannot be written here at all. Your options:
+            #   (a) hardcode it, and it silently rots when the app is renamed
+            #   (b) fork the ComponentDefinition to build it internally
+            # This chooses (a).
+            value: "checkout.checkout-prod"
+          - name: MIRROR
+            value: "placeholder"
+
+      traits:
+        - type: scaler
+          properties:
+            # ─── HOLE 4 ────────────────────────────────────────────────────────
+            # The tenant's quota lives on the namespace, and half of it is what
+            # we want. There is no way to fetch it and no way to compute with it
+            # here, so it is hardcoded.
+            #
+            # When the platform raises the quota to 10, this stays 3. Nothing
+            # detects the drift - not admission, not the controller, nothing.
+            # In the new version: '$(source.tenant.maxReplicas div 2)'.
+            replicas: 3
+
+  policies:
+    # ─── HOLE 5 ──────────────────────────────────────────────────────────────
+    # Application-scoped policies render before the workflow runs, so they can
+    # never see a workflow output. Cost tagging from fetched data is simply not
+    # possible: the values below are typed by hand and will drift from whatever
+    # the namespace actually says.
+    - name: cost-tagging
+      type: cost-tag
+      properties:
+        owner: payments-oncall            # duplicated from metadata.labels
+        app: checkout--checkout-prod      # duplicated from metadata.name/namespace
+
+  workflow:
+    steps:
+      # ═══ FETCH ═════════════════════════════════════════════════════════════
+      # Everything the SourceDefinitions did is now the application author's
+      # problem, including where the data physically lives.
+
+      - name: read-registry
+        type: read-object
+        properties:
+          # ─── HOLE 6 ──────────────────────────────────────────────────────────
+          # The developer now knows: that a ConfigMap is the mechanism, what it
+          # is called, and which namespace it lives in. The platform can no
+          # longer move or rename it without breaking every application.
+          #
+          # They also need RBAC to read vela-system, which is precisely what the
+          # SourceDefinition trust boundary existed to avoid.
+          apiVersion: v1
+          kind: ConfigMap
+          name: registry-info
+          namespace: vela-system
+        outputs:
+          # ─── HOLE 7 ──────────────────────────────────────────────────────────
+          # `valueFrom` is an unchecked CUE path string. Misspell `data.host` as
+          # `data.hosts` and nothing objects until render, with an error that
+          # names a CUE path rather than anything the author wrote.
+          #
+          # There is also no schema: nothing says the ConfigMap HAS a `host` key,
+          # what type it is, or whether it is optional.
+          - name: registryHost
+            valueFrom: output.value.data.host
+          - name: registryProject
+            valueFrom: output.value.data.project
+          - name: registryPullPolicy
+            valueFrom: output.value.data.pullPolicy
+          # ─── HOLE 8 ──────────────────────────────────────────────────────────
+          # `mirror` is optional - most clusters do not publish one. There is no
+          # way to say "use this, or fall back". Reading an absent key fails the
+          # whole workflow, so the only safe move is not to read it at all, and
+          # to hardcode the fallback downstream.
+          # - name: registryMirror
+          #   valueFrom: output.value.data.mirror      # would fail when absent
+
+      - name: read-tenant
+        type: read-object
+        properties:
+          apiVersion: v1
+          kind: Namespace
+          name: checkout-prod
+        outputs:
+          # ─── HOLE 9 ──────────────────────────────────────────────────────────
+          # Label keys with dots and slashes, written as raw CUE index
+          # expressions. No validation, no schema, no discoverability. The
+          # developer has to know the platform's label conventions by heart.
+          - name: tenantTeam
+            valueFrom: output.value.metadata.labels["platform.io/team"]
+          - name: tenantCostCentre
+            valueFrom: output.value.metadata.labels["platform.io/cost-centre"]
+          - name: tenantEnvironment
+            valueFrom: output.value.metadata.labels["platform.io/environment"]
+
+      # ═══ COMPUTE ═══════════════════════════════════════════════════════════
+      # ─── HOLE 10 ─────────────────────────────────────────────────────────────
+      # There is no built-in step that computes a value. Building
+      # "<host>/<project>/<component>:<tag>" from three fetched strings requires
+      # a bespoke WorkflowStepDefinition, written and installed per platform.
+      #
+      # That definition is the honest cost of this approach: the concatenation
+      # that reads as `'$(source.catalog.image + ":1.25.0")'` in the new version
+      # becomes a piece of cluster-installed machinery here.
+      #
+      # Sketch of what it would contain:
+      #
+      #   apiVersion: core.oam.dev/v1beta1
+      #   kind: WorkflowStepDefinition
+      #   metadata: {name: compose-image}
+      #   spec:
+      #     schematic:
+      #       cue:
+      #         template: |
+      #           parameter: {host: string, project: string, component: string, tag: string}
+      #           composed: parameter.host + "/" + parameter.project + "/" +
+      #                     parameter.component + ":" + parameter.tag
+      #
+      - name: compose-image
+        type: compose-image                 # ← does not exist; must be authored
+        inputs:
+          - from: registryHost
+            parameterKey: host
+          - from: registryProject
+            parameterKey: project
+        properties:
+          component: nginx
+          tag: "1.25.0"
+        outputs:
+          - name: fullImage
+            valueFrom: composed
+
+      # ─── HOLE 11 ─────────────────────────────────────────────────────────────
+      # Same again for the service name: "<team>-<component>". A second bespoke
+      # step, or the same one generalised into something less readable.
+      - name: compose-service-name
+        type: compose-name                  # ← also does not exist
+        inputs:
+          - from: tenantTeam
+            parameterKey: team
+        properties:
+          component: nginx
+        outputs:
+          - name: serviceName
+            valueFrom: composed
+
+      # ─── HOLE 12 ─────────────────────────────────────────────────────────────
+      # The quota is a ConfigMap/label value, so it arrives as a STRING. The
+      # scaler trait wants an int. There is no cast, no arithmetic, and no
+      # `div`. A third bespoke step would have to parse the string and halve it -
+      # and if the label is malformed, that fails at render.
+      #
+      # This is why `replicas` is hardcoded above: expressing it correctly costs
+      # more machinery than the value is worth.
+
+      # ═══ APPLY ═════════════════════════════════════════════════════════════
+      - name: deploy
+        type: apply-component
+        # ─── HOLE 13 ───────────────────────────────────────────────────────────
+        # Ordering is manual. Forget a dependsOn and the step runs with an empty
+        # input, producing a resource with "placeholder" baked in - which applies
+        # cleanly and is wrong. Nothing catches it.
+        dependsOn:
+          - read-registry
+          - read-tenant
+          - compose-image
+          - compose-service-name
+        inputs:
+          # ─── HOLE 14 ─────────────────────────────────────────────────────────
+          # `parameterKey` is a dotted path into properties, matched by string.
+          # Nothing checks that the target exists, or that the incoming value's
+          # type matches it. A string landing in an int parameter is a render
+          # failure, discovered on the cluster.
+          - from: fullImage
+            parameterKey: image
+          - from: registryPullPolicy
+            parameterKey: imagePullPolicy
+          - from: serviceName
+            parameterKey: env[0].value      # positional: reorder env and this breaks
+          - from: tenantTeam
+            parameterKey: labels["platform.io/team"]
+        properties:
+          component: api
+
+      # ─── HOLE 15 ───────────────────────────────────────────────────────────
+      # Trait properties cannot be targeted by workflow inputs the way component
+      # properties can, so the fetched quota cannot reach `scaler.replicas` even
+      # with all the machinery above. That is the hardcoded 3.
+
+      - name: publish-summary
+        type: apply-object
+        dependsOn:
+          - deploy
+        inputs:
+          - from: fullImage
+            parameterKey: value.data.image
+          - from: serviceName
+            parameterKey: value.data.service
+          - from: tenantEnvironment
+            parameterKey: value.data.tier
+          - from: tenantCostCentre
+            parameterKey: value.data.costCentre
+        properties:
+          value:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: checkout-deployment-summary
+              namespace: checkout-prod
+            data:
+              # More placeholders, overwritten by the inputs above. Whether the
+              # keys here match the parameterKeys is checked by nobody.
+              image: "placeholder"
+              service: "placeholder"
+              tier: "placeholder"
+              costCentre: "placeholder"
+              replicas: "3"                 # still hardcoded
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WHAT THIS COSTS
+#
+# Type safety
+#   - every `valueFrom` is an unchecked CUE path string
+#   - every `parameterKey` is an unchecked dotted path
+#   - no schema anywhere: nothing declares what a source produces or its types
+#   - numbers arrive as strings with no cast
+#   - a missing optional value fails the workflow; there is no default
+#   - placeholders mean admission validates values that never get deployed
+#
+# Abstraction
+#   - the developer must know the ConfigMap's name and namespace, the label
+#     keys, and needs RBAC on vela-system
+#   - the platform cannot move, rename or restructure any of it
+#   - platform conventions (labels, pull secrets) are copy-pasted per app
+#
+# Correctness
+#   - ordering is manual, and getting it wrong yields a clean apply of wrong data
+#   - no caching: every reconcile re-reads every object
+#   - the quota is hardcoded and drifts silently
+#
+# Reach
+#   - policies cannot see fetched data at all
+#   - traits cannot receive workflow inputs
+#   - concatenation and arithmetic need bespoke WorkflowStepDefinitions
+#
+# And three of the fifteen holes are not solvable at this layer at all: the
+# trait, the policy, and context in properties. They are marked above.
