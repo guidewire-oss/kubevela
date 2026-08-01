@@ -4,7 +4,7 @@ metadata:
   name: configmap
   namespace: vela-system
   annotations:
-    definition.oam.dev/description: "Reads a ConfigMap's data. Values are strings, as Kubernetes stores them."
+    definition.oam.dev/description: "Reads a ConfigMap's data, optionally from another cluster. Values are strings, as Kubernetes stores them."
     definition.oam.dev/cache-key-rules: "7fdfcad2"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
@@ -45,6 +45,8 @@ spec:
         	name: string
         	// +usage=Namespace it lives in. Defaults to the Application's own namespace.
         	namespace?: string
+        	// +usage=Cluster to read from. Defaults to the cluster this render targets.
+        	cluster?: string
         }
 
         // Read from the cluster the Application is being rendered for, so a multi-cluster
@@ -52,7 +54,18 @@ spec:
         // key is per-cluster.
         _cm: kube.#Get & {
         	$params: {
-        		cluster: context.cluster
+        		// A named cluster reads someone else's copy - a control-plane ConfigMap
+        		// consumed by workloads on a spoke, say. Note that the generated key's
+        		// readable prefix still names the *rendering* cluster, since only context
+        		// is inlined there; the parameter is in the hash, so entries stay
+        		// distinct, but an operator grepping should read the prefix as "who
+        		// asked", not "where it came from".
+        		if parameter.cluster != _|_ {
+        			cluster: parameter.cluster
+        		}
+        		if parameter.cluster == _|_ {
+        			cluster: context.cluster
+        		}
         		resource: {
         			apiVersion: "v1"
         			kind:       "ConfigMap"

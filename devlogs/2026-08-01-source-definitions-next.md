@@ -109,6 +109,17 @@ Because `data` is an open map, a key read carries the usual obligation - which i
 target-aware, so it only bites feeding a *required* parameter. Both verified on a
 cluster.
 
+An optional `cluster` parameter reads someone else's copy - a control-plane
+ConfigMap consumed by workloads on a spoke. **The parameter path is exercised but
+genuine cross-cluster is untested**: there is only one cluster here, so passing
+`cluster: local` proves the plumbing and nothing about multi-cluster routing.
+Worth a real two-cluster check before relying on it.
+
+One wrinkle to know: the generated key's readable prefix names the *rendering*
+cluster, because only context is inlined there. The parameter is in the hash, so
+entries stay distinct, but an operator grepping should read the prefix as "who
+asked", not "where it came from".
+
 ### 5. `secret` — dropped
 
 Not building this. A source returning any key of any Secret is too broad a
