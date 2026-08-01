@@ -109,6 +109,16 @@ func canBeAbsent(ref Reference, schemas map[string]cue.Value) (bool, error) {
 func optionalPath(v cue.Value, path []string) (bool, error) {
 	cur := v
 	for _, segment := range path {
+		if cur.IncompleteKind() == cue.TopKind {
+			// Inside a `_` field. Whether this key exists is unknowable here, so
+			// no default is demanded - the same call TypeOf makes. Requiring one
+			// for every read from a generic source would be noise, and would not
+			// be a judgement admission is entitled to make.
+			//
+			// The cost is that an absent key surfaces at render rather than at
+			// admission. That is the trade a source makes by declaring `_`.
+			return false, nil
+		}
 		if pattern := cur.LookupPath(cue.MakePath(cue.AnyString)); pattern.Exists() {
 			if !cur.LookupPath(cue.MakePath(cue.Str(segment))).Exists() {
 				return true, nil

@@ -1607,3 +1607,54 @@ func TestOpenFieldTypesAsUnknown(t *testing.T) {
 func kindsCompatibleForTest(src, dst cue.Kind) bool {
 	return src == cue.BottomKind || dst == cue.BottomKind || src&dst != 0
 }
+
+// Reads into a `_` field do not require a default.
+//
+// Admission cannot tell whether a key exists inside an open field, so demanding
+// a fallback for every read from a generic source would be noise - and would not
+// be a judgement admission is entitled to make. The cost is that an absent key
+// surfaces at render, which is the trade a source makes by declaring `_`.
+//
+// This was previously an *error* from UndefendedReads ("non-concrete value _"),
+// swallowed by the caller. It passed, but by accident rather than by design.
+func TestOpenFieldNeedsNoDefault(t *testing.T) {
+	schemas := map[string]string{
+		"file":  `{content: _}`,
+		"typed": `{name: string, note?: string, labels: [string]: string}`,
+	}
+
+	for _, expr := range []string{
+		`source.file.content`,
+		`source.file.content.name`,
+		`source.file.content.spec.replicas`,
+	} {
+		undefended, err := UndefendedReads("$("+expr+")", schemas)
+		if err != nil {
+			t.Errorf("%s: must not error, got: %v", expr, err)
+			continue
+		}
+		if len(undefended) != 0 {
+			t.Errorf("%s: no default should be demanded inside an open field, got %v", expr, undefended)
+		}
+	}
+
+	// The rule still bites where a schema does say something: an optional field
+	// and a key in an open map both remain undefended.
+	for _, tc := range []struct{ expr, want string }{
+		{`source.typed.note`, "source.typed.note"},
+		{`source.typed.labels["x"]`, "source.typed.labels.x"},
+	} {
+		undefended, err := UndefendedReads("$("+tc.expr+")", schemas)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.expr, err)
+		}
+		if len(undefended) != 1 || undefended[0].String() != tc.want {
+			t.Errorf("%s: expected %s to need a default, got %v", tc.expr, tc.want, undefended)
+		}
+	}
+
+	// And a required declared field still needs none.
+	if undefended, err := UndefendedReads(`$(source.typed.name)`, schemas); err != nil || len(undefended) != 0 {
+		t.Errorf("a required field must need no default; got %v (%v)", undefended, err)
+	}
+}
