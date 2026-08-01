@@ -269,18 +269,25 @@ off a namespace says how it is *stored*, and ties every Application to that
 storage choice so the platform can never change it. This was the correction to a
 `namespace` source proposed earlier - right data, wrong abstraction.
 
-`name` is optional: a namespace that was never `vela env init`-ed carries no env
-label, so a consumer supplies a default. Verified both ways on a cluster, plus
-admission refusing an undefended `name` into a required parameter.
+**Parameterless.** The read is always `context.namespace`. A namespace is a
+boundary and its labels are a platform's notes about that tenant, so a namespace
+parameter would turn "what environment am I in" into "read any namespace's
+tenancy" - a different capability wearing the same name. Admission refuses a
+`namespace` property outright rather than ignoring it, verified.
+
+**`name` always resolves** - the env label when there is one, the namespace's own
+name when there is not. That is what keeps it out of the optional-field rule:
+`$(source.env.name)` needs no fallback, where an optional `name` would have made
+every consumer carry a `| "unmanaged"` for a case most do not have. Verified both
+ways: `staging-ns` reads `staging`, plain `default` reads `default`.
 
 Key is `environment-\(context.namespace)` with no cluster component - correct,
 since the read is always from the hub and does not vary by where a workload
 lands.
 
-`kube.#List` supports `matchingLabels`, so looking an env up *by name* (rather
-than by its namespace) is reachable if it is ever wanted. Not built: an
-Application reading a different environment's configuration is a use case worth
-seeing before enabling.
+`kube.#List` supports `matchingLabels`, so looking an env up *by name* is
+reachable if ever wanted. Deliberately not built - it is the same
+cross-namespace read the parameter was dropped to prevent.
 
 ### 7. List indices in property expressions  ✅ DONE
 
