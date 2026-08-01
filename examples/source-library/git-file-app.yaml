@@ -1,6 +1,6 @@
 apiVersion: core.oam.dev/v1beta1
 kind: Application
-metadata: {name: ref-demo, namespace: refsrc}
+metadata: {name: checkout, namespace: checkout-prod}
 spec:
   sources:
     # Same registry for all three - only the ref differs.
