@@ -1505,3 +1505,55 @@ func TestOpenMapInSourceSchema(t *testing.T) {
 		t.Fatalf("expected %q, got %#v", "payments", value)
 	}
 }
+
+// Resolved source values arrive as JSON, so a schema's int is a Go float64 by
+// the time it reaches the scope. Encoding that directly makes it a CUE float,
+// and `count div 2` then fails with "invalid operands ... (type float and int)"
+// - while admission, typing against an int sentinel, said it was fine.
+//
+// Found by a demo rather than by a test, which is why it is pinned here.
+func TestIntegersSurviveTheJSONRoundTrip(t *testing.T) {
+	schemas := map[string]string{"s": `{count: int, ratio: float}`}
+
+	// Exactly what the resolver hands over: JSON-decoded, so every number is a
+	// float64 regardless of what the schema declares.
+	resolved := map[string]map[string]interface{}{
+		"s": {"count": float64(6), "ratio": float64(1.5)},
+	}
+
+	for _, tc := range []struct {
+		expr string
+		want interface{}
+	}{
+		{`source.s.count div 2`, int64(3)},
+		{`source.s.count * 2`, int64(12)},
+		{`source.s.count mod 4`, int64(2)},
+		{`source.s.count`, int64(6)},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			// Admission types it against an int sentinel...
+			kind, err := TypeOf(tc.expr, schemas)
+			if err != nil {
+				t.Fatalf("typing: %v", err)
+			}
+			if kind != cue.IntKind {
+				t.Fatalf("expected int at admission, got %s", kind)
+			}
+			// ...so render has to produce an int too.
+			got, err := Eval("$("+tc.expr+")", resolved, nil)
+			if err != nil {
+				t.Fatalf("evaluating: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %#v (%T), got %#v (%T)", tc.want, tc.want, got, got)
+			}
+		})
+	}
+
+	// A genuine float stays a float.
+	if got, err := Eval(`$(source.s.ratio)`, resolved, nil); err != nil {
+		t.Fatalf("evaluating: %v", err)
+	} else if got != 1.5 {
+		t.Fatalf("expected 1.5, got %#v", got)
+	}
+}

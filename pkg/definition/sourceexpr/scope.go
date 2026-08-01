@@ -17,6 +17,7 @@ limitations under the License.
 package sourceexpr
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"cuelang.org/go/cue"
@@ -61,6 +62,18 @@ func evalIn(ctx *cue.Context, scope cue.Value, expr string) (cue.Value, error) {
 }
 
 // buildScope encodes the two readable roots into a single value.
+//
+// It goes through JSON rather than ctx.Encode, and the reason is integers.
+// Resolved source values arrive as JSON, so a schema's `int` is a Go float64 by
+// the time it reaches here - and Encode turns that into a CUE *float*, which
+// makes `maxReplicas div 2` fail with "invalid operands 6 and 2 to 'div' (type
+// float and int)" while admission, typing against an int sentinel, said it was
+// fine. Marshalling to JSON and compiling preserves 6 as an integer, so the two
+// halves agree.
+//
+// This is still not text-building: json.Marshal escapes keys, so an
+// attacker-controlled binding name remains a key and cannot become syntax. That
+// property has its own regression test.
 func buildScope(ctx *cue.Context, sources, contextValues map[string]interface{}) cue.Value {
 	scope := map[string]interface{}{}
 	if sources != nil {
@@ -69,7 +82,11 @@ func buildScope(ctx *cue.Context, sources, contextValues map[string]interface{})
 	if contextValues != nil {
 		scope[ContextIdent] = contextValues
 	}
-	return ctx.Encode(scope)
+	raw, err := json.Marshal(scope)
+	if err != nil {
+		return ctx.Encode(scope)
+	}
+	return ctx.CompileBytes(raw)
 }
 
 // sentinelSources turns each source's schema into representative values.
