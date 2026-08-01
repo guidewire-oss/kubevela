@@ -82,10 +82,8 @@ for each, since it decides the sharing boundary.
 
 - The `http` provider takes `{method, url, request: {body, header}}` and returns
   `{body, header, statusCode}` — so headers are already supported natively.
-- `headersFromSecret` has no provider support; it needs a `kube.#Get` on the
-  Secret and merging into `request.header`. That is the interesting part, and it
-  is exactly the case `+sensitive` exists for — the token must not be echoed into
-  Application status.
+- **`headersFromSecret` is out of scope** — someone else is building that. Take
+  headers as a plain parameter for now and pick their work up when it lands.
 - `statusCode` should be checked in the template and turned into a clear failure
   via `errs:`, or a 404's body silently becomes the resolved value.
 - Caching: this is the source that most needs a sensible `storageTTL`, and the one
@@ -101,19 +99,34 @@ for each, since it decides the sharing boundary.
 
 ### 5. `secret` — read a Secret
 
-- Same shape as 4, plus base64 (`base64` provider) and `// +sensitive` on every
-  output field.
-- Worth deciding deliberately: should a generic secret source exist at all, or
-  should it be narrow by construction? A source that returns any key of any Secret
-  is a broad capability to hand out, and `consumableFrom` is the lever for
-  constraining it.
+**Decided: not generic.** A source that returns any key of any Secret is too broad
+a capability to hand out — it would let any binding read any Secret the controller
+can reach, which is the opposite of the trust boundary the whole design rests on.
+
+So this is narrow by construction: the definition names what it exposes, and the
+Secret is an implementation detail behind the `schema:`. A platform authors
+`registry-credentials` or `database-password` — each declaring exactly its fields,
+each marked `// +sensitive` — rather than one `secret` source parameterised by
+name and key.
+
+That is more definitions, and it is the right trade: the schema stays a contract
+instead of a passthrough, and `consumableFrom` can then say something meaningful
+about each one.
+
+Still uses base64 (`base64` provider) and `// +sensitive` on every output field.
 
 ### 6. `vela-config` — read a KubeVela Config
 
-- The `config` provider lives in `pkg/cue/cuex/providers/config`.
-- This one is the most self-referential: source cache entries *are* Config objects,
-  so a source reading Configs can read other sources' cache entries. Worth thinking
-  through before building — it may want to be scoped to a catalog, or excluded.
+**Decided: build it.** The `config` provider lives in
+`pkg/cue/cuex/providers/config`.
+
+It is self-referential — source cache entries *are* Config objects, so a source
+reading Configs can in principle read other sources' cache entries. That overhead
+is accepted; it is not a reason to withhold the capability.
+
+Worth being aware of rather than designing around: a chain that reads its own
+cache entry would be odd but not harmful, since entries are content-addressed and
+resolution is per-render.
 
 ### Cross-cutting for all five
 
