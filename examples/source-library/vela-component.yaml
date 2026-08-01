@@ -4,14 +4,17 @@ metadata:
   name: vela-component
   namespace: vela-system
   annotations:
-    definition.oam.dev/description: "The status of one component of a KubeVela Application - health, message, details and its traits keyed by type. Status only; never its spec."
+    definition.oam.dev/description: "The status of one placement of one component of a KubeVela Application - health, message, details and traits keyed by type. Status only; never its spec."
     definition.oam.dev/cache-key-rules: "7fdfcad2"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
   schematic:
     cue:
       template: |
-        import "vela/kube"
+        import (
+        	"strings"
+        	"vela/kube"
+        )
 
         // Generated from the context this template reads - do not edit. Admission re-derives these and rejects a mismatch.
         $internal: {
@@ -27,6 +30,19 @@ spec:
         //
         // Status only, for the same reason as vela-app: a component's spec is its
         // author's intent, its status is observable state.
+        //
+        // `cluster` names *which placement* is being asked about, and is not a routing
+        // parameter like `configmap`'s - the Application object is always read from the
+        // hub. KubeVela keys a service status on (name, namespace, cluster, env), so a
+        // topology policy spreading one component across three clusters produces three
+        // statuses under the same name, and a source that filtered on name alone would
+        // return whichever sorted first while looking like it had answered.
+        //
+        // It defaults to `local`, matching the hub, where a status entry records the
+        // cluster as the empty string. A component placed only in a remote cluster is
+        // therefore an explicit ask rather than a lucky guess, and the error names the
+        // clusters it *is* in so the fix is visible without going and reading the
+        // Application.
         //
         // Traits are keyed by type - `traits.scaler.healthy` reads far better than a
         // positional index, and it survives a component gaining a trait. The one shape
@@ -67,6 +83,8 @@ spec:
         	component: string
         	// +usage=Namespace the Application lives in. Defaults to the consumer's own.
         	namespace?: string
+        	// +usage=Which placement of the component to read. Defaults to local, the hub.
+        	cluster?: string
         }
 
         _ns: [
@@ -85,21 +103,42 @@ spec:
         	}
         }
 
+        _cluster: [
+        	if parameter.cluster != _|_ {parameter.cluster},
+        	"local",
+        ][0]
+
         _services: *_app.$returns.status.services | []
-        _matches: [for s in _services if s.name == parameter.component {s}]
+
+        // An absent or empty cluster field means the hub.
+        _placed: [for s in _services {
+        	cluster: [if (*s.cluster | "") != "" {*s.cluster | ""}, "local"][0]
+        	svc: s
+        }]
+
+        _named: [for p in _placed if p.svc.name == parameter.component {p}]
+        _matches: [for p in _named if p.cluster == _cluster {p}]
 
         // Naming a component that is not there is a mistake in the consuming
         // Application, not a state to observe - unlike vela-app's not-yet-reconciled
         // case. Resolving to an empty status would cache and read as "unhealthy", which
         // looks like an answer.
+        //
+        // The two cases are separated because the fixes differ: one is a wrong name, the
+        // other a right name in the wrong cluster, and the second is invisible without
+        // being told where the component actually is.
         errs: [
-        	if len(_matches) == 0 {
+        	if len(_named) == 0 {
         		"application \(_ns)/\(parameter.app) reports no component \(parameter.component)"
+        	},
+        	if len(_named) > 0 && len(_matches) == 0 {
+        		"component \(parameter.component) of application \(_ns)/\(parameter.app) is not placed in cluster \(_cluster); it is in: " +
+        		strings.Join([for p in _named {p.cluster}], ", ")
         	},
         ]
 
         _svc: [
-        	if len(_matches) > 0 {_matches[0]},
+        	if len(_matches) > 0 {_matches[0].svc},
         	{},
         ][0]
 
@@ -109,7 +148,7 @@ spec:
         	workloadHealthy: *_svc.workloadHealthy | false
         	message:         *_svc.message | ""
         	details: *_svc.details | {}
-        	cluster:   *_svc.cluster | "local"
+        	cluster:   _cluster
         	namespace: *_svc.namespace | _ns
         	traits: {
         		for t in (*_svc.traits | []) {

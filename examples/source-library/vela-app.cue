@@ -16,6 +16,16 @@ import "vela/kube"
 // actually asking. An app with one unhealthy service is not healthy, and one
 // that has rendered no services yet is not healthy either - it is unknown, and
 // false is the safer of the two answers to act on.
+//
+// A component is reported once *per cluster it is placed in*: KubeVela keys a
+// service status on (name, namespace, cluster, env), so a topology policy
+// spreading one component across three clusters produces three entries with the
+// same name. That is why `components` is deduplicated and `services` is nested
+// by cluster - a flat list would repeat names, and a flat status would silently
+// describe whichever placement happened to sort first.
+//
+// A status entry with no cluster field is the hub, which reads as "local" here
+// rather than as the empty string it is stored as.
 schema: {
 	name:      string
 	namespace: string
@@ -33,8 +43,22 @@ schema: {
 		finished:   bool
 		message:    string
 	}
-	// The component names the Application reports, in status order.
+	// Component names, deduplicated across placements.
 	components: [...string]
+	// Distinct clusters the Application has components in. A single-cluster app
+	// reports ["local"].
+	clusters: [...string]
+	// Per component, and within that per cluster it is placed in.
+	services: [string]: {
+		// Healthy in every cluster it is placed in, which is what "is this
+		// component up" means once there is more than one of it.
+		healthy: bool
+		clusters: [string]: {
+			healthy:   bool
+			message:   string
+			namespace: string
+		}
+	}
 }
 
 storage: {
@@ -76,6 +100,20 @@ _app: kube.#Get & {
 _status:   *_app.$returns.status | {}
 _services: *_status.services | []
 
+// Normalise each placement: an absent or empty cluster field means the hub.
+_placed: [for s in _services {
+	name:      s.name
+	cluster:   [if (*s.cluster | "") != "" {*s.cluster | ""}, "local"][0]
+	healthy:   s.healthy
+	message:   *s.message | ""
+	namespace: *s.namespace | ""
+}]
+
+// Deduplication by way of a struct: a component placed in three clusters is one
+// component, and a list comprehension would say three.
+_names: [for n in {for p in _placed {"\(p.name)": p.name}} {n}]
+_clusters: [for c in {for p in _placed {"\(p.cluster)": p.cluster}} {c}]
+
 output: {
 	name:      parameter.name
 	namespace: _ns
@@ -94,5 +132,22 @@ output: {
 			message:    *_status.workflow.message | ""
 		}
 	}
-	components: [for s in _services {s.name}]
+	components: _names
+	clusters:   _clusters
+	services: {
+		for n in _names {
+			"\(n)": {
+				healthy: len([for p in _placed if p.name == n if !p.healthy {p}]) == 0
+				clusters: {
+					for p in _placed if p.name == n {
+						"\(p.cluster)": {
+							healthy:   p.healthy
+							message:   p.message
+							namespace: p.namespace
+						}
+					}
+				}
+			}
+		}
+	}
 }
