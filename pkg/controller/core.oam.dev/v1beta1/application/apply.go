@@ -22,6 +22,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -509,7 +510,7 @@ func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status
 				props := make(map[string]interface{}, len(paths))
 				for _, p := range paths {
 					val := rs.ConsumedFields[p]
-					if _, masked := maskSet[p]; masked {
+					if maskedPath(p, maskSet) {
 						val = "***"
 					}
 					props[p] = val
@@ -526,6 +527,26 @@ func (h *AppHandler) mergeSourceResolutionStatus(comp *appfile.Component, status
 		merged = append(merged, byName[src.Name])
 	}
 	status.Sources = merged
+}
+
+// maskedPath reports whether a consumed field is covered by a mask, either
+// exactly or by sitting underneath one.
+//
+// The descent matters. A marker can only be written where the schema declares a
+// field, so a source exposing an open struct - `properties: _`, whose shape is
+// whatever template produced it - has nowhere to put a marker except on the
+// struct itself. Matching exactly would mask a read of `properties` and publish
+// `properties.token` beside it, which is the one case the marker exists for.
+func maskedPath(path string, masks map[string]struct{}) bool {
+	if _, ok := masks[path]; ok {
+		return true
+	}
+	for mask := range masks {
+		if strings.HasPrefix(path, mask+".") {
+			return true
+		}
+	}
+	return false
 }
 
 func mapToRawExtension(v map[string]interface{}) (*runtime.RawExtension, error) {

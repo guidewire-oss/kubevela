@@ -4,7 +4,7 @@ metadata:
   name: vela-config
   namespace: vela-system
   annotations:
-    definition.oam.dev/description: "Reads a KubeVela Config: its properties, the ConfigTemplate it satisfies, and references to the Secret and named objects that template produced. A Config marked sensitive is refused."
+    definition.oam.dev/description: "Reads a KubeVela Config: its properties, the ConfigTemplate it satisfies, and references to the Secret and named objects that template produced. Output values are never returned, only their references. A Config marked sensitive is refused."
     definition.oam.dev/cache-key-rules: "7fdfcad2"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
@@ -31,12 +31,33 @@ spec:
         // contract over a particular Config should write a definition that names its
         // fields - the read is one line, as below.
         //
-        // Both output fields are references only. A Config's outputs are routinely
-        // Secrets, so a source returning their contents would turn "read a setting" into
-        // "read any non-sensitive credential in the cluster". Resolving them is a
-        // separate definition (vela-config-outputs), so a platform can install this one
-        // and not that one, or restrict that one with `consumableFrom`.
+        // `output` and `outputs` are references and never contents - deliberately, and
+        // permanently. A Config's outputs are routinely Secrets, so a source that
+        // returned their values would turn "read a setting" into "read any credential in
+        // a Config nobody happened to mark sensitive", and every value would then be
+        // copied into this source's own cache entry, where it outlives the render and is
+        // shared by every consumer with the same key.
+        //
+        // A reference is enough for the thing you actually want. Wiring by name keeps
+        // the value out of the Application, out of the rendered workload and out of the
+        // cache, and lets Kubernetes resolve it at pod start:
+        //
+        //	env:
+        //	  - name: API_TOKEN
+        //	    valueFrom:
+        //	      secretKeyRef:
+        //	        name: '$(*source.cfg.outputs.creds.name | "missing-creds")'
+        //	        key: token
+        //
+        // Anything needing the value itself should reach it by a mechanism built for
+        // that - a mounted Secret, a CSI driver - not through a workload's properties.
         schema: {
+        	// The properties a Config was created with are the *inputs* its template
+        	// took, which for a credential-bearing template are the credential: the
+        	// shipped image-registry template declares `sensitive: false` and takes
+        	// auth.password among its parameters. Marking the whole struct is the only
+        	// option available, since `_` declares no fields to mark individually.
+        	// +sensitive
         	properties: _
         	template: {
         		name:       string
