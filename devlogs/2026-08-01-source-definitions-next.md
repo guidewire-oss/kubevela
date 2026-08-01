@@ -256,6 +256,32 @@ one Secret: properties, template name, `outputs[0].kind`, `outputs[1].name`, an
 out-of-range index falling to its default, and a real ConfigMap value read
 through the looped source.
 
+### 6b. `environment` — the env an Application is deployed into  ✅ DONE
+
+A vela env is a Namespace with two labels: `usage.oam.dev/control-plane: env`
+marks it as one, `namespace.oam.dev/env: <name>` names it (`pkg/utils/env`). That
+is the entire mechanism, so the source is one `kube.#Get` and no Go.
+
+**Named `environment`, not `namespace`, on purpose.** The environment is the
+concept a platform team and an application team share; the namespace is where it
+happens to live. `source.env.name` says what a value *means*; reading a label key
+off a namespace says how it is *stored*, and ties every Application to that
+storage choice so the platform can never change it. This was the correction to a
+`namespace` source proposed earlier - right data, wrong abstraction.
+
+`name` is optional: a namespace that was never `vela env init`-ed carries no env
+label, so a consumer supplies a default. Verified both ways on a cluster, plus
+admission refusing an undefended `name` into a required parameter.
+
+Key is `environment-\(context.namespace)` with no cluster component - correct,
+since the read is always from the hub and does not vary by where a workload
+lands.
+
+`kube.#List` supports `matchingLabels`, so looking an env up *by name* (rather
+than by its namespace) is reachable if it is ever wanted. Not built: an
+Application reading a different environment's configuration is a use case worth
+seeing before enabling.
+
 ### 7. List indices in property expressions  ✅ DONE
 
 Found by building §6: `source.cfg.outputs[0].kind` was refused, and the recorded
@@ -304,6 +330,31 @@ an open, possibly-absent field needs both, so this now works:
 
 Verified on a cluster in both directions, including the absent key falling to its
 default.
+
+### 9. Candidates not built
+
+- **`terraform-output`** — the strongest remaining one. Cloud resources are why
+  terraform-controller exists, and an Application has no typed way to ask "is my
+  RDS ready, and which Secret holds its connection details". A `Configuration`
+  carries `spec.writeConnectionSecretToRef` (a reference - wire it with
+  `envFrom`, exactly the pattern §6 settled on) and `status.apply.state`. The
+  trap is `status.apply.outputs`: `map[string]Property{Value string}` with **no**
+  sensitivity marking, and terraform outputs routinely include passwords. Same
+  call as `properties` - omit, or expose only `+sensitive`. Open question.
+- **`service`** — a Service's cluster DNS name and ports, for wiring a component
+  to a shared platform service. Cheap `kube.#Get`, no trust issue, low value.
+- **`cluster`** — which cluster, its labels and region, for config-by-region.
+  Needs the cluster-gateway secret or prism, so it is the only candidate with
+  real plumbing. Hold until asked for.
+- **Deliberately not building**, consistent with §6: anything returning Secret
+  data - a generic `secret`, raw terraform outputs, Config output values. The
+  reference-plus-`secretKeyRef` route covers the need without a cached copy.
+
+Worth keeping in mind when judging the next candidate: the library is the
+*transport*, not the contract. A platform's real answer is still a named
+definition per contract (`tenant-profile`, `platform-registry`) with a typed
+schema. These exist so nobody writes CueX to fetch a ConfigMap - not so every
+Application reads raw label keys.
 
 ### Cross-cutting
 
