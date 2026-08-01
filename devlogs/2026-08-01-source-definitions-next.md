@@ -97,23 +97,16 @@ for each, since it decides the sharing boundary.
   **strings**, so a schema declaring `replicas: int` will not match without an
   explicit conversion in the template.
 
-### 5. `secret` — read a Secret
+### 5. `secret` — dropped
 
-**Decided: not generic.** A source that returns any key of any Secret is too broad
-a capability to hand out — it would let any binding read any Secret the controller
-can reach, which is the opposite of the trust boundary the whole design rests on.
+Not building this. A source returning any key of any Secret is too broad a
+capability to hand out, and the narrow alternative — a definition per credential,
+each declaring its own fields — is real work with no demand behind it yet.
 
-So this is narrow by construction: the definition names what it exposes, and the
-Secret is an implementation detail behind the `schema:`. A platform authors
-`registry-credentials` or `database-password` — each declaring exactly its fields,
-each marked `// +sensitive` — rather than one `secret` source parameterised by
-name and key.
-
-That is more definitions, and it is the right trade: the schema stays a contract
-instead of a passthrough, and `consumableFrom` can then say something meaningful
-about each one.
-
-Still uses base64 (`base64` provider) and `// +sensitive` on every output field.
+If it comes back, it comes back as named definitions (`registry-credentials`,
+`database-password`) with `// +sensitive` on every field, not as one source
+parameterised by name and key. The schema should stay a contract rather than
+become a passthrough.
 
 ### 6. `vela-config` — read a KubeVela Config
 
@@ -128,7 +121,7 @@ Worth being aware of rather than designing around: a chain that reads its own
 cache entry would be odd but not harmful, since entries are content-addressed and
 resolution is per-render.
 
-### Cross-cutting for all five
+### Cross-cutting
 
 - Each should ship as a `.cue` definition applied with `vela def apply`, so the
   `$internal` block is generated rather than hand-written.
