@@ -23,6 +23,18 @@ both branches are committed, all unit suites green, `go build ./...` clean.
 - **`TestMain` / `logf.SetLogger`.** A missing kubeconfig makes packages exit(1)
   silently, because controller-runtime discards logs until a logger is set. Agreed
   as a separate upstream PR; not started.
+- **envtest now runs locally** (was recorded as unavailable). `make envtest`
+  installs `setup-envtest` into `$(go env GOBIN)` - which mise sets to its own go
+  bin, *not* `./bin` - so the Makefile's `$(LOCALBIN)/setup-envtest` is never
+  found. Fetch the assets and pass them explicitly:
+
+  ```
+  setup-envtest use 1.31.0 -p path
+  KUBEBUILDER_ASSETS="<that path>" go test ./pkg/webhook/...
+  ```
+
+  All 7 webhook packages pass. This does not cover `test/e2e-test/`, which still
+  needs a real cluster and CI's flag set.
 - **`design/draft-keps`** never reconciled against the branch KEP.
 
 ### On `wip/source-expressions`
@@ -131,7 +143,7 @@ If it comes back, it comes back as named definitions (`registry-credentials`,
 parameterised by name and key. The schema should stay a contract rather than
 become a passthrough.
 
-### 6. `vela-config` — read a KubeVela Config  ✅ DONE
+### 6. `vela-config` — read a KubeVela Config  ✅ DONE (extended)
 
 **Decided: build it.** The `config` provider lives in
 `pkg/cue/cuex/providers/config`.
@@ -143,6 +155,59 @@ is accepted; it is not a reason to withhold the capability.
 Worth being aware of rather than designing around: a chain that reads its own
 cache entry would be odd but not harmful, since entries are content-addressed and
 resolution is per-render.
+
+**Returns `properties`, `template` and `outputs`.** A Config names the
+ConfigTemplate whose contract its properties satisfy, and records what that
+template produced; both were being dropped. `outputs` is **references only** -
+apiVersion/kind/name/namespace.
+
+`pkg/config` splits this awkwardly and the order matters: `ReadConfig` returns
+only properties but is the call that raises `ErrSensitiveConfig`; `GetConfig`
+carries the template and references but merely *blanks* a sensitive Config. So
+ReadConfig is called first as the gate. `OutputObjects` is always empty on read -
+`convertSecret2Config` populates it "only on config render stage".
+
+#### `vela-config-outputs` — the objects themselves
+
+A second definition, ranging over those references with `kube.#Get`. **A provider
+call inside a comprehension over another provider's output resolves in the same
+pass**, verified directly - so this is CUE and no Go.
+
+The split is not tidiness. A Config's outputs are routinely Secrets, so this
+definition can hand a workload's properties the rendered credentials of any
+Config not marked sensitive - the same capability that stopped us shipping a
+generic `secret` source (§5). Keeping it separate makes that actionable: install
+`vela-config` without it, or gate it with `consumableFrom`. The provider itself
+never returns object contents, so the decision lives in a definition a platform
+team writes and reviews.
+
+Objects are keyed `"Kind/name"`, not positionally, so a consumer survives a
+template gaining an output.
+
+Verified end to end against a `demo-endpoint` Config producing one ConfigMap and
+one Secret: properties, template name, `outputs[0].kind`, `outputs[1].name`, an
+out-of-range index falling to its default, and a real ConfigMap value read
+through the looped source.
+
+### 7. List indices in property expressions  ✅ DONE
+
+Found by building §6: `source.cfg.outputs[0].kind` was refused, and the recorded
+reason was circular - the grammar rejected indexing because `sentinelFor` did not
+pin a list's element type, and `sentinelFor` returned an empty list *because*
+indexing was rejected. A schema declaring `[...{kind: string}]` pins the element
+type exactly as a struct field does.
+
+Constant integer indices are now accepted (computed ones are still refused - the
+result would depend on data that does not exist at admission). The length is
+*not* pinned by a schema, so an indexed read is possibly-absent and needs a
+default when it feeds a required parameter, exactly as `context.appLabels["x"]`
+does; a schema that pins the position (`[string, ...]`) needs none.
+
+`Reference.String()` now renders indices and non-identifier segments in bracket
+form. Not cosmetic: those references are quoted back at the author as the fix to
+apply, and `*source.cfg.outputs.0.name | <fallback>` does not parse. Same change
+makes a hyphenated binding render as `source["my-source"].region` rather than as
+the subtraction CUE would actually read.
 
 ### Cross-cutting
 
