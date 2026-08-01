@@ -24,7 +24,9 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/oam-dev/kubevela/pkg/addon"
+	"github.com/oam-dev/kubevela/pkg/config"
 	cuexregistry "github.com/oam-dev/kubevela/pkg/cue/cuex/providers/registry"
+	cuexvelaconfig "github.com/oam-dev/kubevela/pkg/cue/cuex/providers/velaconfig"
 	"github.com/oam-dev/kubevela/pkg/registry"
 )
 
@@ -71,6 +73,15 @@ func (addonRegistryFileReader) ReadFile(ctx context.Context, registryName, path,
 	return reader.ReadFile(path)
 }
 
+// velaConfigReader reads a Config's properties through pkg/config, which also
+// refuses one marked sensitive - a guard worth inheriting rather than
+// reimplementing in the provider.
+type velaConfigReader struct{}
+
+func (velaConfigReader) ReadConfig(ctx context.Context, namespace, name string) (map[string]interface{}, error) {
+	return config.NewConfigFactory(singleton.KubeClient.Get()).ReadConfig(ctx, namespace, name)
+}
+
 func bootstrapProviderRegistry() {
 	klog.V(2).InfoS("Bootstrapping provider registry")
 
@@ -90,6 +101,11 @@ func bootstrapProviderRegistry() {
 	// The provider declares the interface; only this file can see both it and
 	// pkg/addon, so the implementation is wired here.
 	registry.RegisterAs[cuexregistry.FileReader](addonRegistryFileReader{})
+
+	// velaconfig.Reader - lets a SourceDefinition read a Config's properties.
+	// Cycle: pkg/cue/cuex -> providers/velaconfig -> pkg/config ->
+	//        pkg/cue/script -> pkg/cue/cuex
+	registry.RegisterAs[cuexvelaconfig.Reader](velaConfigReader{})
 
 	klog.V(2).InfoS("Provider registry bootstrap complete")
 }

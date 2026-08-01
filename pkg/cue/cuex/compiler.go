@@ -30,6 +30,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/cue/cuex/providers/config"
 	"github.com/oam-dev/kubevela/pkg/cue/cuex/providers/helm"
 	"github.com/oam-dev/kubevela/pkg/cue/cuex/providers/registry"
+	"github.com/oam-dev/kubevela/pkg/cue/cuex/providers/velaconfig"
 )
 
 // ConfigCompiler ...
@@ -50,8 +51,10 @@ var WorkloadCompiler = singleton.NewSingleton[*cuex.Compiler](func() *cuex.Compi
 		kube.Package,
 		cueext.Package,
 		// SourceDefinitions compile against this compiler, so a source can read
-		// a file from a registry the platform has configured.
+		// a file from a registry the platform has configured, or the properties
+		// of a Config the platform has created.
 		registry.Package,
+		velaconfig.Package,
 	)
 	if cuex.EnableExternalPackageForDefaultCompiler {
 		if err := compiler.LoadExternalPackages(context.Background()); err != nil {

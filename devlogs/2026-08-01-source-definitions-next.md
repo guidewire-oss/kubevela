@@ -131,7 +131,7 @@ If it comes back, it comes back as named definitions (`registry-credentials`,
 parameterised by name and key. The schema should stay a contract rather than
 become a passthrough.
 
-### 6. `vela-config` — read a KubeVela Config
+### 6. `vela-config` — read a KubeVela Config  ✅ DONE
 
 **Decided: build it.** The `config` provider lives in
 `pkg/cue/cuex/providers/config`.

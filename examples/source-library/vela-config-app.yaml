@@ -1,0 +1,22 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: vc-demo, namespace: vcsrc}
+spec:
+  sources:
+    - name: settings
+      type: vela-config
+      properties: {name: demo-settings}
+  components:
+    - name: probe
+      type: webservice
+      properties:
+        image: nginx:1.25.0
+        port: 80
+        env:
+          # properties is open, so each read asserts its type
+          - name: TIER
+            value: '$(source.settings.properties.tier & string)'
+          - name: REPLICAS
+            value: '$("\(source.settings.properties.replicas & int)")'
+          - name: ENDPOINT
+            value: '$(source.settings.properties.endpoint & string)'
