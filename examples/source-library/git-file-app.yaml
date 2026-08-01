@@ -1,0 +1,33 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: git-demo
+  namespace: gitsrc
+spec:
+  sources:
+    # .yaml -> parsed, so a field can be read out of it
+    - name: meta
+      type: git-file
+      properties: {registry: catalog, path: velaux/metadata.yaml}
+    # .md -> not a format we parse, so the bytes come back
+    - name: readme
+      type: git-file
+      properties: {registry: catalog, path: velaux/readme.md}
+  components:
+    - name: probe
+      type: webservice
+      properties:
+        image: nginx:1.25.0
+        port: 80
+        env:
+          # Reading a field out of the parsed document.
+          - name: ADDON_NAME
+            value: '$(source.meta.content.name & string)'
+          - name: ADDON_VERSION
+            value: '$(source.meta.content.version & string)'
+          # Combining a parsed field with a literal.
+          - name: LABEL
+            value: '$((source.meta.content.name & string) + "@" + (source.meta.content.version & string))'
+          # An unparsed file is just a string.
+          - name: README_IS_STRING
+            value: '$(source.readme.content & string)'

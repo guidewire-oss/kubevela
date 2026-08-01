@@ -61,19 +61,35 @@ func TypeOfIn(expr string, schemas map[string]string, ctxSchema ContextSchema, r
 		return cue.BottomKind, err
 	}
 
-	// A read into a `_` field cannot be typed. Say so by returning the unknown
-	// kind rather than guessing - admission then declines to judge this one
-	// instead of rejecting something valid.
-	for _, ref := range refs {
-		if PathIsOpen(ref, schemas) {
-			return cue.BottomKind, nil
-		}
+	// A read out of a `_` field has no declared type, so the author has to supply
+	// one. That is the same shape as the rule for a value that may be absent:
+	// where the schema stops saying something, the usage has to.
+	//
+	// Without this the read types as unknown, admission declines to judge it, and
+	// a struct landing in a string parameter is only caught if the source happens
+	// to resolve during the dry-run render.
+	asserted, err := Assertions(expr)
+	if err != nil {
+		return cue.BottomKind, err
 	}
 
 	ctx := newContext()
 	sources, err := sentinelSources(ctx, schemas, refs)
 	if err != nil {
 		return cue.BottomKind, err
+	}
+
+	for _, ref := range refs {
+		if !PathIsOpen(ref, schemas) {
+			continue
+		}
+		typeName, ok := asserted[ref.String()]
+		if !ok {
+			return cue.BottomKind, fmt.Errorf("%s reads a field the source's schema leaves open, so its "+
+				"type has to be given here: write %s & <type>, one of %s",
+				ref, ref, strings.Join(AssertedKinds(), ", "))
+		}
+		materialiseAsserted(sources[ref.Path[0]], ref.Path[1:], typeName)
 	}
 	contextFields, err := sentinelContext(refs, ctxSchema)
 	if err != nil {

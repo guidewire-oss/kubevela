@@ -128,6 +128,48 @@ func sentinelSources(ctx *cue.Context, schemas map[string]string, refs []Referen
 	return out, nil
 }
 
+// materialiseAsserted supplies a sentinel of the asserted type at a path that
+// the schema leaves open.
+//
+// Without it the scope has nothing at that path and the read reports an
+// undefined field. With it, `content.replicas & int` types as int - which is the
+// whole point of asking for the assertion.
+func materialiseAsserted(sentinel interface{}, path []string, typeName string) {
+	node, ok := sentinel.(map[string]interface{})
+	if !ok || len(path) == 0 {
+		return
+	}
+	for i, seg := range path {
+		if i == len(path)-1 {
+			node[seg] = sentinelForType(typeName)
+			return
+		}
+		nested, _ := node[seg].(map[string]interface{})
+		if nested == nil {
+			nested = map[string]interface{}{}
+			node[seg] = nested
+		}
+		node = nested
+	}
+}
+
+// sentinelForType is sentinelFor by name, for an asserted type. The choices
+// match: 1 rather than 0 for an int, a non-empty string.
+func sentinelForType(name string) interface{} {
+	switch name {
+	case "int":
+		return 1
+	case "float", "number":
+		return 1.0
+	case "bool":
+		return true
+	case "bytes":
+		return []byte("x")
+	default:
+		return "x"
+	}
+}
+
 // materialiseOpenMapKey adds a sentinel for a key read out of an open map,
 // walking the schema and the sentinel in step.
 func materialiseOpenMapKey(schema cue.Value, sentinel interface{}, path []string) {

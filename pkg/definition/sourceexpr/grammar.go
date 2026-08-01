@@ -159,6 +159,10 @@ func ValidateRoots(expr string, allowed ...string) error {
 			// name reached through one; a bare identifier is neither.
 			switch {
 			case permitted(t.Name):
+			case assertedTypes[t.Name]:
+				// A builtin type name, for asserting the type of a read out of an
+				// open field. Not a sandbox escape: it names a type, and a bare
+				// one is non-concrete and fails on its own merits.
 			case isFieldPosition(node, t):
 			case t.Name == SourceIdent || t.Name == ContextIdent:
 				bad = fmt.Errorf("%q cannot be read here; this surface permits %s",
@@ -383,5 +387,68 @@ func quoteAll(names []string) []string {
 	for _, n := range names {
 		out = append(out, fmt.Sprintf("%q", n))
 	}
+	return out
+}
+
+// assertedType is a CUE builtin type an expression may assert onto a read.
+//
+// Only these: a read out of an open field has no declared type, and the point of
+// the assertion is to supply one that admission can check the target against. A
+// struct or list assertion would say almost nothing, so it is not offered.
+var assertedTypes = map[string]bool{
+	"string": true,
+	"int":    true,
+	"float":  true,
+	"number": true,
+	"bool":   true,
+	"bytes":  true,
+}
+
+// Assertions returns the type each read in an expression asserts for itself,
+// keyed by the reference's string form.
+//
+// `source.cfg.content.replicas & int` says "whatever this file holds here, treat
+// it as an int". That is the only way to type a read out of a `_` field, so it is
+// how a generic source's consumer declares what they expect - and it is checked
+// at render, where the real value either unifies with the asserted type or fails
+// loudly.
+func Assertions(expr string) (map[string]string, error) {
+	node, err := cueparser.ParseExpr("-", expr)
+	if err != nil {
+		return nil, fmt.Errorf("not a valid expression: %w", err)
+	}
+
+	out := map[string]string{}
+	ast.Walk(node, func(n ast.Node) bool {
+		b, ok := n.(*ast.BinaryExpr)
+		if !ok || b.Op != token.AND {
+			return true
+		}
+		// Either order: `x & string` and `string & x` mean the same thing.
+		for _, pair := range [][2]ast.Expr{{b.X, b.Y}, {b.Y, b.X}} {
+			read, typ := pair[0], pair[1]
+			id, ok := typ.(*ast.Ident)
+			if !ok || !assertedTypes[id.Name] {
+				continue
+			}
+			root, path, ok := selectorPath(read)
+			if !ok || len(path) == 0 {
+				continue
+			}
+			out[Reference{Root: root, Path: path}.String()] = id.Name
+		}
+		return true
+	}, nil)
+	return out, nil
+}
+
+// AssertedKinds names the types this package accepts in an assertion, for an
+// error message.
+func AssertedKinds() []string {
+	out := make([]string, 0, len(assertedTypes))
+	for name := range assertedTypes {
+		out = append(out, name)
+	}
+	sort.Strings(out)
 	return out
 }

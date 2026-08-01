@@ -1559,46 +1559,75 @@ func TestIntegersSurviveTheJSONRoundTrip(t *testing.T) {
 }
 
 // A schema may declare a field without declaring its shape - `content: _` is how
-// a generic source says "whatever this file happens to be". Nothing can be typed
-// through that, so the answer is "unknown" rather than a guess, and admission
-// declines to judge rather than rejecting something valid.
-func TestOpenFieldTypesAsUnknown(t *testing.T) {
+// a generic source says "whatever this file happens to be".
+//
+// Nothing can be typed through that, so rather than guessing, the usage has to
+// say: `& string`, `& int`. That is the same shape as the rule for a value that
+// may be absent - where the schema stops saying something, the expression has to
+// - and it is what lets admission compare the result against the target instead
+// of declining to judge.
+func TestOpenFieldRequiresATypeAssertion(t *testing.T) {
 	schemas := map[string]string{
 		"file":  `{content: _}`,
 		"typed": `{name: string}`,
 	}
 
-	// Reading into the open field, at any depth.
+	// Unasserted: refused, and the message says how to fix it.
 	for _, expr := range []string{
 		`source.file.content`,
 		`source.file.content.name`,
 		`source.file.content.spec.replicas`,
 	} {
-		kind, err := TypeOf(expr, schemas)
-		if err != nil {
-			t.Errorf("%s: a read into an open field must not error, got: %v", expr, err)
+		_, err := TypeOf(expr, schemas)
+		if err == nil {
+			t.Errorf("%s: a read out of an open field must require a type", expr)
 			continue
 		}
-		if kind != cue.BottomKind {
-			t.Errorf("%s: expected the unknown kind, got %s", expr, kind)
+		if !strings.Contains(err.Error(), "& <type>") {
+			t.Errorf("%s: the error should say how to supply one; got: %v", expr, err)
 		}
 	}
 
-	// Unknown must not block a substitution, whatever the target expects.
-	if !kindsCompatibleForTest(cue.BottomKind, cue.IntKind) {
-		t.Error("unknown must be compatible with any target, or a generic source could feed nothing")
+	// Asserted: types as the asserted kind.
+	for _, tc := range []struct {
+		expr string
+		want cue.Kind
+	}{
+		{`source.file.content.name & string`, cue.StringKind},
+		{`source.file.content.replicas & int`, cue.IntKind},
+		{`source.file.content.enabled & bool`, cue.BoolKind},
+		{`(source.file.content.name & string) + "-x"`, cue.StringKind},
+		// Either order means the same thing.
+		{`string & source.file.content.name`, cue.StringKind},
+	} {
+		got, err := TypeOf(tc.expr, schemas)
+		if err != nil {
+			t.Errorf("%s: %v", tc.expr, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: expected %s, got %s", tc.expr, tc.want, got)
+		}
 	}
 
-	// Embedding one in text is allowed too - whether it has a text form is
-	// unknowable here, and render will say.
-	if _, err := ValueType(`prefix-$(source.file.content.name)`, schemas); err != nil {
-		t.Errorf("an open read embedded in text must not be rejected at admission: %v", err)
+	// A declared field beside an open one still needs no assertion, so the rule
+	// only applies where the schema is actually silent.
+	if _, err := TypeOf(`source.typed.name`, schemas); err != nil {
+		t.Errorf("a declared field must not require an assertion: %v", err)
 	}
 
-	// A declared field beside an open one still types normally, so the escape
-	// hatch does not leak into the rest of the schema.
-	if kind, err := TypeOf(`source.typed.name`, schemas); err != nil || kind != cue.StringKind {
-		t.Errorf("a declared field must still type: %s (%v)", kind, err)
+	// The assertion holds at render: the real value either unifies with it or
+	// fails loudly, rather than a struct quietly landing in a string parameter.
+	resolved := map[string]map[string]interface{}{
+		"file": {"content": map[string]interface{}{"name": "web", "replicas": float64(3)}},
+	}
+	if got, err := Eval(`$(source.file.content.replicas & int)`, resolved, nil); err != nil {
+		t.Errorf("evaluating: %v", err)
+	} else if got != int64(3) {
+		t.Errorf("expected int64(3), got %#v (%T)", got, got)
+	}
+	if _, err := Eval(`$(source.file.content & string)`, resolved, nil); err == nil {
+		t.Error("asserting string over a struct must fail rather than substitute something else")
 	}
 }
 
