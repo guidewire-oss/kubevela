@@ -1,0 +1,31 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: cm-demo, namespace: cmsrc}
+spec:
+  sources:
+    # Defaults to the Application's own namespace.
+    - name: app
+      type: configmap
+      properties: {name: app-config}
+    # Or an explicit one, for platform-wide config.
+    - name: platform
+      type: configmap
+      properties: {name: platform-config, namespace: vela-system}
+  components:
+    - name: probe
+      type: webservice
+      properties:
+        image: nginx:1.25.0
+        port: 80
+        env:
+          # An open map, so each read carries a default.
+          - name: TIER
+            value: '$(*source.app.data["tier"] | "unset")'
+          - name: REGION
+            value: '$(*source.platform.data["region"] | "unknown")'
+          # A key that is not there falls back rather than failing.
+          - name: MISSING
+            value: '$(*source.app.data["nope"] | "absent")'
+          # ConfigMap values are strings - so this concatenates, not adds.
+          - name: REPLICAS_STR
+            value: '$(*source.app.data["replicas"] | "0")'

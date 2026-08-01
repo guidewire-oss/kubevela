@@ -1,0 +1,72 @@
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: configmap
+  namespace: vela-system
+  annotations:
+    definition.oam.dev/description: "Reads a ConfigMap's data. Values are strings, as Kubernetes stores them."
+    definition.oam.dev/cache-key-rules: "7fdfcad2"
+    definition.oam.dev/cache-key-rules-version: v1
+spec:
+  schematic:
+    cue:
+      template: |
+        import "vela/kube"
+
+        // Generated from the context this template reads - do not edit. Admission re-derives these and rejects a mismatch.
+        $internal: {
+        	key: "configmap-\(context.cluster)-\(context.namespace)"
+        	keyInputs: ["cluster", "namespace"]
+        }
+
+        // A ConfigMap's data, as it actually is: string to string.
+        //
+        // Kubernetes stores every value in `data` as a string - a ConfigMap holding
+        // `replicas: "3"` gives you "3", not 3. Declaring that honestly is better than a
+        // schema that promises ints and fails at render, and a consumer wanting a number
+        // converts at the point of use.
+        //
+        // The keys are not known here, so `data` is an open map. That means a read of one
+        // carries the same obligation as any value that might be missing: supply a
+        // default, or admission refuses it where the target is required.
+        schema: {
+        	data: [string]: string
+        }
+
+        storage: {
+        	// A ConfigMap read is cheap and local, but re-reading it on every reconcile
+        	// of every component is still waste.
+        	storageTTL:     "5m"
+        	onStaleFailure: "use-stale"
+        }
+
+        parameter: {
+        	// +usage=Name of the ConfigMap
+        	name: string
+        	// +usage=Namespace it lives in. Defaults to the Application's own namespace.
+        	namespace?: string
+        }
+
+        // Read from the cluster the Application is being rendered for, so a multi-cluster
+        // deployment picks up each cluster's own copy - which is also why the generated
+        // key is per-cluster.
+        _cm: kube.#Get & {
+        	$params: {
+        		cluster: context.cluster
+        		resource: {
+        			apiVersion: "v1"
+        			kind:       "ConfigMap"
+        			metadata: {
+        				name: parameter.name
+        				if parameter.namespace != _|_ {
+        					namespace: parameter.namespace
+        				}
+        				if parameter.namespace == _|_ {
+        					namespace: context.namespace
+        				}
+        			}
+        		}
+        	}
+        }
+
+        output: data: _cm.$returns.data

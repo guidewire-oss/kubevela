@@ -65,7 +65,7 @@ for each, since it decides the sharing boundary.
 **Providers actually available** (verified, `kubevela/pkg@v1.11.1-...`):
 `http`, `kube`, `base64`, `cue`, plus KubeVela's own `config` and `helm`.
 
-### 2. `git-file` — fetch a file from a repo
+### 2. `git-file` — fetch a file from a repo  ✅ DONE
 
 - Parameters: repo, path, ref/branch, and a credential reference.
 - "Use the existing registry system": KubeVela's definition registry
@@ -89,13 +89,25 @@ for each, since it decides the sharing boundary.
 - Caching: this is the source that most needs a sensible `storageTTL`, and the one
   where `onStaleFailure: use-stale` earns its keep.
 
-### 4. `configmap` — read a ConfigMap
+### 4. `configmap` — read a ConfigMap  ✅ DONE
 
-- `kube.#Get`, straightforward. The demo's `platform-registry` is already 90% of
-  this; generalising means parameters for name/namespace and a `data` passthrough.
-- Note the type trap found this session: ConfigMap `data` values are always
-  **strings**, so a schema declaring `replicas: int` will not match without an
-  explicit conversion in the template.
+Built with no Go at all - `kube.#Get` already exists, so this is a definition and
+nothing else. Which is the point: the library only needs a provider where the
+transport is genuinely new.
+
+`schema: {data: [string]: string}` - honest about the fact that Kubernetes stores
+every ConfigMap value as a string. A schema promising `replicas: int` would type
+at admission and fail at render; this way a string into an int parameter is caught
+up front (*"type mismatch: expression ... "*), and a consumer wanting a number
+converts at the point of use.
+
+Namespace defaults to the Application's own; cluster comes from context, so the
+generated key is `configmap-\(context.cluster)-\(context.namespace)` and each
+cluster picks up its own copy.
+
+Because `data` is an open map, a key read carries the usual obligation - which is
+target-aware, so it only bites feeding a *required* parameter. Both verified on a
+cluster.
 
 ### 5. `secret` — dropped
 
