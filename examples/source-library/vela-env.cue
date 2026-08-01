@@ -23,6 +23,12 @@ import "vela/kube"
 // namespace that was never `vela env init`-ed still reads sensibly rather than
 // forcing every Application to carry a fallback for a case it does not have.
 //
+// `managed` is what that fallback would otherwise cost. Once `name` can equal
+// `namespace`, the two cases become indistinguishable - an env genuinely named
+// `default`, and a namespace nobody ever ran `vela env init` against - so
+// anything gating on being in a real environment needs the question answered
+// directly rather than inferred from the two matching.
+//
 // `labels` and `annotations` are open maps, so a key read carries the usual
 // default obligation when it feeds a required parameter. This is where platforms
 // keep tenancy - team, cost centre, tier - and a definition wanting a typed
@@ -30,6 +36,7 @@ import "vela/kube"
 schema: {
 	name:      string
 	namespace: string
+	managed:   bool
 	labels: [string]:      string
 	annotations: [string]: string
 }
@@ -54,8 +61,15 @@ _ns: kube.#Get & {
 _labels: *_ns.$returns.metadata.labels | {}
 
 output: {
-	name:        *_labels["namespace.oam.dev/env"] | context.namespace
-	namespace:   context.namespace
+	name:      *_labels["namespace.oam.dev/env"] | context.namespace
+	namespace: context.namespace
+	// A one-element list indexed at 0 is the idiom for "this value if the guard
+	// holds, otherwise that": a bare `x != _|_` is not an expression CUE will
+	// evaluate to a bool outside a comprehension.
+	managed: [
+		if _labels["namespace.oam.dev/env"] != _|_ {true},
+		false,
+	][0]
 	labels:      _labels
 	annotations: *_ns.$returns.metadata.annotations | {}
 }

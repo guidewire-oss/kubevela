@@ -1,10 +1,10 @@
 apiVersion: core.oam.dev/v1beta1
 kind: SourceDefinition
 metadata:
-  name: environment
+  name: vela-env
   namespace: vela-system
   annotations:
-    definition.oam.dev/description: "The KubeVela environment an Application is deployed into - its name, namespace, and the labels and annotations a platform keeps there. Reads the Application's own namespace only."
+    definition.oam.dev/description: "The KubeVela environment an Application is deployed into - its name, namespace, whether the namespace is a managed env, and the labels and annotations a platform keeps there. Reads the Application's own namespace only."
     definition.oam.dev/cache-key-rules: "7fdfcad2"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
@@ -15,7 +15,7 @@ spec:
 
         // Generated from the context this template reads - do not edit. Admission re-derives these and rejects a mismatch.
         $internal: {
-        	key: "environment-\(context.namespace)"
+        	key: "vela-env-\(context.namespace)"
         	keyInputs: ["namespace"]
         }
 
@@ -42,6 +42,12 @@ spec:
         // namespace that was never `vela env init`-ed still reads sensibly rather than
         // forcing every Application to carry a fallback for a case it does not have.
         //
+        // `managed` is what that fallback would otherwise cost. Once `name` can equal
+        // `namespace`, the two cases become indistinguishable - an env genuinely named
+        // `default`, and a namespace nobody ever ran `vela env init` against - so
+        // anything gating on being in a real environment needs the question answered
+        // directly rather than inferred from the two matching.
+        //
         // `labels` and `annotations` are open maps, so a key read carries the usual
         // default obligation when it feeds a required parameter. This is where platforms
         // keep tenancy - team, cost centre, tier - and a definition wanting a typed
@@ -49,6 +55,7 @@ spec:
         schema: {
         	name:      string
         	namespace: string
+        	managed:   bool
         	labels: [string]:      string
         	annotations: [string]: string
         }
@@ -75,6 +82,13 @@ spec:
         output: {
         	name:      *_labels["namespace.oam.dev/env"] | context.namespace
         	namespace: context.namespace
-        	labels:    _labels
+        	// A one-element list indexed at 0 is the idiom for "this value if the guard
+        	// holds, otherwise that": a bare `x != _|_` is not an expression CUE will
+        	// evaluate to a bool outside a comprehension.
+        	managed: [
+        		if _labels["namespace.oam.dev/env"] != _|_ {true},
+        		false,
+        	][0]
+        	labels: _labels
         	annotations: *_ns.$returns.metadata.annotations | {}
         }
