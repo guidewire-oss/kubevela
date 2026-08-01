@@ -1,0 +1,93 @@
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: http-get
+  namespace: vela-system
+  annotations:
+    definition.oam.dev/description: "GETs a URL. The response is parsed when Content-Type says JSON or YAML; a non-2xx fails the source rather than becoming its value."
+    definition.oam.dev/cache-key-rules: "7fdfcad2"
+    definition.oam.dev/cache-key-rules-version: v1
+spec:
+  schematic:
+    cue:
+      template: |
+        import (
+        	"encoding/json"
+        	"encoding/yaml"
+        	"strings"
+        	"vela/http"
+        )
+
+        // Generated from the context this template reads - do not edit. Admission re-derives these and rejects a mismatch.
+        $internal: {
+        	key: "http-get"
+        	keyInputs: []
+        }
+
+        // The response body, parsed if the server said what it is.
+        //
+        // `content: _` because this source is generic over whatever it is pointed at.
+        // Unlike a file path, an HTTP response says its own type, so the Content-Type
+        // header decides rather than a suffix - which is the better signal, and free.
+        //
+        // statusCode is surfaced too: a consumer occasionally wants it, and exposing it
+        // costs nothing since the request already carries it back.
+        schema: {
+        	content:    _
+        	statusCode: int
+        }
+
+        storage: {
+        	// A remote call on every reconcile of every component would be rude, and
+        	// this is the source where that matters most. Serving stale data beats
+        	// failing a render because someone else's service blinked.
+        	storageTTL:     "5m"
+        	onStaleFailure: "use-stale"
+        }
+
+        parameter: {
+        	// +usage=The URL to GET
+        	url: string
+        }
+
+        // Headers are deliberately absent: the http provider cannot carry them.
+        //
+        // Its CUE declares `header?: [string]: string` while its Go unmarshals into
+        // net/http's Header, which is map[string][]string. A string fails in Go
+        // ("cannot unmarshal string into ... []string") and a list fails in CUE
+        // ("conflicting values [v] and string"), so there is no value that satisfies
+        // both. Fixing that is an upstream change in kubevela/pkg; until then, offering
+        // a headers parameter here would only produce a confusing failure at resolve
+        // time rather than at admission.
+
+        _res: http.#Get & {
+        	$params: url: parameter.url
+        }
+
+        _status: _res.$returns.statusCode
+        _body:   *_res.$returns.body | ""
+
+        // A non-2xx body is not data. Without this a 404's error page becomes the
+        // resolved value, gets cached, and is substituted into a workload - the failure
+        // mode that makes "just fetch it" quietly dangerous.
+        errs: [
+        	if _status < 200 || _status > 299 {
+        		"GET \(parameter.url) returned \(_status)"
+        	},
+        ]
+
+        // The server declares the type; trust it over guessing. Header values arrive as
+        // lists, and the name is canonicalised by net/http.
+        _contentType: *strings.ToLower(_res.$returns.header["Content-Type"][0]) | ""
+
+        _isJSON: strings.Contains(_contentType, "json")
+        _isYAML: strings.Contains(_contentType, "yaml") || strings.Contains(_contentType, "yml")
+
+        output: {
+        	statusCode: _status
+        	content: [
+        		if _isJSON {json.Unmarshal(_body)},
+        		if _isYAML {yaml.Unmarshal(_body)},
+        		_body,
+        	][0]
+        }

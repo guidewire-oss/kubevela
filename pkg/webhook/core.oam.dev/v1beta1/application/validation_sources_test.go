@@ -710,3 +710,45 @@ func TestCueStructLookupHandlesOpenLists(t *testing.T) {
 		t.Error("an index beyond a fixed list must not resolve")
 	}
 }
+
+// An open map - headers?: [string]: string - declares no concrete field at any
+// key, only a value type. Properties are flattened to dotted paths, so passing
+// {headers: {Accept: "text/plain"}} looked up "headers.Accept" and found
+// nothing, reporting a perfectly valid property as undeclared.
+//
+// Same shape as the open-list bug: a pattern constraint is not a field.
+func TestCueStructLookupHandlesOpenMaps(t *testing.T) {
+	v := cuecontext.New().CompileString(`root: {
+		headers?: [string]: string
+		counts:   [string]: int
+		nested:   [string]: {enabled: bool}
+		declared: {known: string}
+	}`)
+	c := &cueStruct{root: v.LookupPath(cue.ParsePath("root"))}
+
+	for _, tc := range []struct {
+		path string
+		want cue.Kind
+	}{
+		{"headers.Accept", cue.StringKind},
+		{"headers.X-Anything", cue.StringKind},
+		{"counts.shards", cue.IntKind},
+		{"nested.a.enabled", cue.BoolKind},
+		{"declared.known", cue.StringKind},
+	} {
+		got, declared := c.kindAt(tc.path)
+		if !declared {
+			t.Errorf("%s should resolve through the map's value type", tc.path)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: expected %s, got %s", tc.path, tc.want, got)
+		}
+	}
+
+	// A closed struct still rejects an unknown field, so the fallback does not
+	// make everything permissive.
+	if _, declared := c.kindAt("declared.unknown"); declared {
+		t.Error("an undeclared field of a closed struct must not resolve")
+	}
+}

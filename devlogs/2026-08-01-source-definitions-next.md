@@ -78,7 +78,7 @@ for each, since it decides the sharing boundary.
   that says `content: string` is honest; one that parses YAML into a typed struct
   is far more useful and much harder to make generic.
 
-### 3. `http-get` — call a URL
+### 3. `http-get` — call a URL  ✅ DONE (headers blocked upstream)
 
 - The `http` provider takes `{method, url, request: {body, header}}` and returns
   `{body, header, statusCode}` — so headers are already supported natively.

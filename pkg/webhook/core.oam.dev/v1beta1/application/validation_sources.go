@@ -635,6 +635,14 @@ func (c *cueStruct) lookup(path string) (cue.Value, bool) {
 				cur = opt
 				continue
 			}
+			// An open map - headers?: [string]: string - declares no concrete
+			// field at any key, only a value type. Without this, passing any
+			// header at all was reported as "not declared in the parameter
+			// schema", which is the open-list bug wearing a different hat.
+			if pattern := cur.LookupPath(cue.MakePath(cue.AnyString)); pattern.Exists() {
+				cur = pattern
+				continue
+			}
 			return next, false
 		}
 		cur = next
