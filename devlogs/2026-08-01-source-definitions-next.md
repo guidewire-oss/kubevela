@@ -181,8 +181,27 @@ generic `secret` source (§5). Keeping it separate makes that actionable: instal
 never returns object contents, so the decision lives in a definition a platform
 team writes and reviews.
 
-Objects are keyed `"Kind/name"`, not positionally, so a consumer survives a
-template gaining an output.
+**Shape follows a ConfigTemplate's own**: `output` is the Secret rendered for the
+Config itself, `outputs` are the extra objects under the names the template gave
+them.
+
+Naming is not a preference. `pkg/config` builds the stored reference list with
+`for k := range objects` over a Go map, so its **order is arbitrary** and can
+change when the Config is updated - `outputs[0]` would silently begin meaning a
+different object. The names are the only stable handle.
+
+Getting them back costs a re-render. `OutputObjects` is keyed by name in memory
+but only a flat list is serialised, so `ParseConfig` is the one route - and it
+recompiles the template, resolving every provider call including a `validation:`
+block that may reach the network. Bounded by `storageTTL` (a cache miss, not a
+reconcile), skipped entirely when a Config has no `outputs:`, and a failure falls
+back to `Kind/name` keys rather than failing the read. Stored references remain
+the authority on identity; the render only supplies the label. `output` needs no
+render - a Config's Secret has the Config's own identity.
+
+Worth a decision later: fixing this at the root, by having `pkg/config` store the
+name alongside each reference. Would need a compat path for Configs already
+written, and would let the provider drop the re-render entirely.
 
 Verified end to end against a `demo-endpoint` Config producing one ConfigMap and
 one Secret: properties, template name, `outputs[0].kind`, `outputs[1].name`, an
@@ -208,6 +227,35 @@ form. Not cosmetic: those references are quoted back at the author as the fix to
 apply, and `*source.cfg.outputs.0.name | <fallback>` does not parse. Same change
 makes a hyphenated binding render as `source["my-source"].region` rather than as
 the subtraction CUE would actually read.
+
+### 8. Open-map reads were typed against the wrong thing  ✅ FIXED
+
+Also found by building §6, and the more serious of the two. `PathIsOpen` walked a
+path by declared field name, so a key read out of `outputs: [string]: _` reported
+"not open" - the map declares no key, so the lookup just failed:
+
+| Written | Was | Now |
+|---|---|---|
+| `outputs.settings.data.region & string` | *undefined field: data* | `string` |
+| `*outputs.settings.data.region \| "x"` | accepted as `string` | demands an assertion |
+
+The second row is the bug that mattered. With the read erroring under the default
+marker, CUE took the fallback - so the type reported was **the default's, not the
+value's**. An int default over a struct read would have passed admission and
+rendered a struct into an int parameter. Anything relying on that acceptance is
+now correctly refused.
+
+Making assertions mandatory there exposed that assertion and default did not
+compose (`isDefaultedRead` only accepted a bare read under the marker). They
+answer independent questions - what type is this, and what if it is missing - and
+an open, possibly-absent field needs both, so this now works:
+
+```
+*(source.cfg.outputs.settings.data.region & string) | "unknown"
+```
+
+Verified on a cluster in both directions, including the absent key falling to its
+default.
 
 ### Cross-cutting
 
