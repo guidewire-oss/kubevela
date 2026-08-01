@@ -1,0 +1,76 @@
+import (
+	"vela/kube"
+	"vela/velaconfig"
+)
+
+// The objects a Config's template produced, fetched.
+//
+// `vela-config` returns references; this ranges over them and reads each one.
+// The split is deliberate rather than tidiness: a Config's outputs are
+// routinely Secrets - a registry credential, a database password - so this
+// definition can hand a workload's properties the rendered credentials of any
+// Config not explicitly marked sensitive. That is a materially broader
+// capability than reading settings, and it is the same reasoning that stopped
+// us shipping a generic `secret` source.
+//
+// Keeping it separate is what makes the concern actionable: a platform can
+// install `vela-config` and not this, or install this with a `consumableFrom`
+// naming the few namespaces allowed to use it. Neither is possible if the
+// capability rides along inside the settings source.
+//
+// Objects are keyed "Kind/name" rather than positional, so a consumer writes
+//
+//	'$(source.creds.objects["Secret/harbor-creds"].data[".dockerconfigjson"])'
+//
+// and keeps working when the template gains an output. Secret values arrive
+// base64-encoded, as Kubernetes stores them; decode at the point of use.
+schema: {
+	objects: [string]: {...}
+}
+
+storage: {
+	// Shorter than vela-config's: this reads live objects, which a controller
+	// or an operator can change without the Config itself being touched.
+	storageTTL:     "2m"
+	onStaleFailure: "use-stale"
+}
+
+parameter: {
+	// +usage=Name of the Config
+	name: string
+	// +usage=Namespace it lives in. Defaults to vela-system.
+	namespace?: string
+}
+
+_cfg: velaconfig.#Read & {
+	$params: {
+		name: parameter.name
+		if parameter.namespace != _|_ {
+			namespace: parameter.namespace
+		}
+	}
+}
+
+// One kube.#Get per reference. A provider call inside a comprehension over
+// another provider's output resolves in the same pass, so this needs no
+// staging.
+_fetched: [for ref in _cfg.$returns.outputs {
+	kube.#Get & {
+		$params: resource: {
+			apiVersion: ref.apiVersion
+			kind:       ref.kind
+			metadata: {
+				name: ref.name
+				if ref.namespace != _|_ {
+					namespace: ref.namespace
+				}
+			}
+		}
+	}
+}]
+
+output: objects: {
+	for i, ref in _cfg.$returns.outputs {
+		"\(ref.kind)/\(ref.name)": _fetched[i].$returns
+	}
+}

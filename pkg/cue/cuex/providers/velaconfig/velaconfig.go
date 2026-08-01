@@ -38,13 +38,13 @@ import (
 // DefaultNamespace is where Configs live unless one is named.
 const DefaultNamespace = "vela-system"
 
-// Reader reads a Config's properties.
+// Reader reads a Config.
 //
 // The interface lives here and the implementation does not, because reaching
 // pkg/config from this package closes a cycle - the same one the registry
 // provider hits. cmd/core/app/bootstrap.go registers the implementation.
 type Reader interface {
-	ReadConfig(ctx context.Context, namespace, name string) (map[string]interface{}, error)
+	ReadConfig(ctx context.Context, namespace, name string) (*ReadResult, error)
 }
 
 // ReadVars are the inputs to a Config read.
@@ -54,9 +54,32 @@ type ReadVars struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
-// ReadResult is the Config's properties.
+// TemplateRef names the ConfigTemplate a Config was rendered from. It is what
+// tells a consumer which contract the properties satisfy.
+type TemplateRef struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// ObjectRef identifies one object a Config's template produced.
+//
+// Deliberately a reference and not the object: a Config's outputs are routinely
+// Secrets, so returning their contents here would make every Config a way to
+// read credentials. A definition that wants the objects themselves fetches them
+// with kube.#Get, which keeps that decision visible in the definition and
+// subject to the controller's own RBAC.
+type ObjectRef struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Namespace  string `json:"namespace,omitempty"`
+}
+
+// ReadResult is what a Config yields when read.
 type ReadResult struct {
 	Properties map[string]interface{} `json:"properties"`
+	Template   TemplateRef            `json:"template"`
+	Outputs    []ObjectRef            `json:"outputs"`
 }
 
 // ReadParams is the params for a Config read.
@@ -85,12 +108,17 @@ func Read(ctx context.Context, params *ReadParams) (*ReadReturns, error) {
 	// Errors are returned rather than swallowed. A Config that is missing, or one
 	// marked sensitive, must fail the source loudly - resolving to an empty set
 	// of properties would be cached, and the emptiness would then look like data.
-	props, err := reader.ReadConfig(ctx, namespace, in.Name)
+	res, err := reader.ReadConfig(ctx, namespace, in.Name)
 	if err != nil {
 		return nil, fmt.Errorf("config %q in %q: %w", in.Name, namespace, err)
 	}
+	// A Config with no extra outputs must still present an empty list rather
+	// than null, so a template can range over it unconditionally.
+	if res.Outputs == nil {
+		res.Outputs = []ObjectRef{}
+	}
 
-	return &ReadReturns{Returns: ReadResult{Properties: props}}, nil
+	return &ReadReturns{Returns: *res}, nil
 }
 
 // ProviderName is the name a template references this provider by.

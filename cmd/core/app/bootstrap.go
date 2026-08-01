@@ -73,13 +73,50 @@ func (addonRegistryFileReader) ReadFile(ctx context.Context, registryName, path,
 	return reader.ReadFile(path)
 }
 
-// velaConfigReader reads a Config's properties through pkg/config, which also
-// refuses one marked sensitive - a guard worth inheriting rather than
-// reimplementing in the provider.
+// velaConfigReader reads a Config through pkg/config, which also refuses one
+// marked sensitive - a guard worth inheriting rather than reimplementing in the
+// provider.
 type velaConfigReader struct{}
 
-func (velaConfigReader) ReadConfig(ctx context.Context, namespace, name string) (map[string]interface{}, error) {
-	return config.NewConfigFactory(singleton.KubeClient.Get()).ReadConfig(ctx, namespace, name)
+func (velaConfigReader) ReadConfig(ctx context.Context, namespace, name string) (*cuexvelaconfig.ReadResult, error) {
+	factory := config.NewConfigFactory(singleton.KubeClient.Get())
+
+	// ReadConfig first, and deliberately: it is the call that returns
+	// ErrSensitiveConfig. GetConfig below merely blanks a sensitive Config's
+	// properties and secret data, so on its own it would let a sensitive
+	// Config's template and output references through.
+	props, err := factory.ReadConfig(ctx, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// The second read is for the template and the output references, which
+	// ReadConfig does not carry. withStatus is false - distribution status
+	// describes where a Config has been replicated to, which is an operational
+	// concern rather than data a workload should be shaping itself around.
+	cfg, err := factory.GetConfig(ctx, namespace, name, false)
+	if err != nil {
+		return nil, err
+	}
+
+	outputs := make([]cuexvelaconfig.ObjectRef, 0, len(cfg.ObjectReferences))
+	for _, ref := range cfg.ObjectReferences {
+		outputs = append(outputs, cuexvelaconfig.ObjectRef{
+			APIVersion: ref.APIVersion,
+			Kind:       ref.Kind,
+			Name:       ref.Name,
+			Namespace:  ref.Namespace,
+		})
+	}
+
+	return &cuexvelaconfig.ReadResult{
+		Properties: props,
+		Template: cuexvelaconfig.TemplateRef{
+			Name:      cfg.Template.Name,
+			Namespace: cfg.Template.Namespace,
+		},
+		Outputs: outputs,
+	}, nil
 }
 
 func bootstrapProviderRegistry() {
