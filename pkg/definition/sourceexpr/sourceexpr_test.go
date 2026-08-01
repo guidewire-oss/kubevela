@@ -1438,3 +1438,70 @@ func TestComplexTypes(t *testing.T) {
 		}
 	}
 }
+
+// An open map in a source's schema - labels: [string]: string - declares the map
+// but never a key. Two things follow, and neither was handled at first:
+//
+//   - the sentinel has no concrete field at any key, so typing reported
+//     "undefined field: team" for a read the schema plainly permits;
+//   - the key may be missing at render for exactly the reason a context label
+//     may, so it needs a default when it feeds a required parameter.
+func TestOpenMapInSourceSchema(t *testing.T) {
+	schemas := map[string]string{
+		"s": `{
+			labels: [string]: string
+			counts: [string]: int
+			meta:   {region: string}
+			name:   string
+		}`,
+	}
+
+	kind, err := TypeOf(`source.s.labels["team"]`, schemas)
+	if err != nil {
+		t.Fatalf("a key read out of an open map must type: %v", err)
+	}
+	if kind != cue.StringKind {
+		t.Fatalf("expected string, got %s", kind)
+	}
+
+	// The map's value type is what decides the kind, not the key.
+	if kind, err := TypeOf(`source.s.counts["shards"] * 2`, schemas); err != nil {
+		t.Errorf("an int-valued map should support arithmetic: %v", err)
+	} else if kind != cue.IntKind {
+		t.Errorf("expected int, got %s", kind)
+	}
+
+	// Possibly absent, so undefended without a fallback.
+	undefended, err := UndefendedReads(`$(source.s.labels["team"])`, schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(undefended) != 1 || undefended[0].String() != "source.s.labels.team" {
+		t.Fatalf("a key read out of an open map may be absent and must be reported; got %v", undefended)
+	}
+
+	// With a fallback it is defended, like any other possibly-absent read.
+	undefended, err = UndefendedReads(`$(*source.s.labels["team"] | "none")`, schemas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(undefended) != 0 {
+		t.Fatalf("a defaulted read must not be reported; got %v", undefended)
+	}
+
+	// A concrete field beside the pattern is not affected.
+	if undefended, err := UndefendedReads(`$(source.s.meta.region)`, schemas); err != nil || len(undefended) != 0 {
+		t.Errorf("a declared field must not be treated as possibly absent; got %v (%v)", undefended, err)
+	}
+
+	// And evaluation agrees with the typing.
+	value, err := Eval(`$(source.s.labels["team"])`, map[string]map[string]interface{}{
+		"s": {"labels": map[string]interface{}{"team": "payments"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("evaluating: %v", err)
+	}
+	if value != "payments" {
+		t.Fatalf("expected %q, got %#v", "payments", value)
+	}
+}

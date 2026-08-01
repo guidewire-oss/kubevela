@@ -18,6 +18,8 @@ package application
 
 import (
 	"context"
+
+	"cuelang.org/go/cue"
 	"encoding/json"
 	"fmt"
 
@@ -118,32 +120,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 		return pv
 	}
 
-	// schemasFor maps each binding name to its SourceDefinition's schema text,
-	// which is what sentinel typing needs. Bindings whose definition cannot be
-	// loaded are left out; an expression reading one is then reported by the
-	// evaluator as an unknown source rather than silently accepted.
-	schemasFor := func() map[string]string {
-		out := map[string]string{}
-		for name, sourceType := range sourceNameToType {
-			if sourceType == "" {
-				continue
-			}
-			sv, ok := schemaValidators[sourceType]
-			if !ok {
-				var err error
-				sv, err = h.loadSourceSchemaValidator(ctx, app.Namespace, sourceType)
-				if err != nil {
-					continue
-				}
-				schemaValidators[sourceType] = sv
-			}
-			if sv == nil || sv.schemaExpr == "" {
-				continue
-			}
-			out[name] = sv.schemaExpr
-		}
-		return out
-	}()
+	schemasFor := h.sourceSchemaTexts(ctx, app.Namespace, sourceNameToType, schemaValidators)
 
 	check := func(leaves []inputLeaf, param *cueStruct, targetDesc string, roots ...string) {
 		for _, lf := range leaves {
@@ -208,4 +185,54 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 		}
 	}
 	return errs
+}
+
+// hasSourceExpression reports whether a property value carries a $(...)
+// expression.
+func hasSourceExpression(raw string) bool {
+	parsed, err := sourceexpr.Parse(raw)
+	return err == nil && parsed.HasExpr()
+}
+
+// sourceSchemaTexts maps binding names to their SourceDefinition schema text,
+// which is what sentinel typing needs.
+func (h *ValidatingHandler) sourceSchemaTexts(ctx context.Context, appNamespace string,
+	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) map[string]string {
+	out := map[string]string{}
+	for name, sourceType := range sourceNameToType {
+		if sourceType == "" {
+			continue
+		}
+		sv, ok := schemaValidators[sourceType]
+		if !ok {
+			var err error
+			sv, err = h.loadSourceSchemaValidator(ctx, appNamespace, sourceType)
+			if err != nil {
+				continue
+			}
+			schemaValidators[sourceType] = sv
+		}
+		if sv == nil || sv.schemaExpr == "" {
+			continue
+		}
+		out[name] = sv.schemaExpr
+	}
+	return out
+}
+
+// expressionKind types a property value that carries expressions.
+func (h *ValidatingHandler) expressionKind(ctx context.Context, appNamespace, raw string,
+	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) (cue.Kind, error) {
+	return sourceexpr.ValueType(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators))
+}
+
+// undefendedExpressionReads returns the reads in a property value that could be
+// absent at render and carry no default.
+func (h *ValidatingHandler) undefendedExpressionReads(ctx context.Context, appNamespace, raw string,
+	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) []sourceexpr.Reference {
+	refs, err := sourceexpr.UndefendedReads(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators))
+	if err != nil {
+		return nil
+	}
+	return refs
 }

@@ -443,6 +443,25 @@ func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourc
 						refName, refPath, lf.path, sourceType)))
 			}
 		}
+	} else if raw, isString := lf.literal.(string); isString && hasSourceExpression(raw) {
+		// A source's own properties may be fed by an expression - that is how
+		// chaining is written without the directive. Typing it as the string it
+		// literally is would reject every non-string target.
+		k, terr := h.expressionKind(ctx, appNamespace, raw, sourceNameToType, schemaValidators)
+		if terr != nil {
+			errs = append(errs, field.Invalid(lf.fieldPath, raw, terr.Error()))
+			return errs
+		}
+		srcKind = k
+
+		// The same optional-feeds-required rule the directive follows.
+		if undefended := h.undefendedExpressionReads(ctx, appNamespace, raw, sourceNameToType, schemaValidators); len(undefended) > 0 {
+			if required, _ := param.requiredAt(lf.path); required {
+				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+					fmt.Sprintf("%s may be absent and feeds required parameter %q of SourceDefinition %q; supply a default with *%s | <fallback>",
+						undefended[0], lf.path, sourceType, undefended[0])))
+			}
+		}
 	} else {
 		srcKind = jsonKind(lf.literal)
 	}

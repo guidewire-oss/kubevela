@@ -62,7 +62,7 @@ func TypeOfIn(expr string, schemas map[string]string, ctxSchema ContextSchema, r
 	}
 
 	ctx := newContext()
-	sources, err := sentinelSources(ctx, schemas)
+	sources, err := sentinelSources(ctx, schemas, refs)
 	if err != nil {
 		return cue.BottomKind, err
 	}

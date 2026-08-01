@@ -96,14 +96,24 @@ func canBeAbsent(ref Reference, schemas map[string]cue.Value) (bool, error) {
 	return optionalPath(schema, ref.Path[1:])
 }
 
-// optionalPath reports whether any segment of a path is declared optional.
+// optionalPath reports whether any segment of a path may be absent at render.
 //
 // Any segment, not just the last: if `network?: {vpcId: string}` then
 // network.vpcId is absent whenever network is, however required vpcId looks
 // inside it.
+//
+// A key read out of an open map counts too. `labels: [string]: string` declares
+// the map, never a key, so `labels["team"]` may find nothing for exactly the same
+// reason `context.appLabels["team"]` may - and needs a default for the same
+// reason.
 func optionalPath(v cue.Value, path []string) (bool, error) {
 	cur := v
 	for _, segment := range path {
+		if pattern := cur.LookupPath(cue.MakePath(cue.AnyString)); pattern.Exists() {
+			if !cur.LookupPath(cue.MakePath(cue.Str(segment))).Exists() {
+				return true, nil
+			}
+		}
 		optional, next, found, err := fieldByName(cur, segment)
 		if err != nil {
 			return false, err

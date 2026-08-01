@@ -76,7 +76,7 @@ func buildScope(ctx *cue.Context, sources, contextValues map[string]interface{})
 //
 // See sentinelFor for why the schema itself cannot be used: CUE will not compute
 // on a non-concrete operand, so `region: string` leaves `region + "-x"` stuck.
-func sentinelSources(ctx *cue.Context, schemas map[string]string) (map[string]interface{}, error) {
+func sentinelSources(ctx *cue.Context, schemas map[string]string, refs []Reference) (map[string]interface{}, error) {
 	out := make(map[string]interface{}, len(schemas))
 	for name, schema := range schemas {
 		v := ctx.CompileString(schema)
@@ -89,7 +89,66 @@ func sentinelSources(ctx *cue.Context, schemas map[string]string) (map[string]in
 		}
 		out[name] = sentinel
 	}
+
+	// A schema may declare an open map - labels: [string]: string - which has no
+	// concrete field at any key, so a sentinel built from its fields alone leaves
+	// source.s.labels["team"] reporting an undefined field. The keys actually
+	// read are materialised individually, exactly as they are for context.
+	for _, ref := range refs {
+		if !ref.IsSource() || len(ref.Path) < 3 {
+			continue
+		}
+		schema, ok := schemas[ref.Path[0]]
+		if !ok {
+			continue
+		}
+		v := ctx.CompileString(schema)
+		if v.Err() != nil {
+			continue
+		}
+		materialiseOpenMapKey(v, out[ref.Path[0]], ref.Path[1:])
+	}
 	return out, nil
+}
+
+// materialiseOpenMapKey adds a sentinel for a key read out of an open map,
+// walking the schema and the sentinel in step.
+func materialiseOpenMapKey(schema cue.Value, sentinel interface{}, path []string) {
+	cur := schema
+	node, ok := sentinel.(map[string]interface{})
+	if !ok {
+		return
+	}
+	for i, seg := range path {
+		next := cur.LookupPath(cue.MakePath(cue.Str(seg)))
+		if !next.Exists() {
+			return
+		}
+		if i == len(path)-1 {
+			return
+		}
+		// The segment after this one is a key into next; if next is an open map
+		// it has no concrete field there, so supply one.
+		if pattern := next.LookupPath(cue.MakePath(cue.AnyString)); pattern.Exists() {
+			nested, _ := node[seg].(map[string]interface{})
+			if nested == nil {
+				nested = map[string]interface{}{}
+				node[seg] = nested
+			}
+			value, err := sentinelFor(pattern)
+			if err != nil {
+				return
+			}
+			nested[path[i+1]] = value
+			return
+		}
+		child, _ := node[seg].(map[string]interface{})
+		if child == nil {
+			return
+		}
+		node = child
+		cur = next
+	}
 }
 
 // sentinelFor renders one schema value as a concrete sentinel of the same kind.
