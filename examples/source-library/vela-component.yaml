@@ -1,0 +1,124 @@
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: vela-component
+  namespace: vela-system
+  annotations:
+    definition.oam.dev/description: "The status of one component of a KubeVela Application - health, message, details and its traits keyed by type. Status only; never its spec."
+    definition.oam.dev/cache-key-rules: "7fdfcad2"
+    definition.oam.dev/cache-key-rules-version: v1
+spec:
+  schematic:
+    cue:
+      template: |
+        import "vela/kube"
+
+        // Generated from the context this template reads - do not edit. Admission re-derives these and rejects a mismatch.
+        $internal: {
+        	key: "vela-component-\(context.namespace)"
+        	keyInputs: ["namespace"]
+        }
+
+        // The status of one component of a KubeVela Application.
+        //
+        // `vela-app` answers "is that application up"; this answers "is that *part* of
+        // it up, and why not". The distinction matters for anything that depends on a
+        // specific piece of a platform stack rather than the stack as a whole.
+        //
+        // Status only, for the same reason as vela-app: a component's spec is its
+        // author's intent, its status is observable state.
+        //
+        // Traits are keyed by type - `traits.scaler.healthy` reads far better than a
+        // positional index, and it survives a component gaining a trait. The one shape
+        // this cannot represent is a component carrying two traits of the same type;
+        // their statuses would unify and conflict. That is rare enough to be worth the
+        // readability, and it fails loudly rather than picking one.
+        schema: {
+        	name: string
+        	// Healthy includes the traits. workloadHealthy is the workload alone, which
+        	// is what distinguishes "the deployment is fine but its ingress is not".
+        	healthy:         bool
+        	workloadHealthy: bool
+        	message:         string
+        	details: [string]: string
+        	// Where the component actually landed - not the Application's namespace when
+        	// a topology policy has placed it elsewhere.
+        	cluster:   string
+        	namespace: string
+        	traits: [string]: {
+        		healthy: bool
+        		pending: bool
+        		message: string
+        		details: [string]: string
+        	}
+        }
+
+        storage: {
+        	// As vela-app: short, and never stale. Health that is quietly out of date is
+        	// worse than a render that fails.
+        	storageTTL:     "1m"
+        	onStaleFailure: "fail"
+        }
+
+        parameter: {
+        	// +usage=Name of the Application
+        	app: string
+        	// +usage=Name of the component within it
+        	component: string
+        	// +usage=Namespace the Application lives in. Defaults to the consumer's own.
+        	namespace?: string
+        }
+
+        _ns: [
+        	if parameter.namespace != _|_ {parameter.namespace},
+        	context.namespace,
+        ][0]
+
+        _app: kube.#Get & {
+        	$params: resource: {
+        		apiVersion: "core.oam.dev/v1beta1"
+        		kind:       "Application"
+        		metadata: {
+        			name:      parameter.app
+        			namespace: _ns
+        		}
+        	}
+        }
+
+        _services: *_app.$returns.status.services | []
+        _matches: [for s in _services if s.name == parameter.component {s}]
+
+        // Naming a component that is not there is a mistake in the consuming
+        // Application, not a state to observe - unlike vela-app's not-yet-reconciled
+        // case. Resolving to an empty status would cache and read as "unhealthy", which
+        // looks like an answer.
+        errs: [
+        	if len(_matches) == 0 {
+        		"application \(_ns)/\(parameter.app) reports no component \(parameter.component)"
+        	},
+        ]
+
+        _svc: [
+        	if len(_matches) > 0 {_matches[0]},
+        	{},
+        ][0]
+
+        output: {
+        	name:            parameter.component
+        	healthy:         *_svc.healthy | false
+        	workloadHealthy: *_svc.workloadHealthy | false
+        	message:         *_svc.message | ""
+        	details: *_svc.details | {}
+        	cluster:   *_svc.cluster | "local"
+        	namespace: *_svc.namespace | _ns
+        	traits: {
+        		for t in (*_svc.traits | []) {
+        			"\(t.type)": {
+        				healthy: t.healthy
+        				pending: *t.pending | false
+        				message: *t.message | ""
+        				details: *t.details | {}
+        			}
+        		}
+        	}
+        }
