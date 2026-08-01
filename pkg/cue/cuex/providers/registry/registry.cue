@@ -16,6 +16,8 @@ package registry
 		registry: string
 		// +usage=Path of the file within the registry, relative to the registry's own root path
 		path: string
+		// +usage=Branch, tag or commit to read at. Defaults to whatever the registry's URL pinned.
+		ref?: string
 	}
 
 	// +usage=The file's contents

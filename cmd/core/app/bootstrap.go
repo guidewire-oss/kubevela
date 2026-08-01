@@ -53,13 +53,18 @@ import (
 // repository credentials stay a platform concern.
 type addonRegistryFileReader struct{}
 
-func (addonRegistryFileReader) ReadFile(ctx context.Context, registryName, path string) (string, error) {
+func (addonRegistryFileReader) ReadFile(ctx context.Context, registryName, path, ref string) (string, error) {
 	store := addon.NewRegistryDataStore(singleton.KubeClient.Get())
 	reg, err := store.GetRegistry(ctx, registryName)
 	if err != nil {
 		return "", err
 	}
-	reader, err := reg.BuildReader()
+
+	var opts []addon.ReaderOption
+	if ref != "" {
+		opts = append(opts, addon.WithRef(ref))
+	}
+	reader, err := reg.BuildReader(opts...)
 	if err != nil {
 		return "", fmt.Errorf("registry cannot be read: %w", err)
 	}

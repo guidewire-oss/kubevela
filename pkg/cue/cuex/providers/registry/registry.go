@@ -46,7 +46,8 @@ import (
 // It also makes the provider testable without a cluster: a test registers its
 // own reader.
 type FileReader interface {
-	ReadFile(ctx context.Context, registryName, path string) (string, error)
+	// ReadFile reads one file. An empty ref means the registry's own default.
+	ReadFile(ctx context.Context, registryName, path, ref string) (string, error)
 }
 
 // ReadFileVars are the inputs to a registry file read.
@@ -56,6 +57,9 @@ type ReadFileVars struct {
 	// Path is the file's path within that registry, relative to the registry's
 	// own root - the same relative path `vela registry` reads addons from.
 	Path string `json:"path"`
+	// Ref reads at a specific branch, tag or commit. Empty means whatever the
+	// registry's own URL pinned, which is the platform's default.
+	Ref string `json:"ref,omitempty"`
 }
 
 // ReadFileResult is the file's contents.
@@ -92,9 +96,13 @@ func ReadFile(ctx context.Context, params *ReadFileParams) (*ReadFileReturns, er
 			"cmd/core/app/bootstrap.go should register one")
 	}
 
-	content, err := reader.ReadFile(ctx, in.Registry, in.Path)
+	content, err := reader.ReadFile(ctx, in.Registry, in.Path, in.Ref)
 	if err != nil {
-		return nil, fmt.Errorf("registry %q: reading %q: %w", in.Registry, in.Path, err)
+		at := ""
+		if in.Ref != "" {
+			at = fmt.Sprintf(" at %q", in.Ref)
+		}
+		return nil, fmt.Errorf("registry %q: reading %q%s: %w", in.Registry, in.Path, at, err)
 	}
 
 	return &ReadFileReturns{Returns: ReadFileResult{Content: content}}, nil

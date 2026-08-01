@@ -34,12 +34,19 @@ parameter: {
 	registry: string
 	// +usage=Path of the file within that registry
 	path: string
+	// +usage=Branch, tag or commit to read at. Defaults to whatever the registry pinned.
+	ref?: string
 }
 
 _file: registry.#ReadFile & {
 	$params: {
 		registry: parameter.registry
 		path:     parameter.path
+		// Omitted rather than sent empty, so the provider can tell "use the
+		// registry's default" from "read at the empty ref".
+		if parameter.ref != _|_ {
+			ref: parameter.ref
+		}
 	}
 }
 

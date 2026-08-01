@@ -1,18 +1,18 @@
 apiVersion: core.oam.dev/v1beta1
 kind: Application
-metadata:
-  name: git-demo
-  namespace: gitsrc
+metadata: {name: ref-demo, namespace: refsrc}
 spec:
   sources:
-    # .yaml -> parsed, so a field can be read out of it
-    - name: meta
+    # Same registry for all three - only the ref differs.
+    - name: dflt
       type: git-file
       properties: {registry: catalog, path: velaux/metadata.yaml}
-    # .md -> not a format we parse, so the bytes come back
-    - name: readme
+    - name: onMaster
       type: git-file
-      properties: {registry: catalog, path: velaux/readme.md}
+      properties: {registry: catalog, path: velaux/metadata.yaml, ref: master}
+    - name: onBranch
+      type: git-file
+      properties: {registry: catalog, path: velaux/metadata.yaml, ref: fix_clusters}
   components:
     - name: probe
       type: webservice
@@ -20,14 +20,9 @@ spec:
         image: nginx:1.25.0
         port: 80
         env:
-          # Reading a field out of the parsed document.
-          - name: ADDON_NAME
-            value: '$(source.meta.content.name & string)'
-          - name: ADDON_VERSION
-            value: '$(source.meta.content.version & string)'
-          # Combining a parsed field with a literal.
-          - name: LABEL
-            value: '$((source.meta.content.name & string) + "@" + (source.meta.content.version & string))'
-          # An unparsed file is just a string.
-          - name: README_IS_STRING
-            value: '$(source.readme.content & string)'
+          - name: DEFAULT_REF
+            value: '$(source.dflt.content.version & string)'
+          - name: MASTER
+            value: '$(source.onMaster.content.version & string)'
+          - name: BRANCH
+            value: '$(source.onBranch.content.version & string)'
