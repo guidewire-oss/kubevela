@@ -19,6 +19,7 @@ package sourceexpr
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
@@ -124,6 +125,7 @@ func sentinelSources(ctx *cue.Context, schemas map[string]string, refs []Referen
 			continue
 		}
 		materialiseOpenMapKey(v, out[ref.Path[0]], ref.Path[1:])
+		out[ref.Path[0]] = extendListsFor(v, out[ref.Path[0]], ref.Path[1:])
 	}
 	return out, nil
 }
@@ -134,23 +136,124 @@ func sentinelSources(ctx *cue.Context, schemas map[string]string, refs []Referen
 // Without it the scope has nothing at that path and the read reports an
 // undefined field. With it, `content.replicas & int` types as int - which is the
 // whole point of asking for the assertion.
+// It walks lists as well as structs. `opaque: [..._]` is an open element type,
+// so `opaque[0] & string` is exactly the case this exists for - and treating the
+// "0" as a struct key would replace the list with a map and turn a legal read
+// into an index-out-of-range the author cannot act on. extendListsFor has
+// already sized the list, so the index is there to be assigned into.
 func materialiseAsserted(sentinel interface{}, path []string, typeName string) {
-	node, ok := sentinel.(map[string]interface{})
-	if !ok || len(path) == 0 {
+	if len(path) == 0 {
 		return
 	}
-	for i, seg := range path {
-		if i == len(path)-1 {
-			node[seg] = sentinelForType(typeName)
+	cur := sentinel
+	for _, seg := range path[:len(path)-1] {
+		next, ok := childOf(cur, seg)
+		if ok {
+			cur = next
+			continue
+		}
+		// Nothing there yet, which only happens under a struct: make one.
+		node, isStruct := cur.(map[string]interface{})
+		if !isStruct {
 			return
 		}
-		nested, _ := node[seg].(map[string]interface{})
-		if nested == nil {
-			nested = map[string]interface{}{}
-			node[seg] = nested
-		}
-		node = nested
+		nested := map[string]interface{}{}
+		node[seg] = nested
+		cur = nested
 	}
+
+	last := path[len(path)-1]
+	switch node := cur.(type) {
+	case map[string]interface{}:
+		node[last] = sentinelForType(typeName)
+	case []interface{}:
+		if index, err := strconv.Atoi(last); err == nil && index >= 0 && index < len(node) {
+			node[index] = sentinelForType(typeName)
+		}
+	}
+}
+
+// childOf reads one path segment out of a sentinel, following a struct by key
+// and a list by index.
+func childOf(sentinel interface{}, segment string) (interface{}, bool) {
+	switch node := sentinel.(type) {
+	case map[string]interface{}:
+		child, ok := node[segment]
+		return child, ok
+	case []interface{}:
+		index, err := strconv.Atoi(segment)
+		if err != nil || index < 0 || index >= len(node) {
+			return nil, false
+		}
+		return node[index], true
+	}
+	return nil, false
+}
+
+// listElement returns the type a list's elements have, and whether the schema
+// declares one at all.
+//
+// `[...T]` puts T behind AnyIndex; `[A, B]` pins each position. The first
+// element stands for the list in the second case, which is enough to type an
+// indexed read and is what extendListsFor repeats when a read needs more.
+func listElement(v cue.Value) (cue.Value, bool) {
+	if pattern := v.LookupPath(cue.MakePath(cue.AnyIndex)); pattern.Exists() {
+		return pattern, true
+	}
+	if first := v.LookupPath(cue.MakePath(cue.Index(0))); first.Exists() {
+		return first, true
+	}
+	return cue.Value{}, false
+}
+
+// extendListsFor grows the sentinel so every index the path reads exists,
+// returning the value to store back into its parent.
+//
+// sentinelFor makes a one-element list, which covers `list[0]` and nothing
+// further. Without this, `list[3]` would fail admission with an index-out-of-
+// range against a sentinel the author never wrote - a validation artefact, not a
+// property of their expression.
+func extendListsFor(schema cue.Value, sentinel interface{}, path []string) interface{} {
+	if len(path) == 0 {
+		return sentinel
+	}
+	segment := path[0]
+
+	if schema.IncompleteKind() == cue.ListKind {
+		index, err := strconv.Atoi(segment)
+		if err != nil || index < 0 {
+			return sentinel
+		}
+		list, ok := sentinel.([]interface{})
+		if !ok {
+			return sentinel
+		}
+		elem, ok := listElement(schema)
+		if !ok {
+			return sentinel
+		}
+		for len(list) <= index {
+			value, err := sentinelFor(elem)
+			if err != nil {
+				return list
+			}
+			list = append(list, value)
+		}
+		list[index] = extendListsFor(elem, list[index], path[1:])
+		return list
+	}
+
+	node, ok := sentinel.(map[string]interface{})
+	if !ok {
+		return sentinel
+	}
+	next := schema.LookupPath(cue.MakePath(cue.Str(segment)))
+	child, held := node[segment]
+	if !next.Exists() || !held {
+		return sentinel
+	}
+	node[segment] = extendListsFor(next, child, path[1:])
+	return node
 }
 
 // sentinelForType is sentinelFor by name, for an asserted type. The choices
@@ -230,9 +333,23 @@ func sentinelFor(v cue.Value) (interface{}, error) {
 	case cue.BytesKind:
 		return []byte("x"), nil
 	case cue.ListKind:
-		// An empty list types as a list without committing to an element type,
-		// which is all that is needed while list indexing is rejected.
-		return []interface{}{}, nil
+		// One element, of the element type. The list itself still types as a list
+		// when substituted whole, and an indexed read now has something of the
+		// right kind to land on - which is what lets outputs[0].kind type as the
+		// schema's string rather than be refused.
+		//
+		// Longer reads extend this; see materialiseListIndex. A list whose element
+		// type is not declared stays empty, and an index into it types as unknown,
+		// which kindsCompatible already treats as "do not block".
+		elem, ok := listElement(v)
+		if !ok {
+			return []interface{}{}, nil
+		}
+		sentinel, err := sentinelFor(elem)
+		if err != nil {
+			return nil, err
+		}
+		return []interface{}{sentinel}, nil
 	case cue.TopKind:
 		// `_` - a deliberately open field. There is nothing to represent, and
 		// nothing downstream will use this: TypeOf bails before evaluating when a

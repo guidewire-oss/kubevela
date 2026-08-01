@@ -18,6 +18,7 @@ package sourceexpr
 
 import (
 	"fmt"
+	"strconv"
 
 	"cuelang.org/go/cue"
 )
@@ -119,6 +120,24 @@ func optionalPath(v cue.Value, path []string) (bool, error) {
 			// admission. That is the trade a source makes by declaring `_`.
 			return false, nil
 		}
+		if cur.IncompleteKind() == cue.ListKind {
+			// A list index. `outputs: [...{kind: string}]` declares what an element
+			// is and says nothing about how many there are, so whether this index
+			// exists is not knowable at admission - the same position as a key read
+			// out of an open map, and it earns a default for the same reason.
+			//
+			// A schema that *does* pin the position - `[string, ...]` - answers the
+			// question, and such a read needs no default.
+			index, err := strconv.Atoi(segment)
+			if err != nil {
+				return false, nil
+			}
+			if pinned := cur.LookupPath(cue.MakePath(cue.Index(index))); pinned.Exists() {
+				cur = pinned
+				continue
+			}
+			return true, nil
+		}
 		if pattern := cur.LookupPath(cue.MakePath(cue.AnyString)); pattern.Exists() {
 			if !cur.LookupPath(cue.MakePath(cue.Str(segment))).Exists() {
 				return true, nil
@@ -180,6 +199,17 @@ func PathIsOpen(ref Reference, schemas map[string]string) bool {
 			// Already inside an open region; everything below it is open too.
 			return true
 		}
+		if cur.IncompleteKind() == cue.ListKind {
+			// An index descends to the element type, which is where the question
+			// of openness is actually answered: `[..._]` is open at every index,
+			// `[...{kind: string}]` is not.
+			elem, ok := listElementFor(cur, segment)
+			if !ok {
+				return false
+			}
+			cur = elem
+			continue
+		}
 		_, next, found, err := fieldByName(cur, segment)
 		if err != nil || !found {
 			return false
@@ -187,4 +217,17 @@ func PathIsOpen(ref Reference, schemas map[string]string) bool {
 		cur = next
 	}
 	return cur.IncompleteKind() == cue.TopKind
+}
+
+// listElementFor resolves one index segment against a list schema, preferring a
+// position the schema pins over the general element type.
+func listElementFor(list cue.Value, segment string) (cue.Value, bool) {
+	index, err := strconv.Atoi(segment)
+	if err != nil {
+		return cue.Value{}, false
+	}
+	if pinned := list.LookupPath(cue.MakePath(cue.Index(index))); pinned.Exists() {
+		return pinned, true
+	}
+	return listElement(list)
 }

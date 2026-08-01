@@ -161,7 +161,10 @@ func TestReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"source.my-source.region", "source.other.name"}
+	// A hyphenated binding renders in bracket form, because the errors that
+	// quote a reference tell the author what to write instead - and
+	// `source.my-source.region` is subtraction, not the path they meant.
+	want := []string{"source.other.name", `source["my-source"].region`}
 	if len(refs) != len(want) {
 		t.Fatalf("expected %v, got %v", want, refs)
 	}
@@ -1685,5 +1688,206 @@ func TestOpenFieldNeedsNoDefault(t *testing.T) {
 	// And a required declared field still needs none.
 	if undefended, err := UndefendedReads(`$(source.typed.name)`, schemas); err != nil || len(undefended) != 0 {
 		t.Errorf("a required field must need no default; got %v (%v)", undefended, err)
+	}
+}
+
+// A constant integer index into a list is typeable for the same reason a field
+// is: the schema pins the element type. What it does not pin is the length,
+// which is why an indexed read is treated as possibly-absent below.
+func TestListIndex(t *testing.T) {
+	schemas := map[string]string{
+		"cfg": `{
+			outputs: [...{apiVersion: string, kind: string, name: string, namespace?: string}]
+			ports:   [...int]
+			pinned:  [string, ...string]
+			opaque:  [..._]
+			bare:    []
+		}`,
+	}
+
+	t.Run("grammar", func(t *testing.T) {
+		accept := []string{
+			`source.cfg.outputs[0].kind`,
+			`source.cfg.ports[2] + 1`,
+			`source.cfg.outputs[0].kind + "/" + source.cfg.outputs[0].name`,
+		}
+		for _, expr := range accept {
+			if err := Validate(expr); err != nil {
+				t.Errorf("expected %q to be accepted, got: %v", expr, err)
+			}
+		}
+
+		// A computed index is still refused: unlike a constant, its result
+		// depends on data that does not exist at admission.
+		reject := []string{
+			`source.cfg.ports[source.cfg.ports[0]]`,
+			`source.cfg.ports[0:2]`,
+		}
+		for _, expr := range reject {
+			if err := Validate(expr); err == nil {
+				t.Errorf("expected %q to be rejected", expr)
+			}
+		}
+	})
+
+	t.Run("types come from the element type", func(t *testing.T) {
+		for expr, want := range map[string]cue.Kind{
+			`source.cfg.outputs[0].kind`:                   cue.StringKind,
+			`source.cfg.outputs[0].kind + "/x"`:            cue.StringKind,
+			`source.cfg.ports[0]`:                          cue.IntKind,
+			`source.cfg.ports[0] + 1`:                      cue.IntKind,
+			`source.cfg.pinned[0]`:                         cue.StringKind,
+			`"\(source.cfg.outputs[0].kind)"`:              cue.StringKind,
+			`*source.cfg.outputs[0].namespace | "default"`: cue.StringKind,
+		} {
+			got, err := TypeOf(expr, schemas)
+			if err != nil {
+				t.Errorf("%s: %v", expr, err)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s: expected %v, got %v", expr, want, got)
+			}
+		}
+	})
+
+	// The type check has to be a real check, not just a permissive pass.
+	t.Run("the element type is enforced", func(t *testing.T) {
+		if got, err := TypeOf(`source.cfg.ports[0]`, schemas); err != nil || got != cue.IntKind {
+			t.Fatalf("precondition: ports[0] should be int, got %v (%v)", got, err)
+		}
+		if _, err := TypeOf(`source.cfg.outputs[0].nope`, schemas); err == nil {
+			t.Error("a field absent from the element type must be rejected")
+		}
+		if _, err := TypeOf(`source.cfg.ports[0] + "x"`, schemas); err == nil {
+			t.Error("adding a string to an int element must be rejected")
+		}
+	})
+
+	// An index beyond the sentinel's length is a valid expression; failing it
+	// would be an artefact of how validation is built rather than a property of
+	// what the author wrote.
+	t.Run("a high index still types", func(t *testing.T) {
+		got, err := TypeOf(`source.cfg.outputs[7].kind`, schemas)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != cue.StringKind {
+			t.Fatalf("expected string, got %v", got)
+		}
+	})
+
+	// A list whose element type is `_` is open, so the author has to say what
+	// they are reading - the same rule as any other open field.
+	t.Run("an open element type demands an assertion", func(t *testing.T) {
+		if _, err := TypeOf(`source.cfg.opaque[0]`, schemas); err == nil {
+			t.Error("a read into [..._] should demand a type assertion")
+		}
+		got, err := TypeOf(`source.cfg.opaque[0] & string`, schemas)
+		if err != nil {
+			t.Fatalf("asserted read: %v", err)
+		}
+		if got != cue.StringKind {
+			t.Fatalf("expected string, got %v", got)
+		}
+	})
+
+	t.Run("references carry the index", func(t *testing.T) {
+		refs, err := References(`source.cfg.outputs[0].kind`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(refs) != 1 || refs[0].String() != "source.cfg.outputs[0].kind" {
+			t.Fatalf("got %v", refs)
+		}
+	})
+
+	// The point of the optionality rule: the schema says what an element is, not
+	// how many there are, so an index can find nothing at render.
+	t.Run("an index needs a default", func(t *testing.T) {
+		undefended, err := UndefendedReads(`$(source.cfg.outputs[0].kind)`, schemas)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(undefended) != 1 || undefended[0].String() != "source.cfg.outputs[0].kind" {
+			t.Fatalf("an indexed read should be undefended, got %v", undefended)
+		}
+
+		// With a default it is defended.
+		undefended, err = UndefendedReads(`$(*source.cfg.outputs[0].kind | "none")`, schemas)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(undefended) != 0 {
+			t.Fatalf("a defaulted read needs nothing, got %v", undefended)
+		}
+
+		// A schema that pins the position answers the question, so no default is
+		// demanded for it - while an index past the pinned prefix still is.
+		undefended, err = UndefendedReads(`$(source.cfg.pinned[0])`, schemas)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(undefended) != 0 {
+			t.Fatalf("a pinned position needs no default, got %v", undefended)
+		}
+		undefended, err = UndefendedReads(`$(source.cfg.pinned[4])`, schemas)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(undefended) != 1 {
+			t.Fatalf("an index past the pinned prefix should need a default, got %v", undefended)
+		}
+	})
+}
+
+// Whatever TypeOf promises for an indexed read, Eval has to deliver - otherwise
+// the admission check is theatre.
+func TestListIndexTypeOfAgreesWithEval(t *testing.T) {
+	schemas := map[string]string{
+		"cfg": `{
+			outputs: [...{kind: string, name: string}]
+			ports:   [...int]
+		}`,
+	}
+	resolved := map[string]map[string]interface{}{
+		"cfg": {
+			"outputs": []interface{}{
+				map[string]interface{}{"kind": "ConfigMap", "name": "settings"},
+				map[string]interface{}{"kind": "Secret", "name": "creds"},
+			},
+			"ports": []interface{}{8080, 9090},
+		},
+	}
+
+	cases := []struct {
+		expr string
+		want interface{}
+		kind cue.Kind
+	}{
+		{`source.cfg.outputs[0].kind`, "ConfigMap", cue.StringKind},
+		{`source.cfg.outputs[1].name`, "creds", cue.StringKind},
+		{`source.cfg.outputs[0].kind + "/" + source.cfg.outputs[0].name`, "ConfigMap/settings", cue.StringKind},
+		{`source.cfg.ports[0]`, int64(8080), cue.IntKind},
+		{`source.cfg.ports[1] + 1`, int64(9091), cue.IntKind},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.expr, func(t *testing.T) {
+			kind, err := TypeOf(tc.expr, schemas)
+			if err != nil {
+				t.Fatalf("TypeOf: %v", err)
+			}
+			if kind != tc.kind {
+				t.Fatalf("TypeOf said %v, expected %v", kind, tc.kind)
+			}
+			got, err := Eval("$("+tc.expr+")", resolved, nil)
+			if err != nil {
+				t.Fatalf("Eval: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected %#v (%T), got %#v (%T)", tc.want, tc.want, got, got)
+			}
+		})
 	}
 }

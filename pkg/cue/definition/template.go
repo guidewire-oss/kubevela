@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -845,6 +846,17 @@ func evaluateFromSourceSelector(selector interface{}, resolver *sourceResolver) 
 func lookupMapPath(data map[string]interface{}, path string) (interface{}, bool) {
 	cur := interface{}(data)
 	for _, p := range strings.Split(path, ".") {
+		// A segment is an index when what it is being applied to is a list. The
+		// reference carries indices as decimal text, and only the value decides
+		// how to read them - the same rule the schema walk uses.
+		if list, ok := cur.([]interface{}); ok {
+			index, err := strconv.Atoi(p)
+			if err != nil || index < 0 || index >= len(list) {
+				return nil, false
+			}
+			cur = list[index]
+			continue
+		}
 		m, ok := cur.(map[string]interface{})
 		if !ok {
 			return nil, false

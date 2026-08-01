@@ -19,6 +19,7 @@ package sourceexpr
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"slices"
@@ -99,11 +100,18 @@ func ValidateRoots(expr string, allowed ...string) error {
 			// source["my-source"].region - so it has to be allowed. Its result
 			// type follows from the schema exactly as a selector's does.
 			//
-			// A numeric or computed index does not: the element type of a list is
-			// not pinned by the sentinel, so typing it would be a guess.
-			if lit, ok := t.Index.(*ast.BasicLit); !ok || lit.Kind != token.STRING {
-				bad = fmt.Errorf("only a constant string index is supported in a property expression, " +
-					"e.g. source[\"my-source\"].field")
+			// A constant integer index into a list is sound for the same reason:
+			// `outputs: [...{kind: string}]` pins the element type, so
+			// outputs[0].kind types exactly as a field does. What the schema does
+			// *not* pin is the list's length, so an indexed read is treated as
+			// possibly-absent - see optionalPath - and needs a default when it
+			// feeds a required parameter, exactly as context.appLabels["x"] does.
+			//
+			// A computed index is still refused: its result would depend on data
+			// that does not exist when the Application is admitted.
+			if lit, ok := t.Index.(*ast.BasicLit); !ok || (lit.Kind != token.STRING && lit.Kind != token.INT) {
+				bad = fmt.Errorf("only a constant string or integer index is supported in a property " +
+					"expression, e.g. source[\"my-source\"].field or source.s.list[0]")
 			}
 		case *ast.SliceExpr:
 			bad = fmt.Errorf("slicing is not supported in a property expression")
@@ -213,8 +221,58 @@ type Reference struct {
 func (r Reference) IsSource() bool { return r.Root == SourceIdent }
 
 // String renders a reference the way an error message names it.
+//
+// Segments are rendered so the result is a valid expression, because the errors
+// that use it tell the author what to write instead - "supply a default with
+// *<ref> | <fallback>". A path joined with dots would suggest
+// `source.cfg.outputs.0.name`, which does not parse, and the author would be
+// left correcting the suggestion before they could take it.
 func (r Reference) String() string {
-	return fmt.Sprintf("%s.%s", r.Root, strings.Join(r.Path, "."))
+	var b strings.Builder
+	b.WriteString(r.Root)
+	for _, segment := range r.Path {
+		switch {
+		case isIndexSegment(segment):
+			fmt.Fprintf(&b, "[%s]", segment)
+		case isCUEIdent(segment):
+			b.WriteString("." + segment)
+		default:
+			// A hyphenated source name or a label key with a dot in it. Bracket
+			// syntax is the only form that reads these at all.
+			fmt.Fprintf(&b, "[%q]", segment)
+		}
+	}
+	return b.String()
+}
+
+// isIndexSegment reports a segment that came from a list index. selectorPath
+// records those as decimal text, and nothing else in a path is all digits: a
+// struct field cannot start with one.
+func isIndexSegment(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isCUEIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_', r == '$':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // References returns every source path the expression reads.
@@ -311,14 +369,29 @@ func selectorPath(head ast.Expr) (string, []string, bool) {
 				return false
 			}
 			lit, ok := t.Index.(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
+			if !ok {
 				return false
 			}
-			s, err := literal.Unquote(lit.Value)
-			if err != nil {
+			switch lit.Kind {
+			case token.STRING:
+				s, err := literal.Unquote(lit.Value)
+				if err != nil {
+					return false
+				}
+				parts = append(parts, s)
+			case token.INT:
+				// The index joins the path as its decimal text. That reads as
+				// ambiguous with a map key of the same name, and is not: whether a
+				// segment is an index or a field is decided by what the schema
+				// holds at that point, and a CUE value cannot be both a list and a
+				// struct. Every walker below asks the schema rather than the string.
+				if _, err := strconv.Atoi(lit.Value); err != nil {
+					return false
+				}
+				parts = append(parts, lit.Value)
+			default:
 				return false
 			}
-			parts = append(parts, s)
 			return true
 		}
 		return false
