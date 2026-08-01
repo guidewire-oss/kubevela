@@ -298,6 +298,43 @@ lands.
 reachable if ever wanted. Deliberately not built - it is the same
 cross-namespace read the parameter was dropped to prevent.
 
+### 6c. `vela-app` and `vela-component` — observing another Application  ✅ DONE
+
+One Application observing another - "is the platform's ingress stack up before I
+render against it" - without knowing that an Application is a CRD or which status
+fields mean what. Both are one `kube.#Get` and no Go.
+
+**Status only, never spec.** A spec is its author's intent and can carry
+properties they never meant to publish; status is observable state the controller
+already writes. That keeps these a health signal rather than a way to read
+someone else's configuration - the same line that kept output values out of
+`vela-config`.
+
+Not redundant with each other: `vela-app.healthy` is the whole application,
+usually the question being asked; `vela-component` answers "is that *part* of it
+up, and why not". Demonstrated with one component broken - app reads
+`healthy=false` while the untouched component still reads `healthy=true`, and
+`workloadHealthy` separates a failing workload from a failing trait.
+
+Traits keyed by type (`traits.scaler.healthy`). The shape this cannot represent
+is a component with two traits of the same type - their statuses unify and
+conflict. Rare enough to be worth the readability, and it fails loudly.
+
+**The one place in the library that is not `use-stale`.** `storageTTL: 1m`,
+`onStaleFailure: fail`. Status is where a cached answer is actively misleading: a
+consumer gating on `healthy` needs to know it is unhealthy *now*, and stale
+health is worse than a failed render because it is silently wrong.
+
+Not-yet-reconciled reports `phase: unknown`, `healthy: false` rather than
+erroring - a consumer waiting for an app to come up has to see it not up. A
+component that does not exist *does* error, since that is a mistake in the
+consuming Application rather than a state to observe.
+
+Rough edge, pre-existing and not from these: a `kube.#Get` on a missing object
+surfaces the real cause (`applications.core.oam.dev "x" not found`) followed by a
+dump of the whole CUE value. That is CueX's generic provider-error formatting in
+`kubevela/pkg`, so it hits `configmap` equally. Worth an upstream tidy.
+
 ### 7. List indices in property expressions  ✅ DONE
 
 Found by building §6: `source.cfg.outputs[0].kind` was refused, and the recorded
@@ -349,7 +386,8 @@ default.
 
 ### 9. Candidates not built
 
-- **`terraform-output`** — the strongest remaining one. Cloud resources are why
+- **`terraform-output`** — dropped for now, not wanted. Recorded because the
+  analysis stands if it comes back. Cloud resources are why
   terraform-controller exists, and an Application has no typed way to ask "is my
   RDS ready, and which Secret holds its connection details". A `Configuration`
   carries `spec.writeConnectionSecretToRef` (a reference - wire it with
