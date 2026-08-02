@@ -363,6 +363,46 @@ surfaces the real cause (`applications.core.oam.dev "x" not found`) followed by 
 dump of the whole CUE value. That is CueX's generic provider-error formatting in
 `kubevela/pkg`, so it hits `configmap` equally. Worth an upstream tidy.
 
+### 6d. `vela-addon` — installed, and where its Application is  ✅ DONE
+
+An addon *is* a construct for building an Application, so `vela-app` and
+`vela-component` already answer everything about one. This source stops at the
+handover instead of restating any of it: `installed`, `running`, and the `app`
+and `namespace` of the Application the addon built.
+
+```yaml
+- name: flux
+  type: vela-addon
+  properties: {name: fluxcd}
+- name: fluxApp
+  type: vela-app
+  properties:
+    name:      '$(source.flux.app)'
+    namespace: '$(source.flux.namespace)'
+```
+
+`namespace` is load-bearing, not decoration: addon Applications live in
+`vela-system` while `vela-app` defaults its namespace to the *consuming*
+Application's own, so a chain passing only `app` would look right and read the
+wrong namespace.
+
+**Missing resolves to `installed: false` rather than erroring** - the opposite
+call to `vela-component`. "Not installed" is a legitimate state to observe;
+a misnamed component is a mistake in the consuming Application. Acting on the
+bool needs no conditionals in the expression (there are none): it feeds a
+definition whose own template branches on it. That is also the answer to why a
+capability check is not inert - inert as a *branch target*, not as an input to
+something that branches.
+
+Implemented as `kube.#List` on Applications labelled `addons.oam.dev/name`, so
+no Go. Key is context-free (`vela-addon`) - addons are cluster-scoped, so
+consumers share one entry per addon name.
+
+Deliberately excluded: the addon's **parameters** (the args it was enabled with -
+same class as Config `properties`, and unlike Config there is no `sensitive` flag
+anywhere to inherit) and a **list-all-addons** variant (a different question, and
+a bare list of names is awkward to consume without conditionals).
+
 ### 7. List indices in property expressions  ✅ DONE
 
 Found by building §6: `source.cfg.outputs[0].kind` was refused, and the recorded
