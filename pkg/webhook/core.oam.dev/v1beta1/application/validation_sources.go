@@ -25,24 +25,27 @@ import (
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/sourcedefinition"
 )
 
-type fromSourceReference struct {
-	SourceName       string
-	Path             string
-	FieldPath        *field.Path
-	FromSourceObject bool
-	SourceIndex      int
-	// Surface is where the directive was found: a component, a trait, a policy,
-	// a workflow step, or another source's properties (chaining).
+type sourceReference struct {
+	SourceName  string
+	Path        string
+	FieldPath   *field.Path
+	SourceIndex int
+	// OpaquePath marks a path the schema validator cannot follow by dotted
+	// lookup - one carrying a list index, or a key that itself contains a dot.
+	OpaquePath bool
+	// Surface is where the read was found: a component, a trait, a policy, a
+	// workflow step, or another source's properties (chaining).
 	Surface string
 }
 
 // withSurface stamps the surface onto each collected reference.
-func withSurface(refs []fromSourceReference, surface string) []fromSourceReference {
+func withSurface(refs []sourceReference, surface string) []sourceReference {
 	for i := range refs {
 		refs[i].Surface = surface
 	}
@@ -57,7 +60,7 @@ type sourceSchemaValidator struct {
 	schemaExpr string
 }
 
-// ValidateSources validates source bindings and fromSource references.
+// ValidateSources validates source bindings and the source reads expressions make.
 func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Application) field.ErrorList {
 	var errs field.ErrorList
 
@@ -81,69 +84,72 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 		sourceNameToType[src.Name] = src.Type
 	}
 
-	var refs []fromSourceReference
+	var refs []sourceReference
 	for i, comp := range app.Spec.Components {
-		compRefs, refErrs := collectFromRawExtension(comp.Properties, field.NewPath("spec", "components").Index(i).Child("properties"), -1)
+		compRefs, refErrs := collectSourceRefs(comp.Properties, field.NewPath("spec", "components").Index(i).Child("properties"), -1)
 		errs = append(errs, refErrs...)
 		refs = append(refs, withSurface(compRefs, veladefinition.SurfaceComponent)...)
 		for j, tr := range comp.Traits {
-			trRefs, trErrs := collectFromRawExtension(tr.Properties, field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties"), -1)
+			trRefs, trErrs := collectSourceRefs(tr.Properties, field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties"), -1)
 			errs = append(errs, trErrs...)
 			refs = append(refs, withSurface(trRefs, veladefinition.SurfaceTrait)...)
 		}
 	}
 	for i, policy := range app.Spec.Policies {
-		policyRefs, policyErrs := collectFromRawExtension(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), -1)
+		policyRefs, policyErrs := collectSourceRefs(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), -1)
 		errs = append(errs, policyErrs...)
 		refs = append(refs, withSurface(policyRefs, veladefinition.SurfacePolicy)...)
 	}
 	if app.Spec.Workflow != nil {
 		for i, step := range app.Spec.Workflow.Steps {
-			stepRefs, stepErrs := collectFromRawExtension(step.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("properties"), -1)
+			stepRefs, stepErrs := collectSourceRefs(step.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("properties"), -1)
 			errs = append(errs, stepErrs...)
 			refs = append(refs, withSurface(stepRefs, veladefinition.SurfaceWorkflowStep)...)
 			for j, sub := range step.SubSteps {
-				subRefs, subErrs := collectFromRawExtension(sub.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("subSteps").Index(j).Child("properties"), -1)
+				subRefs, subErrs := collectSourceRefs(sub.Properties, field.NewPath("spec", "workflow", "steps").Index(i).Child("subSteps").Index(j).Child("properties"), -1)
 				errs = append(errs, subErrs...)
 				refs = append(refs, withSurface(subRefs, veladefinition.SurfaceWorkflowStep)...)
 			}
 		}
 	}
 	for i, src := range app.Spec.Sources {
-		srcRefs, srcErrs := collectFromRawExtension(src.Properties, field.NewPath("spec", "sources").Index(i).Child("properties"), i)
+		srcRefs, srcErrs := collectSourceRefs(src.Properties, field.NewPath("spec", "sources").Index(i).Child("properties"), i)
 		errs = append(errs, srcErrs...)
 		refs = append(refs, withSurface(srcRefs, veladefinition.SurfaceSource)...)
 	}
 
 	schemaValidators := map[string]*sourceSchemaValidator{}
 	consumableFromCache := map[string][]string{}
+	// Field paths this pass has already faulted. The type pass below reaches the
+	// same properties by a different route and would otherwise restate an
+	// undeclared source or an unknown schema path in its own words.
+	reported := map[string]bool{}
+	fault := func(ref sourceReference, value interface{}, msg string) {
+		errs = append(errs, field.Invalid(ref.FieldPath, value, msg))
+		reported[ref.FieldPath.String()] = true
+	}
 	for _, ref := range refs {
 		sourceType, ok := sourceNameToType[ref.SourceName]
 		if !ok {
-			errs = append(errs, field.Invalid(ref.FieldPath, ref.SourceName, "source is not declared in spec.sources"))
+			fault(ref, ref.SourceName, "source is not declared in spec.sources")
 			continue
 		}
 		if ref.SourceIndex >= 0 {
 			depIdx, exists := sourceNameToIndex[ref.SourceName]
 			if !exists {
-				errs = append(errs, field.Invalid(ref.FieldPath, ref.SourceName, "source is not declared in spec.sources"))
+				fault(ref, ref.SourceName, "source is not declared in spec.sources")
 				continue
 			}
 			if depIdx >= ref.SourceIndex {
-				errs = append(errs, field.Invalid(ref.FieldPath, ref.SourceName,
-					fmt.Sprintf("source at index %d can only depend on prior sources, but %q is at index %d", ref.SourceIndex, ref.SourceName, depIdx)))
+				fault(ref, ref.SourceName,
+					fmt.Sprintf("source at index %d can only depend on prior sources, but %q is at index %d", ref.SourceIndex, ref.SourceName, depIdx))
 				continue
 			}
 		}
-		// fromSource is only substituted during component and trait rendering.
-		// Elsewhere the consumer would receive the literal {"fromSource": ...}
-		// map, so reject it rather than admitting a directive that silently
-		// never resolves.
-		if !veladefinition.SurfaceResolvesFromSource(ref.Surface) {
-			errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
-				veladefinition.UnsupportedSurfaceMessage(ref.Surface)))
-			continue
-		}
+		// No surface check here: validateExpressions above already restricts
+		// which roots each surface offers, and reading `source` where it cannot
+		// resolve is exactly what that refuses. Checking it again produced two
+		// errors for one mistake.
 		if sourceType == "" {
 			continue
 		}
@@ -174,16 +180,16 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 		if validator == nil {
 			continue
 		}
-		if !validator.HasPath(ref.Path) {
-			errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
-				fmt.Sprintf("path %q is not declared in schema of SourceDefinition %q", ref.Path, sourceType)))
+		if !ref.OpaquePath && !validator.HasPath(ref.Path) {
+			fault(ref, ref.Path,
+				fmt.Sprintf("path %q is not declared in schema of SourceDefinition %q", ref.Path, sourceType))
 			continue
 		}
 		// The "optional source field consumed without a default" check is
 		// target-aware (KEP: a default is required only when the optional field
 		// feeds a REQUIRED target parameter). It is enforced in the target-aware
 		// passes below (validateSourceInputs for source-property targets,
-		// validateFromSourceTargetTypes for component/trait targets), which know
+		// validateExpressionTargetTypes for component/trait targets), which know
 		// the target parameter's optional/required marker.
 	}
 
@@ -191,106 +197,17 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 	// SourceDefinition's parameter: block (unknown fields + type compatibility).
 	errs = append(errs, h.validateSourceInputs(ctx, app, sourceNameToType, schemaValidators)...)
 
-	// Target contract: each fromSource output field's type must be compatible
-	// with the consuming component/trait parameter it is substituted into.
-	errs = append(errs, h.validateFromSourceTargetTypes(ctx, app, sourceNameToType, schemaValidators)...)
+	// Target contract: each expression's result type must be compatible with the
+	// consuming component/trait parameter it is substituted into.
+	errs = append(errs, h.validateExpressionTargetTypes(ctx, app, sourceNameToType, schemaValidators, reported)...)
 
-	// The same contract for expressions, which reach the target the same way.
-	errs = append(errs, h.validateExpressionTargetTypes(ctx, app, sourceNameToType, schemaValidators)...)
-
-	return errs
-}
-
-// validateFromSourceTargetTypes type-checks each fromSource reference in
-// component and trait properties against the target parameter it feeds: the
-// source's schema output field kind must be compatible with the component/trait
-// parameter field kind at the same property path. Purely static (CUE AST); no
-// rendering. Best-effort per target: if the target parameter type cannot be
-// determined, the check is skipped for that target (fail open).
-func (h *ValidatingHandler) validateFromSourceTargetTypes(ctx context.Context, app *v1beta1.Application, sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) field.ErrorList {
-	var errs field.ErrorList
-	targetParams := map[string]*cueStruct{} // key: "component/<type>" or "trait/<type>"
-
-	load := func(kind, defType string) *cueStruct {
-		key := kind + "/" + defType
-		if pv, ok := targetParams[key]; ok {
-			return pv
-		}
-		pv, _ := h.loadTargetParameter(ctx, app.Namespace, kind, defType)
-		targetParams[key] = pv
-		return pv
-	}
-
-	check := func(leaves []inputLeaf, param *cueStruct, targetDesc string) {
-		if param == nil {
-			return
-		}
-		for _, lf := range leaves {
-			if lf.fromSrc == nil || lf.path == "" {
-				continue
-			}
-			dstKind, declared := param.kindAt(lf.path)
-			if !declared {
-				continue // consuming template may accept it via open struct; don't over-report
-			}
-			refName, refPath, _, err := parseFromSourceSelector(lf.fromSrc)
-			if err != nil {
-				continue
-			}
-			refType, ok := sourceNameToType[refName]
-			if !ok || refType == "" {
-				continue
-			}
-			sv := schemaValidators[refType]
-			if sv == nil {
-				var loadErr error
-				sv, loadErr = h.loadSourceSchemaValidator(ctx, app.Namespace, refType)
-				if loadErr != nil || sv == nil {
-					continue
-				}
-				schemaValidators[refType] = sv
-			}
-			srcKind, ok := sv.KindAt(refPath)
-			if !ok {
-				continue
-			}
-			if !kindsCompatible(srcKind, dstKind) {
-				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
-					fmt.Sprintf("type mismatch: fromSource %q.%s is %s but %s expects %s",
-						refName, refPath, kindName(srcKind), targetDesc, kindName(dstKind))))
-			}
-			// KEP: a default is required only when an optional source field
-			// feeds a required target parameter.
-			if !selectorHasDefault(lf.fromSrc) && sv.IsOptionalPath(refPath) {
-				if required, _ := param.requiredAt(lf.path); required {
-					errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
-						fmt.Sprintf("optional source field %q.%s feeds required %s; a default must be supplied via the fromSource map form",
-							refName, refPath, targetDesc)))
-				}
-			}
-		}
-	}
-
-	for i, comp := range app.Spec.Components {
-		if comp.Properties != nil && len(comp.Properties.Raw) > 0 {
-			base := field.NewPath("spec", "components").Index(i).Child("properties")
-			check(flattenLeafPaths(comp.Properties.Raw, base), load("component", comp.Type), fmt.Sprintf("component %q parameter", comp.Type))
-		}
-		for j, tr := range comp.Traits {
-			if tr.Properties == nil || len(tr.Properties.Raw) == 0 {
-				continue
-			}
-			base := field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties")
-			check(flattenLeafPaths(tr.Properties.Raw, base), load("trait", tr.Type), fmt.Sprintf("trait %q parameter", tr.Type))
-		}
-	}
 	return errs
 }
 
 // validateSourceInputs checks that every source binding's properties conform to
 // the referenced SourceDefinition's parameter: block: no undeclared fields, and
 // each provided value's type is compatible with the declared parameter type.
-// Values fed by fromSource take their type from the referenced source's schema:
+// Values fed by an expression take their type from the referenced source's schema:
 // output field, so a chained value's type is checked without resolving it.
 func (h *ValidatingHandler) validateSourceInputs(ctx context.Context, app *v1beta1.Application, sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) field.ErrorList {
 	var errs field.ErrorList
@@ -328,20 +245,17 @@ func (h *ValidatingHandler) validateSourceInputs(ctx context.Context, app *v1bet
 	return errs
 }
 
-// inputLeaf is a single scalar or fromSource value within a source's
-// properties, addressed by its dotted path relative to the parameter block.
+// inputLeaf is a single scalar value within a properties blob, addressed by its
+// dotted path relative to the parameter block.
 type inputLeaf struct {
 	path      string      // dotted path into the parameter block, e.g. "region"
 	fieldPath *field.Path // full field path for error reporting
-	literal   interface{} // the scalar value, when not a fromSource
-	fromSrc   interface{} // the fromSource selector, when present
+	literal   interface{} // the scalar value at this path
 }
 
 // flattenLeafPaths walks a properties JSON blob and returns one inputLeaf per
-// scalar or fromSource node, keyed by dotted path. A fromSource node is treated
-// as a leaf (its name/path/default are not recursed into). Array elements are
-// addressed by index. Returns nothing on unparseable input (the fromSource
-// collection pass already reports JSON errors).
+// scalar node, keyed by dotted path. Array elements are addressed by index.
+// Returns nothing on unparseable input, which the collection pass reports.
 func flattenLeafPaths(raw []byte, basePath *field.Path) []inputLeaf {
 	var decoded interface{}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
@@ -352,10 +266,6 @@ func flattenLeafPaths(raw []byte, basePath *field.Path) []inputLeaf {
 	walk = func(node interface{}, dotted string, fp *field.Path) {
 		switch v := node.(type) {
 		case map[string]interface{}:
-			if sel, ok := v["fromSource"]; ok {
-				out = append(out, inputLeaf{path: dotted, fieldPath: fp.Child("fromSource"), fromSrc: sel})
-				return
-			}
 			for k, child := range v {
 				next := k
 				if dotted != "" {
@@ -396,7 +306,7 @@ func jsonKind(v interface{}) cue.Kind {
 
 // checkInputLeaf validates one properties leaf against the target parameter
 // block: the field must be declared, and its type must be compatible with the
-// declared parameter type. fromSource-fed leaves take their type from the
+// declared parameter type. Expression-fed leaves take their type from the
 // referenced source's schema output field.
 func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourceType string, sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator, ctx context.Context, appNamespace string) field.ErrorList {
 	var errs field.ErrorList
@@ -411,39 +321,7 @@ func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourc
 	}
 	// Determine the incoming value's type.
 	var srcKind cue.Kind
-	if lf.fromSrc != nil {
-		refName, refPath, _, err := parseFromSourceSelector(lf.fromSrc)
-		if err != nil {
-			return errs // the collection pass already reported this
-		}
-		refType, ok := sourceNameToType[refName]
-		if !ok || refType == "" {
-			return errs // unknown source already reported by the ref pass
-		}
-		sv := schemaValidators[refType]
-		if sv == nil {
-			var loadErr error
-			sv, loadErr = h.loadSourceSchemaValidator(ctx, appNamespace, refType)
-			if loadErr != nil || sv == nil {
-				return errs
-			}
-			schemaValidators[refType] = sv
-		}
-		k, ok := sv.KindAt(refPath)
-		if !ok {
-			return errs // path-not-in-schema already reported by the ref pass
-		}
-		srcKind = k
-		// KEP: a default is required only when an optional source field feeds a
-		// required target. Here the target is this SourceDefinition's parameter.
-		if hasDefault := selectorHasDefault(lf.fromSrc); !hasDefault && sv.IsOptionalPath(refPath) {
-			if required, _ := param.requiredAt(lf.path); required {
-				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
-					fmt.Sprintf("optional source field %q.%s feeds required parameter %q of SourceDefinition %q; a default must be supplied via the fromSource map form",
-						refName, refPath, lf.path, sourceType)))
-			}
-		}
-	} else if raw, isString := lf.literal.(string); isString && hasSourceExpression(raw) {
+	if raw, isString := lf.literal.(string); isString && hasSourceExpression(raw) {
 		// A source's own properties may be fed by an expression - that is how
 		// chaining is written without the directive. Typing it as the string it
 		// literally is would reject every non-string target.
@@ -473,82 +351,93 @@ func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourc
 	return errs
 }
 
-// selectorHasDefault reports whether a fromSource selector (map form) carries a
-// default: key.
-func selectorHasDefault(selector interface{}) bool {
-	m, ok := selector.(map[string]interface{})
-	if !ok {
-		return false
-	}
-	_, ok = m["default"]
-	return ok
-}
-
-func collectFromRawExtension(raw *runtime.RawExtension, basePath *field.Path, sourceIndex int) ([]fromSourceReference, field.ErrorList) {
+// collectSourceRefs returns every `source` read an expression makes within a
+// properties blob, as the reference records the validation loop consumes.
+//
+// The loop is mechanism-agnostic: declared-ness, chaining order, surface and
+// consumableFrom are properties of *reading a source*, not of how the read was
+// spelled. Only this collector knew about the directive form, which is what let
+// it be removed without losing a single one of those checks.
+func collectSourceRefs(raw *runtime.RawExtension, basePath *field.Path, sourceIndex int) ([]sourceReference, field.ErrorList) {
 	if raw == nil || len(raw.Raw) == 0 {
 		return nil, nil
 	}
 	var decoded interface{}
 	if err := json.Unmarshal(raw.Raw, &decoded); err != nil {
-		return nil, field.ErrorList{field.Invalid(basePath, string(raw.Raw), fmt.Sprintf("invalid properties JSON: %v", err))}
+		return nil, field.ErrorList{field.Invalid(basePath, string(raw.Raw),
+			fmt.Sprintf("invalid properties: %v", err))}
 	}
-	refs, errs := collectFromNode(decoded, basePath, sourceIndex)
-	return refs, errs
-}
 
-func collectFromNode(node interface{}, path *field.Path, sourceIndex int) ([]fromSourceReference, field.ErrorList) {
-	var refs []fromSourceReference
-	var errs field.ErrorList
-	switch v := node.(type) {
-	case map[string]interface{}:
-		if selector, ok := v["fromSource"]; ok {
-			name, sourcePath, _, err := parseFromSourceSelector(selector)
-			if err != nil {
-				errs = append(errs, field.Invalid(path.Child("fromSource"), selector, err.Error()))
-				return refs, errs
+	var refs []sourceReference
+	for _, lf := range flattenLeafPaths(raw.Raw, basePath) {
+		text, ok := lf.literal.(string)
+		if !ok {
+			continue
+		}
+		parsed, err := sourceexpr.Parse(text)
+		if err != nil || !parsed.HasExpr() {
+			continue
+		}
+		for _, fragment := range parsed.Fragments {
+			if !fragment.IsExpr() {
+				continue
 			}
-			refs = append(refs, fromSourceReference{
-				SourceName:  name,
-				Path:        sourcePath,
-				FieldPath:   path.Child("fromSource"),
-				SourceIndex: sourceIndex,
-			})
-			return refs, errs
-		}
-		for key, child := range v {
-			childRefs, childErrs := collectFromNode(child, path.Child(key), sourceIndex)
-			refs = append(refs, childRefs...)
-			errs = append(errs, childErrs...)
-		}
-	case []interface{}:
-		for i, child := range v {
-			childRefs, childErrs := collectFromNode(child, path.Index(i), sourceIndex)
-			refs = append(refs, childRefs...)
-			errs = append(errs, childErrs...)
+			reads, rerr := sourceexpr.References(fragment.Expr)
+			if rerr != nil {
+				// Syntax errors are reported by validateExpressions with a
+				// better message; do not report them twice.
+				continue
+			}
+			for _, read := range reads {
+				if !read.IsSource() || len(read.Path) < 2 {
+					continue
+				}
+				refs = append(refs, sourceReference{
+					SourceName: read.Path[0],
+					Path:       strings.Join(read.Path[1:], "."),
+					// Whether the dotted form round-trips has to be decided here,
+					// while the segments are still separate. `labels["a.b/c"]`
+					// joins to `labels.a.b/c`, which no longer says where the key
+					// began - and a list index joins to a segment the schema has
+					// no field for at all.
+					OpaquePath:  pathIsOpaque(read.Path[1:]),
+					FieldPath:   lf.fieldPath,
+					SourceIndex: sourceIndex,
+				})
+			}
 		}
 	}
-	return refs, errs
+	return refs, nil
 }
 
-func parseFromSourceSelector(selector interface{}) (name string, path string, hasDefault bool, err error) {
-	switch v := selector.(type) {
-	case string:
-		parts := strings.SplitN(v, ".", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", "", false, fmt.Errorf("invalid fromSource reference %q", v)
+// pathIsOpaque reports a path the schema validator's dotted lookup cannot
+// follow: one carrying a list index, or a key that itself contains a dot.
+//
+// Both are ordinary reads - `outputs[0].kind`, `labels["platform.io/team"]` -
+// and TypeOf checks them properly, against the element type and the map's
+// pattern constraint. The coarser HasPath check is skipped for them rather than
+// left to reject a valid read, which is what it did to every label key with a
+// domain-prefixed name.
+func pathIsOpaque(segments []string) bool {
+	for _, segment := range segments {
+		if strings.Contains(segment, ".") {
+			return true
 		}
-		return parts[0], parts[1], false, nil
-	case map[string]interface{}:
-		name, _ := v["name"].(string)
-		path, _ := v["path"].(string)
-		if name == "" || path == "" {
-			return "", "", false, fmt.Errorf("fromSource requires both name and path")
+		if segment == "" {
+			continue
 		}
-		_, hasDefault := v["default"]
-		return name, path, hasDefault, nil
-	default:
-		return "", "", false, fmt.Errorf("invalid fromSource selector type %T", selector)
+		digits := true
+		for _, r := range segment {
+			if r < '0' || r > '9' {
+				digits = false
+				break
+			}
+		}
+		if digits {
+			return true
+		}
 	}
+	return false
 }
 
 // loadConsumableFrom returns the surfaces a SourceDefinition may be consumed
@@ -773,7 +662,7 @@ func (h *ValidatingHandler) loadSourceParameter(ctx context.Context, appNamespac
 
 // loadTargetParameter returns a validator over the parameter: block of a
 // ComponentDefinition (kind "component") or TraitDefinition (kind "trait"),
-// used to type-check fromSource-fed values against the consuming parameter.
+// used to type-check expression-fed values against the consuming parameter.
 // This is best-effort: any failure (definition not found, template does not
 // compile statically, no parameter block) yields (nil, nil) so validation
 // fails open rather than blocking a legitimate apply.
@@ -905,6 +794,14 @@ func (v *sourceSchemaValidator) lookup(path string) (cue.Value, bool) {
 		if seg == "" {
 			return cur, false
 		}
+		// `content: _` or `properties: _` declares a field without declaring its
+		// shape, so nothing below it is knowable here. TypeOf is what judges
+		// those reads - it demands `& <type>` at the point of use - and this
+		// check has nothing to add beyond rejecting a read the schema
+		// deliberately left open.
+		if cur.IncompleteKind() == cue.TopKind {
+			return cur, true
+		}
 		if idx, err := strconv.Atoi(seg); err == nil {
 			cur = cur.LookupPath(cue.MakePath(cue.Index(idx)))
 			if !cur.Exists() {
@@ -916,6 +813,15 @@ func (v *sourceSchemaValidator) lookup(path string) (cue.Value, bool) {
 		if !next.Exists() {
 			if opt, ok := lookupOptionalField(cur, seg); ok {
 				cur = opt
+				continue
+			}
+			// An open map declares a pattern, never a key: `traits: [string]: {...}`
+			// has no field called `scaler`, but reading one is exactly what the
+			// map is for. Fall through to the pattern's type, which is what the
+			// key will hold. Without this every key read out of a declared map -
+			// traits, labels, a Config's outputs - was rejected as undeclared.
+			if pattern := cur.LookupPath(cue.MakePath(cue.AnyString)); pattern.Exists() {
+				cur = pattern
 				continue
 			}
 			return next, false

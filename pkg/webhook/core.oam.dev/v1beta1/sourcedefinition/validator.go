@@ -78,7 +78,7 @@ func ValidateSourceStorage(template string) error {
 //
 // schema: is the contract between the platform engineer and the application
 // author, and it is load-bearing for the feature's security properties: admission
-// validates every fromSource path against it, and the resolver validates the
+// validates every a source read path against it, and the resolver validates the
 // resolved output against it. Both checks are skipped when it is absent, so a
 // schema-less SourceDefinition would let an application read any field of the
 // resolved output with no validation at either layer. It is therefore required.
@@ -95,7 +95,7 @@ func ValidateSourceSchema(template string) error {
 		return fmt.Errorf("schema: must be a struct declaring the fields an Application may read")
 	}
 	if len(structLit.Elts) == 0 {
-		return fmt.Errorf("schema: must declare at least one field; an empty schema exposes nothing to fromSource")
+		return fmt.Errorf("schema: must declare at least one field; an empty schema exposes nothing to a source read")
 	}
 	return nil
 }
@@ -170,7 +170,7 @@ func fieldByName(decls []ast.Decl, name string) *ast.Field {
 // SourceDefinition template.
 //
 // It returns the declared surfaces, or nil when the block is absent - meaning
-// every surface that supports fromSource. Restricting a source is opt-in: the
+// every surface that supports a source read. Restricting a source is opt-in: the
 // common case declares nothing.
 func ParseConsumableFrom(template string) ([]string, error) {
 	field, err := topLevelField(template, "consumableFrom")
@@ -191,7 +191,7 @@ func ParseConsumableFrom(template string) ([]string, error) {
 				return nil, fmt.Errorf("consumableFrom entries must be strings: %w", err)
 			}
 			if !slices.Contains(veladefinition.ConsumableSurfaces, value) {
-				return nil, fmt.Errorf("consumableFrom entry %q is not a surface that supports fromSource; expected one of %v",
+				return nil, fmt.Errorf("consumableFrom entry %q is not a surface that supports a source read; expected one of %v",
 					value, veladefinition.ConsumableSurfaces)
 			}
 			surfaces = append(surfaces, value)

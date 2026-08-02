@@ -35,7 +35,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 )
 
-var _ = Describe("SourceDefinition fromSource e2e", func() {
+var _ = Describe("SourceDefinition e2e", func() {
 	ctx := context.Background()
 
 	var namespaceName string
@@ -89,7 +89,7 @@ var _ = Describe("SourceDefinition fromSource e2e", func() {
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})
 
-	It("resolves fromSource and reconciles updated source properties", func() {
+	It("resolves a source read and reconciles updated source properties", func() {
 		sourceDef := &v1beta1.SourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "image-source",
@@ -147,7 +147,7 @@ parameter: {
 						Type: "webservice",
 						Properties: &runtime.RawExtension{
 							Raw: []byte(`{
-  "image":{"fromSource":"img.image"},
+  "image":"$(source.img.image)",
   "port":80
 }`),
 						},
@@ -305,7 +305,7 @@ parameter: {
 						Type: "webservice",
 						Properties: &runtime.RawExtension{
 							Raw: []byte(`{
-  "image":{"fromSource":"img.image"},
+  "image":"$(source.img.image)",
   "port":80
 }`),
 						},
@@ -425,7 +425,7 @@ parameter: {
 					Name: "web-edited",
 					Type: "webservice",
 					Properties: &runtime.RawExtension{
-						Raw: []byte(`{"image":{"fromSource":"img.image"},"port":80}`),
+						Raw: []byte(`{"image":"$(source.img.image)","port":80}`),
 					},
 				}},
 			},
@@ -614,9 +614,9 @@ parameter: {
 						Type: "render-source",
 						Properties: &runtime.RawExtension{
 							Raw: []byte(`{
-  "repo":{"fromSource":"clusterInfo.nested.image.repo"},
-  "tag":{"fromSource":"clusterInfo.nested.image.tag"},
-  "region":{"fromSource":"clusterInfo.nested.meta.region"}
+  "repo":"$(source.clusterInfo.nested.image.repo)",
+  "tag":"$(source.clusterInfo.nested.image.tag)",
+  "region":"$(source.clusterInfo.nested.meta.region)"
 }`),
 						},
 					},
@@ -627,7 +627,7 @@ parameter: {
 						Type: "webservice",
 						Properties: &runtime.RawExtension{
 							Raw: []byte(`{
-  "image":{"fromSource":"rendered.resolved.image"},
+  "image":"$(source.rendered.resolved.image)",
   "port":80
 }`),
 						},
@@ -650,7 +650,7 @@ parameter: {
 		}, 90*time.Second, time.Second).Should(Equal("nginx:1.25.2"))
 	})
 
-	It("resolves fromSource values in trait properties", func() {
+	It("resolves source values in trait properties", func() {
 		sourceDef := &v1beta1.SourceDefinition{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "scale-source",
@@ -714,7 +714,7 @@ parameter: {
 								Type: "scaler",
 								Properties: &runtime.RawExtension{
 									Raw: []byte(`{
-  "replicas":{"fromSource":"scaleData.scale.replicas"}
+  "replicas":"$(source.scaleData.scale.replicas)"
 }`),
 								},
 							},
@@ -787,12 +787,12 @@ parameter: {
 			}
 		}
 
-		It("denies a fromSource path not declared in the source schema", func() {
+		It("denies a source path not declared in the source schema", func() {
 			applyTypedSource()
 			app := newApp("bad-path", []v1beta1.ApplicationSource{
 				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1}`)}},
 			}, []oamcomm.ApplicationComponent{
-				{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":{"fromSource":"s.doesNotExist"},"port":80}`)}},
+				{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"$(source.s.doesNotExist)","port":80}`)}},
 			})
 			err := k8sClient.Create(ctx, app)
 			Expect(err).To(HaveOccurred())
@@ -804,18 +804,18 @@ parameter: {
 			app := newApp("no-default", []v1beta1.ApplicationSource{
 				{Name: "s", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1}`)}},
 			}, []oamcomm.ApplicationComponent{
-				{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":{"fromSource":"s.vpcId"},"port":80}`)}},
+				{Name: "web", Type: "webservice", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"$(source.s.vpcId)","port":80}`)}},
 			})
 			err := k8sClient.Create(ctx, app)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("a default must be supplied via the fromSource map form"))
+			Expect(err.Error()).To(ContainSubstring("a default must be supplied"))
 		})
 
 		It("denies a forward source dependency", func() {
 			applyTypedSource()
 			// source at index 0 references a source declared at index 1.
 			app := newApp("forward-ref", []v1beta1.ApplicationSource{
-				{Name: "first", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":{"fromSource":"second.image"},"replicas":1}`)}},
+				{Name: "first", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"$(source.second.image)","replicas":1}`)}},
 				{Name: "second", Type: "typed-source", Properties: &runtime.RawExtension{Raw: []byte(`{"image":"nginx","replicas":1}`)}},
 			}, minimalComp())
 			err := k8sClient.Create(ctx, app)

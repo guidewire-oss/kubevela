@@ -23,36 +23,40 @@ import (
 	"github.com/kubevela/workflow/pkg/cue/process"
 )
 
-// Surfaces an Application can carry a fromSource directive on.
+// Surfaces an Application can carry a property expression on.
 //
-// These live here, next to the resolver, because which of them actually resolve
-// is a property of this package: substitution is wired into workloadDef.Complete
-// and traitDef.Complete and nowhere else. The admission webhooks and the appfile
-// parser both enforce that rule, so it is stated once rather than restated per
-// enforcement point.
+// These live here, next to the resolver, because which of them can read a
+// `source` is a property of this package: resolution is wired into
+// workloadDef.Complete and traitDef.Complete and nowhere else. The admission
+// webhook and the appfile parser both enforce that rule, so it is stated once
+// rather than restated per enforcement point - which is exactly the divergence
+// that let admission accept `$(context...)` in every policy while only one kind
+// of policy substituted it.
 const (
-	// SurfaceComponent is a directive in a component's properties.
+	// SurfaceComponent is an expression in a component's properties.
 	SurfaceComponent = "component"
-	// SurfaceTrait is a directive in a trait's properties.
+	// SurfaceTrait is an expression in a trait's properties.
 	SurfaceTrait = "trait"
-	// SurfacePolicy is a directive in a policy's properties.
+	// SurfacePolicy is an expression in a policy's properties. A policy may read
+	// `context` but not `source`: policy properties are consumed outside any
+	// component render, so there is no resolver to reach a source through.
 	SurfacePolicy = "policy"
-	// SurfaceWorkflowStep is a directive in a workflow step's (or sub-step's) properties.
+	// SurfaceWorkflowStep is an expression in a workflow step's (or sub-step's) properties.
 	SurfaceWorkflowStep = "workflowstep"
-	// SurfaceSource is a directive in a later spec.sources[] entry's properties,
+	// SurfaceSource is an expression in a later spec.sources[] entry's properties,
 	// i.e. source chaining. It resolves because the chain is walked during a
 	// component render.
 	SurfaceSource = "source"
 )
 
-// resolvingSurfaces is the one list of surfaces where a fromSource directive is
-// substituted. Everything else about surfaces derives from it.
+// sourceReadingSurfaces is the one list of surfaces where an expression may read
+// `source`. Everything else about surfaces derives from it.
 //
 // It is a single list because the alternative was tried and drifted: enabling a
 // surface here left ConsumableSurfaces still refusing to let a definition name
 // it, so a definition could not declare a capability the controller had. Deriving
 // the second list makes that state unreachable rather than merely fixed.
-var resolvingSurfaces = []string{
+var sourceReadingSurfaces = []string{
 	SurfaceComponent,
 	SurfaceTrait,
 	SurfaceSource,
@@ -62,14 +66,14 @@ var resolvingSurfaces = []string{
 // ConsumableSurfaces are the surfaces a SourceDefinition may name in
 // consumableFrom: the places an Application actually consumes a resolved value.
 //
-// Derived from resolvingSurfaces, less source chaining - that is plumbing
+// Derived from sourceReadingSurfaces, less source chaining - that is plumbing
 // between sources, not a place an Application consumes a value, so a definition
 // has no reason to name it.
 var ConsumableSurfaces = consumableSurfaces()
 
 func consumableSurfaces() []string {
-	out := make([]string, 0, len(resolvingSurfaces))
-	for _, surface := range resolvingSurfaces {
+	out := make([]string, 0, len(sourceReadingSurfaces))
+	for _, surface := range sourceReadingSurfaces {
 		if surface == SurfaceSource {
 			continue
 		}
@@ -78,53 +82,30 @@ func consumableSurfaces() []string {
 	return out
 }
 
-// SurfaceResolvesFromSource reports whether a fromSource directive on this
-// surface is substituted at reconcile time.
+// SurfaceReadsSource reports whether an expression on this surface may read a
+// `source`.
 //
-// Anywhere else the directive is inert: it survives into the consumer as a
-// literal {"fromSource": ...} map, which either fails CUE type-checking with a
-// confusing message or, where the target parameter is open, is silently accepted
-// as a value. Both enforcement points reject it instead.
-func SurfaceResolvesFromSource(surface string) bool {
-	return slices.Contains(resolvingSurfaces, surface)
+// Anywhere else the read cannot be honoured: the value would survive into the
+// consumer as the literal text of the expression, which either fails CUE
+// type-checking with a confusing message or, where the target parameter is open,
+// is silently accepted as a value. Both enforcement points reject it instead.
+func SurfaceReadsSource(surface string) bool {
+	return slices.Contains(sourceReadingSurfaces, surface)
 }
 
-// UnsupportedSurfaceMessage is the single wording used wherever a directive on
-// an unresolvable surface is rejected, so admission and the parser report the
-// same thing.
+// UnsupportedSurfaceMessage is the single wording used wherever reading a source
+// on a surface that cannot resolve one is rejected, so admission and the parser
+// report the same thing.
 func UnsupportedSurfaceMessage(surface string) string {
-	return fmt.Sprintf("fromSource is not supported in %s properties; it is resolved during component and trait rendering only", surface)
+	return fmt.Sprintf("a %s property cannot read \"source\"; sources are resolved during component and trait rendering only", surface)
 }
 
-// HasFromSourceDirective reports whether decoded properties contain a fromSource
-// directive at any depth.
-func HasFromSourceDirective(node interface{}) bool {
-	switch v := node.(type) {
-	case map[string]interface{}:
-		if _, ok := v["fromSource"]; ok {
-			return true
-		}
-		for _, child := range v {
-			if HasFromSourceDirective(child) {
-				return true
-			}
-		}
-	case []interface{}:
-		for _, child := range v {
-			if HasFromSourceDirective(child) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// ResolveFromSourceParams substitutes fromSource directives in a properties
-// blob, for callers outside the component and trait render paths.
+// ResolveSourceExpressions substitutes $(...) expressions in a properties blob,
+// for callers outside the component and trait render paths.
 //
-// EXPERIMENT: added to test whether workflow steps can be supported by
-// substituting before the workflow engine sees them, rather than by changing
-// that engine. See devlogs/2026-07-31-source-expressions.md.
-func ResolveFromSourceParams(ctx process.Context, params interface{}) (interface{}, error) {
-	return resolveFromSourceParams(ctx, params)
+// Workflow steps are supported by substituting before the workflow engine sees
+// them, rather than by changing that engine - so the engine receives ordinary
+// data and does not know sources exist.
+func ResolveSourceExpressions(ctx process.Context, params interface{}) (interface{}, error) {
+	return resolveSourceExpressions(ctx, params)
 }

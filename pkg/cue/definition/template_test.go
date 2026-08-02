@@ -1840,28 +1840,23 @@ func TestGetBaseContextLabels(t *testing.T) {
 	}
 }
 
-func TestResolveFromSourceNode(t *testing.T) {
+func TestResolveSourceNode(t *testing.T) {
 	sources := map[string]map[string]interface{}{
 		"cluster-info": {
 			"region": "us-east-1",
 			"nested": map[string]interface{}{"tier": "prod"},
 		},
 	}
+	// A hyphenated binding needs bracket form: source.cluster-info.region parses
+	// as subtraction, which the grammar rejects with that explanation.
 	in := map[string]interface{}{
-		"region": map[string]interface{}{
-			"fromSource": "cluster-info.region",
-		},
-		"tier": map[string]interface{}{
-			"fromSource": map[string]interface{}{
-				"name": "cluster-info",
-				"path": "nested.tier",
-			},
-		},
+		"region": `$(source["cluster-info"].region)`,
+		"tier":   `$(source["cluster-info"].nested.tier)`,
 	}
 	resolver := newSourceResolver(process.NewContext(process.ContextData{}))
 	resolver.resolved = sources
 	resolver.sourceTypes = map[string]string{"cluster-info": "cluster"}
-	got, err := resolveFromSourceNode(in, resolver)
+	got, err := resolveSourceNode(in, resolver)
 	require.NoError(t, err)
 	out, ok := got.(map[string]interface{})
 	require.True(t, ok)
@@ -1915,12 +1910,8 @@ parameter: {
 			"tag":  "1.25.2",
 		},
 		"sourceB": {
-			"repo": map[string]interface{}{
-				"fromSource": "sourceA.nested.image.repo",
-			},
-			"tag": map[string]interface{}{
-				"fromSource": "sourceA.nested.image.tag",
-			},
+			"repo": "$(source.sourceA.nested.image.repo)",
+			"tag":  "$(source.sourceA.nested.image.tag)",
 		},
 	}
 

@@ -32,7 +32,6 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 
 	cueutils "github.com/oam-dev/kubevela/pkg/cue"
-	"github.com/oam-dev/kubevela/pkg/cue/definition"
 	// Use WorkloadCompiler instead of the upstream cuex.DefaultCompiler.
 	// The upstream DefaultCompiler does not include provider packages like
 	// "vela/helm". Component templates (e.g., helmchart) import these packages,
@@ -63,12 +62,6 @@ func (p *Parser) ValidateCUESchematicAppfile(a *Appfile) error {
 			continue
 		}
 
-		// fromSource directives are substituted at reconcile time (they require
-		// I/O not permitted at admission), so the raw {fromSource: "..."} node
-		// would fail CUE type-checking against the template here. Skip schematic
-		// validation for such components; ValidateSources still checks the paths.
-		componentHasFromSource := hasFromSourceParams(wl.Params)
-
 		ctxData := GenerateContextDataFromAppFile(a, wl.Name)
 		// Set dry-run mode so provider functions (e.g., helm.#Render) perform
 		// client-only rendering instead of real cluster installs during validation.
@@ -77,20 +70,11 @@ func (p *Parser) ValidateCUESchematicAppfile(a *Appfile) error {
 		}
 		ctxData.Ctx = helm.WithDryRun(ctxData.Ctx)
 
-		if utilfeature.DefaultMutableFeatureGate.Enabled(features.EnableCueValidation) && !componentHasFromSource {
+		if utilfeature.DefaultMutableFeatureGate.Enabled(features.EnableCueValidation) {
 			err := p.ValidateComponentParams(ctxData, wl, a)
 			if err != nil {
 				return err
 			}
-		}
-
-		if componentHasFromSource {
-			// The component template eval below would fail on the raw fromSource
-			// node, and its traits depend on the component's process context, so
-			// skip schematic validation for the whole component. The fromSource
-			// paths are still validated structurally by ValidateSources.
-			klog.V(4).Infof("skipping schematic validation for component %q: fromSource resolved at reconcile time", wl.Name)
-			continue
 		}
 
 		// Collect workflow-supplied params for this component upfront
@@ -117,13 +101,6 @@ func (p *Parser) ValidateCUESchematicAppfile(a *Appfile) error {
 
 		for _, tr := range wl.Traits {
 			if tr.CapabilityCategory != types.CUECategory {
-				continue
-			}
-			if hasFromSourceParams(tr.Params) {
-				// fromSource in trait properties is substituted at reconcile time;
-				// the raw node cannot be type-checked here. Paths are validated by
-				// ValidateSources.
-				klog.V(4).Infof("skipping schematic validation for trait %q: fromSource resolved at reconcile time", tr.Name)
 				continue
 			}
 			if tr.FullTemplate != nil &&
@@ -577,17 +554,6 @@ func getWorkflowAndPolicySuppliedParams(app *Appfile) map[string]bool {
 	}
 
 	return result
-}
-
-// hasFromSourceParams reports whether the given params contain a fromSource
-// directive at any depth. fromSource substitution happens at reconcile time
-// (it requires I/O that is not permitted during admission), so the raw
-// {fromSource: "..."} node cannot be type-checked against the component/trait
-// CUE template at admission. When present, schematic validation is skipped for
-// that component/trait; the fromSource paths themselves are still validated
-// structurally by the admission webhook's ValidateSources stage.
-func hasFromSourceParams(params interface{}) bool {
-	return definition.HasFromSourceDirective(params)
 }
 
 // getDefaultForMissingParameter checks if a parameter can be defaulted for validation

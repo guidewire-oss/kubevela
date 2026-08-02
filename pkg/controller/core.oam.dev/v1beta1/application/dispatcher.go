@@ -166,7 +166,7 @@ func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, pre
 				propertiesChanged = componentPropertiesChanged(comp, comparisonRev)
 			}
 
-			// fromSource values are resolved at render time and are invisible to
+			// source values are resolved at render time and are invisible to
 			// the raw spec comparison above (comp.Params still holds the
 			// unresolved directive). When opted in via autoUpdate /
 			// autoUpdateSources, detect a re-resolved value by comparing
@@ -342,12 +342,12 @@ func componentPropertiesChanged(comp *appfile.Component, appRev *v1beta1.Applica
 	return !equality.Semantic.DeepEqual(currentJSON, revJSON)
 }
 
-// resolvedSourceHashes returns a per-source hash of the fromSource values a
+// resolvedSourceHashes returns a per-source hash of the source values a
 // component consumed during its most recent render (source name -> hash), and
 // whether it consumed any. The resolved values live on comp.Ctx (populated by
 // Complete() before dispatch); the raw spec comparison in
 // componentPropertiesChanged cannot see them because comp.Params still holds the
-// unresolved {fromSource: ...} directive.
+// an unresolved expression.
 func resolvedSourceHashes(comp *appfile.Component) (map[string]string, bool) {
 	if comp == nil || comp.Ctx == nil {
 		return nil, false

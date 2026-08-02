@@ -138,7 +138,7 @@ func (p *Parser) GenerateAppFileFromApp(ctx context.Context, app *v1beta1.Applic
 	if err = p.parseReferredObjects(ctx, appFile); err != nil {
 		return nil, errors.Wrap(err, "failed to parseReferredObjects")
 	}
-	if err = validateFromSourceSurfaces(appFile); err != nil {
+	if err = validateExpressionSurfaces(appFile); err != nil {
 		return nil, err
 	}
 
@@ -806,18 +806,18 @@ func (p *Parser) ValidateComponentNames(app *v1beta1.Application) (int, error) {
 	return 0, nil
 }
 
-// validateFromSourceSurfaces rejects a fromSource directive on a surface where
-// it is never substituted.
+// validateExpressionSurfaces rejects an expression that reads a `source` on a
+// surface where no source can be resolved.
 //
 // The admission webhook performs the same check and reports richer field paths,
 // but admission can be disabled (--use-webhook=false). Unlike the other source
-// checks, skipping this one fails silently rather than loudly: the directive
-// never reaches the resolver, so it survives into the consumer as a literal
-// {"fromSource": ...} map instead of erroring. This is the backstop for that.
+// checks, skipping this one fails silently rather than loudly: the read never
+// reaches a resolver, so the expression's own text survives into the consumer
+// instead of erroring. This is the backstop for that.
 //
 // The rule itself lives in pkg/cue/definition, next to the resolver that
 // implements it, so the two enforcement points cannot drift apart.
-func validateFromSourceSurfaces(af *Appfile) error {
+func validateExpressionSurfaces(af *Appfile) error {
 	check := func(raw *runtime.RawExtension, surface, name string) error {
 		if raw == nil || len(raw.Raw) == 0 {
 			return nil
@@ -827,13 +827,19 @@ func validateFromSourceSurfaces(af *Appfile) error {
 			// Malformed properties are reported by the consumer's own parsing.
 			return nil
 		}
-		if !definition.HasFromSourceDirective(decoded) {
+		if !sourceexpr.HasExpression(decoded) {
 			return nil
 		}
-		if definition.SurfaceResolvesFromSource(surface) {
+		if definition.SurfaceReadsSource(surface) {
 			return nil
 		}
-		return fmt.Errorf("%s %q: %s", surface, name, definition.UnsupportedSurfaceMessage(surface))
+		// The surface cannot resolve a source, so only `context` is offered.
+		// ValidateTree reports reading anything else, which is what catches a
+		// `source` read here.
+		if err := sourceexpr.ValidateTree(decoded, sourceexpr.ContextIdent); err != nil {
+			return fmt.Errorf("%s %q: %w", surface, name, err)
+		}
+		return nil
 	}
 
 	for _, policy := range af.Policies {

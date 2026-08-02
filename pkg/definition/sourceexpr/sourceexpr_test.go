@@ -710,8 +710,7 @@ func TestDottedBindingNames(t *testing.T) {
 	}
 }
 
-// Parity with fromSource's `default:`. Without this, expressions could not
-// replace fromSource - they would be strictly less capable, since a binding
+// A default is what makes an optional read usable. Without it a binding
 // whose value may be absent has no way to carry a fallback.
 //
 // The marker sits on the value, not the fallback. The two obvious alternatives
@@ -955,7 +954,7 @@ func TestValueTypeAgreesWithEval(t *testing.T) {
 // before anything is cached - so a required field is guaranteed present and
 // demanding a fallback for it would be noise.
 //
-// This mirrors fromSource, where a default is mandatory exactly when an optional
+// A default is mandatory exactly when an optional
 // source field feeds a required parameter.
 func TestUndefendedReads(t *testing.T) {
 	schemas := map[string]string{

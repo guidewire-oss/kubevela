@@ -154,9 +154,9 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 
 	var paramFile = velaprocess.ParameterFieldName + ": {}"
 	if params != nil {
-		resolved, err := resolveFromSourceParams(ctx, params)
+		resolved, err := resolveSourceExpressions(ctx, params)
 		if err != nil {
-			return errors.WithMessagef(err, "resolve fromSource for workload %s", wd.name)
+			return errors.WithMessagef(err, "resolve source expressions for workload %s", wd.name)
 		}
 		bt, err := json.Marshal(params)
 		if resolved != nil {
@@ -339,9 +339,9 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 	abstractTemplate, _ = upgrade.EnsureCueVersionCompatibility(abstractTemplate, td.name, upgrade.TraitKind, upgrade.TemplateAreaMain)
 	buff := abstractTemplate + "\n"
 	if params != nil {
-		resolved, err := resolveFromSourceParams(ctx, params)
+		resolved, err := resolveSourceExpressions(ctx, params)
 		if err != nil {
-			return errors.WithMessagef(err, "resolve fromSource for trait %s", td.name)
+			return errors.WithMessagef(err, "resolve source expressions for trait %s", td.name)
 		}
 		bt, err := json.Marshal(params)
 		if resolved != nil {
@@ -690,7 +690,7 @@ func FormatCUEError(err error, messagePrefix string, entityType, entityName stri
 	return fmt.Errorf("%s", strings.TrimRight(result.String(), "\n"))
 }
 
-func resolveFromSourceParams(ctx process.Context, params interface{}) (interface{}, error) {
+func resolveSourceExpressions(ctx process.Context, params interface{}) (interface{}, error) {
 	if params == nil {
 		return nil, nil
 	}
@@ -702,17 +702,14 @@ func resolveFromSourceParams(ctx process.Context, params interface{}) (interface
 	if err := json.Unmarshal(bt, &normalized); err != nil {
 		return nil, err
 	}
-	return resolveFromSourceNode(normalized, newSourceResolver(ctx))
+	return resolveSourceNode(normalized, newSourceResolver(ctx))
 }
 
-func resolveFromSourceNode(node interface{}, resolver *sourceResolver) (interface{}, error) {
+func resolveSourceNode(node interface{}, resolver *sourceResolver) (interface{}, error) {
 	switch val := node.(type) {
 	case map[string]interface{}:
-		if selector, ok := val["fromSource"]; ok {
-			return evaluateFromSourceSelector(selector, resolver)
-		}
 		for k, child := range val {
-			resolved, err := resolveFromSourceNode(child, resolver)
+			resolved, err := resolveSourceNode(child, resolver)
 			if err != nil {
 				return nil, err
 			}
@@ -721,7 +718,7 @@ func resolveFromSourceNode(node interface{}, resolver *sourceResolver) (interfac
 		return val, nil
 	case []interface{}:
 		for i, child := range val {
-			resolved, err := resolveFromSourceNode(child, resolver)
+			resolved, err := resolveSourceNode(child, resolver)
 			if err != nil {
 				return nil, err
 			}
@@ -737,14 +734,14 @@ func resolveFromSourceNode(node interface{}, resolver *sourceResolver) (interfac
 
 // evaluateSourceExpression substitutes $(...) expressions in a property value.
 //
-// It sits alongside the fromSource directive rather than replacing it: a value
+// A value
 // with no delimiter comes back byte-identical, so nothing that works today
 // changes. What it adds is the ability to combine a resolved value with anything
 // else, which the directive cannot do - it yields a whole value or nothing.
 //
 // Resolving here rather than at admission matters for status: reading a source
 // through an expression must drive the same resolution and the same consumed-value
-// recording that fromSource does, or a binding used only by an expression would
+// recording a directive would have done, or a binding used only by an expression would
 // show as unresolved.
 func evaluateSourceExpression(raw string, resolver *sourceResolver) (interface{}, error) {
 	parsed, err := sourceexpr.Parse(raw)
@@ -776,7 +773,7 @@ func evaluateSourceExpression(raw string, resolver *sourceResolver) (interface{}
 			resolved[name] = values
 
 			// Record what the expression read, so status reports it exactly as a
-			// fromSource directive would - including +sensitive redaction, which
+			// status reports it - including +sensitive redaction, which
 			// matches on the recorded path.
 			path := strings.Join(ref.Path[1:], ".")
 			if value, ok := lookupMapPath(values, path); ok {
@@ -799,48 +796,6 @@ func (r *sourceResolver) expressionContext() map[string]interface{} {
 		}
 	}
 	return out
-}
-
-func evaluateFromSourceSelector(selector interface{}, resolver *sourceResolver) (interface{}, error) {
-	sourceName := ""
-	path := ""
-	var def interface{}
-	switch v := selector.(type) {
-	case string:
-		parts := strings.SplitN(v, ".", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid fromSource reference %q", v)
-		}
-		sourceName, path = parts[0], parts[1]
-	case map[string]interface{}:
-		if n, ok := v["name"].(string); ok {
-			sourceName = n
-		}
-		if p, ok := v["path"].(string); ok {
-			path = p
-		}
-		def = v["default"]
-	default:
-		return nil, fmt.Errorf("invalid fromSource selector type %T", selector)
-	}
-	if sourceName == "" || path == "" {
-		return nil, fmt.Errorf("fromSource requires source name and path")
-	}
-	sourceVals, err := resolver.resolve(sourceName)
-	if err != nil {
-		if def != nil {
-			return def, nil
-		}
-		return nil, err
-	}
-	if val, ok := lookupMapPath(sourceVals, path); ok {
-		resolver.recordConsumedValue(sourceName, resolver.sourceTypes[sourceName], path, val)
-		return val, nil
-	}
-	if def != nil {
-		return def, nil
-	}
-	return nil, fmt.Errorf("path %q not found in source %q", path, sourceName)
 }
 
 func lookupMapPath(data map[string]interface{}, path string) (interface{}, bool) {
@@ -989,7 +944,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	resolvedProps := map[string]interface{}{}
 	paramFile := velaprocess.ParameterFieldName + ": {}"
 	if props, ok := r.sourceProps[sourceName]; ok && props != nil {
-		resolvedPropsNode, err := resolveFromSourceNode(props, r)
+		resolvedPropsNode, err := resolveSourceNode(props, r)
 		if err != nil {
 			r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), "", "", nil)
 			return nil, errors.WithMessagef(err, "resolve source properties for %s", sourceName)

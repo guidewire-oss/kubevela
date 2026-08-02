@@ -283,7 +283,7 @@ output: {
 		verifyApplicationPhase(ctx, namespaceName, app.Name, oamcomm.ApplicationRunning)
 
 		// The point: an expression must drive the same resolution and the same
-		// consumed-value recording a fromSource directive does, or a binding used
+		// consumed-value recording status expects, or a binding used
 		// only by an expression would appear unresolved.
 		Eventually(func() error {
 			latest := &v1beta1.Application{}

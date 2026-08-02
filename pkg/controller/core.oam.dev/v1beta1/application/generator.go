@@ -178,7 +178,7 @@ func generateWorkflowInstance(af *appfile.Appfile, app *v1beta1.Application) *wf
 		Steps: af.WorkflowSteps,
 		Mode:  af.WorkflowMode,
 	}
-	// EXPERIMENT: substitute fromSource in step properties before the workflow
+	// Substitute expressions in step properties before the workflow
 	// engine ever sees them. If this works, supporting workflow steps needs no
 	// change to the kubevela/workflow module at all - only a pre-pass here,
 	// which is the same shape as convertStepProperties below.
@@ -576,12 +576,11 @@ func generateContextDataFromApp(goCtx context.Context, app *v1beta1.Application,
 	return data
 }
 
-// resolveWorkflowStepSources substitutes fromSource directives in workflow step
+// resolveWorkflowStepSources substitutes $(...) expressions in workflow step
 // properties, using the same resolver the component and trait paths use.
 //
-// EXPERIMENT - see devlogs/2026-07-31-source-expressions.md. The interesting
-// property is that this runs entirely inside kubevela: the workflow engine
-// receives ordinary data and does not know sources exist.
+// This runs entirely inside kubevela: the workflow engine receives ordinary data
+// and does not know sources exist.
 func resolveWorkflowStepSources(af *appfile.Appfile, steps []wfTypesv1alpha1.WorkflowStep) error {
 	substitute := func(name string, raw *runtime.RawExtension) error {
 		if raw == nil || len(raw.Raw) == 0 {
@@ -591,14 +590,12 @@ func resolveWorkflowStepSources(af *appfile.Appfile, steps []wfTypesv1alpha1.Wor
 		if err := json.Unmarshal(raw.Raw, &decoded); err != nil {
 			return nil
 		}
-		// Either form is worth a pass: the directive, or a $(...) expression.
-		// Checking both means a step using only expressions is not skipped.
-		if !veladefinition.HasFromSourceDirective(decoded) && !sourceexpr.HasExpression(decoded) {
+		if !sourceexpr.HasExpression(decoded) {
 			return nil
 		}
 		ctxData := appfile.GenerateContextDataFromAppFile(af, name)
 		pCtx := velaprocess.NewContext(ctxData)
-		resolved, err := veladefinition.ResolveFromSourceParams(pCtx, decoded)
+		resolved, err := veladefinition.ResolveSourceExpressions(pCtx, decoded)
 		if err != nil {
 			return err
 		}

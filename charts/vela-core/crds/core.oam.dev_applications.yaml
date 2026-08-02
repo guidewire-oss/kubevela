@@ -160,7 +160,7 @@ spec:
                 type: array
               sources:
                 description: Sources defines external sources that can be referenced
-                  via fromSource.
+                  with $(source...).
                 items:
                   description: ApplicationSource defines a source binding under spec.sources.
                   properties:

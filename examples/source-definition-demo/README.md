@@ -2,10 +2,10 @@
 
 This example shows:
 
-- source-to-component value resolution via `fromSource`
+- source-to-component value resolution via `$(source...)` expressions
 - nested path resolution
 - chained source resolution where a second source consumes the first
-- trait property resolution via `fromSource`
+- trait property resolution via `$(source...)` expressions
 - source status reporting with redacted consumed values (`properties`)
 
 ## Files
@@ -56,7 +56,7 @@ values into a ConfigMap. One manifest per file.
   current namespace's labels and surfaces tenant `name`, `department`,
   `environment`, and an optional `costCenter`. Keyed per cluster + namespace.
 - `apps/app.yaml` — `Application` `tenant-config`: binds both sources and writes
-  their values into a ConfigMap via `fromSource`.
+  their values into a ConfigMap via `$(source...)` expressions.
 - `resources/namespace.yaml` — the `source-demo` namespace with the
   `tenant.example.com/*` labels.
 - `resources/cluster-info.yaml` — the `cluster-info` ConfigMap.
@@ -160,10 +160,12 @@ kubectl get deploy -n source-demo -l example.com/tenant=acme \
 
 ## What to notice
 
-- **fromSource cannot concatenate.** A single `fromSource` replaces one node
+- **A chained source can compose.** An expression concatenates directly, but a
+  chained source is still the way to encode a naming rule once rather than in
+  every Application. Historically this was forced: a directive replaced one node
   with one source field; it cannot join values from several sources into one
   string. Assembling the name therefore uses a **chained source**
-  (`deployment-namer`) whose inputs are fed via `fromSource` from earlier
+  (`deployment-namer`) whose inputs are fed by expressions from earlier
   sources — the KEP's source-chaining pattern. Labels, by contrast, are each a
   single field, so they are read directly.
 - **Forward-only ordering.** `deployment-namer` is declared after `cluster` and

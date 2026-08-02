@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package sourceexpr is a SPIKE. It explores replacing the fromSource directive
-// with CUE expressions written inline in component properties:
+// Package sourceexpr implements property expressions: the way an Application
+// consumes a resolved source, and reads its own render context.
 //
 //	properties:
 //	  cluster: '$(source.clusterInfo.region + "-cluster")'
+//	  owner:   '$(*context.appLabels["owner"] | "unassigned")'
 //
 // The binding name is written with a dot, as above. A name that is not a legal
 // CUE identifier - one containing a hyphen - needs bracket syntax instead,
@@ -26,14 +27,18 @@ limitations under the License.
 // Validate says so explicitly rather than letting the evaluator complain about
 // an undefined field.
 //
-// The motivating gap is that fromSource yields a whole value or nothing - there
-// is no way to combine a resolved value with anything else. Today an author who
-// needs "<region>-cluster" has to add a parameter to the SourceDefinition and
-// build the string there, which puts a consumer's formatting concern inside a
-// shared platform artifact.
+// An expression's result type is checked at admission against the parameter it
+// feeds. That is only sound because the grammar admits nothing whose result type
+// could depend on a value rather than on operand types - no conditionals, no
+// comparisons, no function calls, and exactly one disjunction, the default. See
+// Validate.
 //
-// Nothing here is wired into resolution. See devlogs/2026-07-31-source-expressions.md
-// for what is settled, what is not, and what it would cost.
+// This supersedes an earlier `fromSource:` directive, which could name a value
+// but not compute with one. Expressions are a strict superset of it: whole
+// structs and lists substitute, `default:` becomes `*x | y`, and paths are
+// schema-checked the same way - so the directive was removed rather than kept
+// alongside, which also removed a second set of enforcement paths that had
+// already drifted apart once.
 package sourceexpr
 
 import (

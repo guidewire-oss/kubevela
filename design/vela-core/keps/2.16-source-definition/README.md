@@ -56,6 +56,7 @@ affected carry a pointer back to this list.
 | A7 | Expressions resolve on workflow steps, and on every policy for `context` only | [fromSource Semantics](#fromsource-semantics), [Future Enhancements](#future-enhancements) | implemented |
 | A8 | The author/platform boundary is widened, and held by a sandbox rather than by having no language | [Trust Model](#trust-model) | implemented |
 | A9 | `// +sensitive` covers every field beneath the one it marks | [Controller Guarantees](#controller-guarantees) | implemented |
+| A10 | `fromSource` is removed; expressions are the only consumption mechanism | [fromSource Semantics](#fromsource-semantics), [Application Usage](#application-usage) | implemented |
 
 **Reading the worked examples below.** Every example in the body writes its key by
 hand, as `storage: { key: "..." }`. Applied as written, all of them would now be
@@ -488,6 +489,85 @@ template shipped with KubeVela declares `sensitive: false` and takes
 it. `properties` is marked `// +sensitive` there, which only means anything with
 this amendment.
 
+
+
+### A10: `fromSource` is removed
+
+**Was:** two consumption mechanisms — the `fromSource` directive described in the
+body, and the expressions of [A6](#a6-a-property-may-be-a-cue-expression)
+alongside it.
+
+**Is:** one. Every consumption is an expression:
+
+```yaml
+image:     '$(source.catalog.image + ":1.25.0")'
+region:    '$(source.clusterInfo.region)'          # was fromSource: clusterInfo.region
+costCentre: '$(*source.tenant.costCentre | "unassigned")'   # was the map form's default:
+```
+
+The `FromSource` and `SourceSelector` API types are gone with it. Nothing had
+shipped — none of this feature is on `master` — so no Application could exist
+that used the directive, and there was no compatibility debt to weigh.
+
+**Why.** Not elegance: two mechanisms meant two enforcement paths, and they had
+already drifted once. `fromSource` had `resolvingSurfaces` as its single source of
+truth for where it resolved; expressions grew separate surface handling in the
+webhook. That divergence is precisely how admission came to accept
+`$(context...)` in every policy while only Application-scoped policies
+substituted it — one path silently doing less than the other promised, found by a
+cluster and not by a test.
+
+Expressions were also a strict superset. Whole structs and lists substitute,
+`default:` maps onto `*x | y`, paths are schema-checked, `+sensitive` tracking and
+dependency ordering both run off the same `References` — and expressions add what
+the directive never had: result-type checking against the consuming parameter,
+concatenation, arithmetic, and `context`.
+
+**What this costs.** A hyphenated binding is uglier, and kebab-case is the
+Kubernetes norm:
+
+```yaml
+fromSource: cluster-info.region        # was
+'$(source["cluster-info"].region)'     # is
+```
+
+The binding name is the author's own choice in `spec.sources[].name`, so it is
+avoidable, and the hyphen-hazard check already explains the bracket form rather
+than letting `source.cluster-info` parse as subtraction. It remains the honest
+argument for having kept the directive.
+
+**What removal deleted rather than moved.** Two things worth recording, because
+both were holes the directive had cut:
+
+- `pkg/appfile/validate.go` **skipped schematic validation entirely** for any
+  component or trait whose properties contained a directive, because a raw
+  `{fromSource: ...}` node cannot be type-checked against a CUE template. That
+  escape hatch is gone; expressions substitute before the template runs, so those
+  components are now validated like any other.
+- The admission webhook reported the same mistake twice — once from the reference
+  pass, once from the type pass — for an undeclared source or an unknown schema
+  path. The reference pass now records which properties it faulted and the type
+  pass skips them.
+
+**What removal exposed.** Routing every read through the reference pass for the
+first time showed its schema lookup had never handled three shapes the library's
+own sources use. All three are ordinary reads that `TypeOf` checks properly, and
+all three were being rejected as undeclared:
+
+| Read | Shape |
+|---|---|
+| `labels["platform.io/team"]` | a key containing a dot — every domain-prefixed label |
+| `traits.scaler.healthy` | a key of an open map (`[string]: {...}`) |
+| `properties.endpoint` | below an open field (`properties: _`) |
+
+The dotted path a reference carries cannot express the first, so opacity is
+recorded at collection time while the segments are still separate. The other two
+are lookup fixes: fall through to the map's pattern constraint, and stop at an
+open field rather than descending into one.
+
+None of these were caught by the unit suites. They were caught by applying the
+shipped source library to a cluster, which is the argument for keeping that
+library exercised against a real API server rather than only in envtest.
 
 
 ## Mental Model
@@ -1142,8 +1222,10 @@ If the required label is absent, the `storage:` key interpolation produces an er
 
 ## fromSource Semantics
 
-> Amended by [A6](#a6-a-property-may-be-a-cue-expression): `fromSource` is no longer the only
-> consumption mechanism. Everything below still holds for `fromSource` itself.
+> **Superseded by [A10](#a10-fromsource-is-removed).** `fromSource` no longer exists;
+> [A6](#a6-a-property-may-be-a-cue-expression) describes what replaced it. This section is kept
+> because it states the *rules* — optional versus required, defaults, where a source may be
+> consumed — which expressions inherit unchanged. Read `fromSource: x.y` as `'$(source.x.y)'`.
 
 `fromSource` is *a* **consumption mechanism**: it declares which field from a resolved source output goes into which component or trait property. Substitution happens in the `Complete()` phase of the component's reconcile (after context is built, before the CUE template runs). Resolution (the cache lookup and, on miss or expiry, `template:` execution) always completes before substitution: `fromSource` reads an already-resolved value, never an in-flight one. The `fromSource` references in a component's properties determine which sources are resolved during that component's reconcile and in what order.
 

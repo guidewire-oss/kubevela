@@ -20,35 +20,35 @@ spec:
       type: tenant-data
 
     # Chained source: assembles the deployment name from the sources above plus
-    # the component name. Its inputs are fed via fromSource from earlier sources.
+    # the component name. Its inputs are fed by expressions from earlier sources.
     - name: deployment-name
       type: deployment-namer
       properties:
         component: web
         region:
-          fromSource: cluster.region
+          '$(source.cluster.region)'
         zone:
-          fromSource: cluster.zone
+          '$(source.cluster.zone)'
         department:
-          fromSource: tenant.department
+          '$(source.tenant.department)'
         tenant:
-          fromSource: tenant.name
+          '$(source.tenant.name)'
 
   components:
     - name: web
       type: demo-deployment
       properties:
         name:
-          fromSource: deployment-name.name
+          '$(source["deployment-name"].name)'
         replicas: 
-          fromSource: random-deployment-replicas.value
+          '$(source["random-deployment-replicas"].value)'
         region:
-          fromSource: cluster.region
+          '$(source.cluster.region)'
         zone:
-          fromSource: cluster.zone
+          '$(source.cluster.zone)'
         department:
-          fromSource: tenant.department
+          '$(source.tenant.department)'
         tenant:
-          fromSource: tenant.name
+          '$(source.tenant.name)'
         environment:
-          fromSource: tenant.environment
+          '$(source.tenant.environment)'

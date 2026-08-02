@@ -18,6 +18,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -58,6 +59,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/auth"
 	common2 "github.com/oam-dev/kubevela/pkg/controller/common"
 	core "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -335,7 +337,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.endWithNegativeCondition(logCtx, app, condition.ReconcileError(err), phase)
 	}
 
-	// Re-resolve fromSource values and refresh the ResourceTracker for opted-in
+	// Re-resolve source values and refresh the ResourceTracker for opted-in
 	// components whose sources changed. The workflow does not re-run once it has
 	// succeeded, so without this a re-resolved source value never reaches the
 	// stored manifest and StateKeep below would keep re-applying the stale one.
@@ -370,7 +372,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return r.gcResourceTrackers(logCtx, handler, phase, true, componentsRemoved)
 }
 
-// refreshSourceDrivenComponents re-resolves fromSource values and re-dispatches
+// refreshSourceDrivenComponents re-resolves source values and re-dispatches
 // components whose consumed source values changed, so the ResourceTracker holds
 // the current desired state before StateKeep enforces it. This is a no-op unless
 // the Application declares sources AND is opted in via autoUpdate /
@@ -383,10 +385,10 @@ func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context
 	if _, _, enabled := sourceAutoUpdateSelector(app.GetAnnotations()); !enabled {
 		return
 	}
-	// Which components consume fromSource (by name).
+	// Which components read a source (by name).
 	compByName := make(map[string]common.ApplicationComponent, len(app.Spec.Components))
 	for _, comp := range app.Spec.Components {
-		if componentConsumesFromSource(comp) {
+		if componentConsumesSource(comp) {
 			compByName[comp.Name] = comp
 		}
 	}
@@ -416,27 +418,36 @@ func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context
 	}
 }
 
-// componentConsumesFromSource reports whether a component or any of its traits
-// reference fromSource in their properties.
-func componentConsumesFromSource(comp common.ApplicationComponent) bool {
-	if rawContainsFromSource(comp.Properties) {
+// componentConsumesSource reports whether a component or any of its traits reads
+// a source in its properties.
+func componentConsumesSource(comp common.ApplicationComponent) bool {
+	if rawReadsSource(comp.Properties) {
 		return true
 	}
 	for _, tr := range comp.Traits {
-		if rawContainsFromSource(tr.Properties) {
+		if rawReadsSource(tr.Properties) {
 			return true
 		}
 	}
 	return false
 }
 
-func rawContainsFromSource(raw *runtime.RawExtension) bool {
+func rawReadsSource(raw *runtime.RawExtension) bool {
 	if raw == nil || len(raw.Raw) == 0 {
 		return false
 	}
-	// Structural, but a substring check is a cheap and safe pre-filter: the
-	// literal key can only appear when a fromSource directive is present.
-	return strings.Contains(string(raw.Raw), "\"fromSource\"")
+	// A substring check on the delimiter is a cheap pre-filter; anything that
+	// carries it is decoded and walked properly below. The escape `$$(` is a
+	// literal, not an expression, so the pre-filter over-selects rather than
+	// under-selects - which is the safe direction for a refresh gate.
+	if !strings.Contains(string(raw.Raw), "$(") {
+		return false
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(raw.Raw, &decoded); err != nil {
+		return false
+	}
+	return sourceexpr.HasExpression(decoded)
 }
 
 func (r *Reconciler) stateKeep(logCtx monitorContext.Context, handler *AppHandler, app *v1beta1.Application) {

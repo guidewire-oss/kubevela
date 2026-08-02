@@ -94,19 +94,15 @@ func validateExpressions(app *v1beta1.Application) field.ErrorList {
 // validateExpressionTargetTypes type-checks each property containing a $(...)
 // expression against the parameter it feeds.
 //
-// This is the same contract validateFromSourceTargetTypes enforces for the
-// directive, and it is the point of typing expressions at all: the result type is
-// derived from the source schemas at admission, so a mismatch is refused before
-// the Application exists rather than surfacing as a CUE error mid-render.
+// This is the point of typing expressions at all: the result type is derived
+// from the source schemas at admission, so a mismatch is refused before the
+// Application exists rather than surfacing as a CUE error mid-render.
 //
-// It reuses the directive's machinery deliberately - the same schema validators,
-// the same target parameter lookup, the same kindsCompatible - so the two forms
-// cannot drift into disagreeing about what is a valid substitution.
-//
-// Best-effort per target, matching the directive's behaviour: where the target
-// parameter type cannot be determined the check is skipped rather than guessed.
+// Best-effort per target: where the target parameter type cannot be determined
+// the check is skipped rather than guessed.
 func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, app *v1beta1.Application,
-	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) field.ErrorList {
+	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator,
+	reported map[string]bool) field.ErrorList {
 	var errs field.ErrorList
 	targetParams := map[string]*cueStruct{}
 
@@ -130,6 +126,12 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 			}
 			parsed, err := sourceexpr.Parse(raw)
 			if err != nil || !parsed.HasExpr() {
+				continue
+			}
+			// The reference pass already faulted this property - an undeclared
+			// source, or a path the schema does not have. Typing it would only
+			// restate that in different words.
+			if reported[lf.fieldPath.String()] {
 				continue
 			}
 

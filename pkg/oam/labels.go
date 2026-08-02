@@ -166,7 +166,7 @@ const (
 	// This is orthogonal to AnnotationAutoUpdate which controls definition version updates.
 	AnnotationAutoRevision = "policy.oam.dev/auto-revision"
 
-	// AnnotationSourceResolvedHash records per-source hashes of the fromSource
+	// AnnotationSourceResolvedHash records per-source hashes of the source
 	// values a component consumed at dispatch time (JSON map of source name ->
 	// hash). It is stamped on the dispatched workload so a later reconcile can
 	// detect that a source re-resolved to a different value (which the raw spec
@@ -174,7 +174,7 @@ const (
 	AnnotationSourceResolvedHash = "source.oam.dev/resolved-hash"
 
 	// AnnotationAutoUpdateSources opts a component in to being re-dispatched when
-	// a consumed fromSource value re-resolves to a different value. Accepted
+	// a consumed source value re-resolves to a different value. Accepted
 	// values: "true" or "*" (any consumed source), or a comma-separated list of
 	// spec.sources[].name to scope re-dispatch to specific sources. Absent/empty
 	// disables it. app.oam.dev/autoUpdate: "true" also enables it (superset).

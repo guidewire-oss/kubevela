@@ -1040,14 +1040,14 @@ func TestParseComponentFromRevisionAndClient(t *testing.T) {
 	}
 }
 
-// TestValidateFromSourceSurfaces covers the render-time backstop.
+// TestValidateExpressionSurfaces covers the render-time backstop.
 //
-// The admission webhook rejects fromSource on surfaces where it is never
-// substituted, but admission can be disabled (--use-webhook=false). Unlike the
-// other source checks, skipping this one fails silently: the directive never
-// reaches the resolver, so it survives into the consumer as a literal
-// {"fromSource": ...} map rather than erroring.
-func TestValidateFromSourceSurfaces(t *testing.T) {
+// The admission webhook rejects reading a source on a surface that cannot
+// resolve one, but admission can be disabled (--use-webhook=false). Unlike the
+// other source checks, skipping this one fails silently: the read never reaches
+// a resolver, so the expression's own text survives into the consumer rather
+// than erroring.
+func TestValidateExpressionSurfaces(t *testing.T) {
 	raw := func(s string) *runtime.RawExtension { return &runtime.RawExtension{Raw: []byte(s)} }
 	step := func(name string, props *runtime.RawExtension) wfTypesv1alpha1.WorkflowStep {
 		return wfTypesv1alpha1.WorkflowStep{
@@ -1061,53 +1061,52 @@ func TestValidateFromSourceSurfaces(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name: "policy with fromSource is rejected",
+			name: "policy reading a source is rejected",
 			af: &Appfile{Policies: []v1beta1.AppPolicy{
-				{Name: "override-image", Type: "override", Properties: raw(`{"image":{"fromSource":"img.image"}}`)},
+				{Name: "override-image", Type: "override", Properties: raw(`{"image":"$(source.img.image)"}`)},
 			}},
-			wantErr: "not supported in policy properties",
+			wantErr: `"source" cannot be read here`,
 		},
 		{
-			// EXPERIMENT: workflow steps now resolve, via a pre-pass in
-			// generateWorkflowInstance that substitutes before the workflow
-			// engine sees the properties. See the source-expressions devlog.
-			name: "workflow step with fromSource is accepted",
-			af:   &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("notify", raw(`{"url":{"fromSource":"cfg.webhook"}}`))}},
+			// Workflow steps resolve via a pre-pass in generateWorkflowInstance
+			// that substitutes before the workflow engine sees the properties.
+			name: "workflow step reading a source is accepted",
+			af:   &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("notify", raw(`{"url":"$(source.cfg.webhook)"}`))}},
 		},
 		{
-			name: "sub-step with fromSource is accepted",
+			name: "sub-step reading a source is accepted",
 			af: &Appfile{WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{{
 				WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{Name: "group", Type: "step-group"},
 				SubSteps: []wfTypesv1alpha1.WorkflowStepBase{
-					{Name: "inner", Type: "notification", Properties: raw(`{"url":{"fromSource":"cfg.webhook"}}`)},
+					{Name: "inner", Type: "notification", Properties: raw(`{"url":"$(source.cfg.webhook)"}`)},
 				},
 			}}},
 		},
 		{
-			// The directive is valid at any depth, so the walk must be recursive
+			// An expression is valid at any depth, so the walk must be recursive
 			// through both objects and arrays.
-			name: "nested fromSource is found",
+			name: "a nested read is found",
 			af: &Appfile{Policies: []v1beta1.AppPolicy{
-				{Name: "p", Type: "override", Properties: raw(`{"a":{"b":[{"c":{"fromSource":"x.y"}}]}}`)},
+				{Name: "p", Type: "override", Properties: raw(`{"a":{"b":[{"c":"$(source.x.y)"}]}}`)},
 			}},
-			wantErr: "not supported in policy properties",
+			wantErr: `"source" cannot be read here`,
 		},
 		{
 			name: "the offending policy is named",
 			af: &Appfile{Policies: []v1beta1.AppPolicy{
-				{Name: "my-policy", Type: "override", Properties: raw(`{"image":{"fromSource":"img.image"}}`)},
+				{Name: "my-policy", Type: "override", Properties: raw(`{"image":"$(source.img.image)"}`)},
 			}},
 			wantErr: `"my-policy"`,
 		},
 		{
-			name: "properties without fromSource are accepted",
+			name: "properties without expressions are accepted",
 			af: &Appfile{
 				Policies:      []v1beta1.AppPolicy{{Name: "p", Type: "override", Properties: raw(`{"image":"nginx"}`)}},
 				WorkflowSteps: []wfTypesv1alpha1.WorkflowStep{step("notify", raw(`{"url":"https://example.com"}`))},
 			},
 		},
 		{
-			// A field merely *named* fromSource-ish must not trip the check.
+			// A field merely *named* source-ish must not trip the check.
 			name: "similarly named fields are accepted",
 			af: &Appfile{Policies: []v1beta1.AppPolicy{
 				{Name: "p", Type: "override", Properties: raw(`{"fromSourceUrl":"https://example.com","notFromSource":true}`)},
@@ -1135,7 +1134,7 @@ func TestValidateFromSourceSurfaces(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateFromSourceSurfaces(tc.af)
+			err := validateExpressionSurfaces(tc.af)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("expected acceptance, got: %v", err)

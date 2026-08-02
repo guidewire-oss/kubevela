@@ -8,8 +8,7 @@ import "strings"
 }
 template: {
 	// Assembles a deployment name from cluster + tenant facts plus the component
-	// it is for. fromSource cannot concatenate values from multiple sources, so
-	// this chained source takes them as inputs (fed via fromSource in
+	// it is for. A chained source takes the parts as inputs (fed by expressions in
 	// spec.sources[].properties) and returns the joined name.
 	schema: name: string
 

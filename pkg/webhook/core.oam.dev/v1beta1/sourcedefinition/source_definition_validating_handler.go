@@ -96,9 +96,9 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 	}
 
 	// Without a schema: block, both the admission path check and the runtime
-	// output check are skipped, leaving fromSource unvalidated in either layer.
+	// output check are skipped, leaving source reads unvalidated in either layer.
 	if err := ValidateSourceSchema(cueTemplate); err != nil {
-		logger.WithStep("validate-schema").WithError(err).Error(err, "SourceDefinition schema block is invalid - a schema is required to validate fromSource paths")
+		logger.WithStep("validate-schema").WithError(err).Error(err, "SourceDefinition schema block is invalid - a schema is required to validate source reads")
 		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
 	}
 

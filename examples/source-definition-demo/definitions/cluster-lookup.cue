@@ -7,7 +7,7 @@ import "vela/kube"
 	description: "Reads cluster-wide facts (region, zone, provider) from the cluster-info ConfigMap."
 }
 template: {
-	// Output contract: the fields any Application may read via fromSource.
+	// Output contract: the fields any Application may read with $(source...).
 	schema: {
 		region:   string
 		zone:     string

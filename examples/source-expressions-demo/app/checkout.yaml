@@ -32,8 +32,8 @@ spec:
     - name: api
       type: webservice
       properties:
-        # Concatenation - impossible with fromSource, which yields a whole value
-        # or nothing.
+        # Concatenation - the source yields a value and the expression composes
+        # it with a tag.
         image: '$(source.catalog.image + ":1.25.0")'
 
         # A plain scalar read, and an int that stays an int rather than

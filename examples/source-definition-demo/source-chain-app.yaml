@@ -88,17 +88,17 @@ spec:
       type: render-source
       properties:
         repo:
-          fromSource: clusterInfo.nested.image.repo
+          '$(source.clusterInfo.nested.image.repo)'
         tag:
-          fromSource: clusterInfo.nested.image.tag
+          '$(source.clusterInfo.nested.image.tag)'
         region:
-          fromSource: clusterInfo.nested.meta.region
+          '$(source.clusterInfo.nested.meta.region)'
   components:
     - name: web-chain
       type: webservice
       properties:
         image:
-          fromSource: rendered.resolved.image
+          '$(source.rendered.resolved.image)'
         port: 80
       traits:
         - type: scaler

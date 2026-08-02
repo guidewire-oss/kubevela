@@ -237,7 +237,7 @@ func TestParseConsumableFrom(t *testing.T) {
 			// cannot claim to be consumable there.
 			name:     "reject a surface that does not resolve",
 			template: "consumableFrom: [\"policy\"]\nschema: {a: string}\n",
-			wantErr:  "not a surface that supports fromSource",
+			wantErr:  "not a surface that supports a source read",
 		},
 		{
 			name:     "reject empty list",

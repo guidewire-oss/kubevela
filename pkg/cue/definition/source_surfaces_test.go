@@ -21,7 +21,7 @@ import (
 	"testing"
 )
 
-// ConsumableSurfaces is derived from resolvingSurfaces rather than maintained
+// ConsumableSurfaces is derived from sourceReadingSurfaces rather than maintained
 // beside it, because maintaining both drifted: a surface was enabled for
 // resolution while consumableFrom still refused to let a definition name it, so
 // a definition could not declare a capability the controller had.
@@ -30,7 +30,7 @@ import (
 // one edit and cannot reintroduce the gap.
 func TestConsumableSurfacesDerivesFromResolvingSurfaces(t *testing.T) {
 	for _, surface := range ConsumableSurfaces {
-		if !SurfaceResolvesFromSource(surface) {
+		if !SurfaceReadsSource(surface) {
 			t.Errorf("%q is consumable but does not resolve; a definition could advertise "+
 				"a capability the controller does not have", surface)
 		}
@@ -42,7 +42,7 @@ func TestConsumableSurfacesDerivesFromResolvingSurfaces(t *testing.T) {
 
 	// Every resolving surface except chaining must be nameable, or a definition
 	// cannot restrict itself to a surface that genuinely works.
-	for _, surface := range resolvingSurfaces {
+	for _, surface := range sourceReadingSurfaces {
 		if surface == SurfaceSource {
 			continue
 		}
@@ -52,7 +52,7 @@ func TestConsumableSurfacesDerivesFromResolvingSurfaces(t *testing.T) {
 	}
 
 	if len(ConsumableSurfaces) == 0 {
-		t.Fatal("no surface is consumable, so fromSource cannot be used anywhere")
+		t.Fatal("no surface is consumable, so a source cannot be read anywhere")
 	}
 }
 
@@ -60,7 +60,7 @@ func TestConsumableSurfacesDerivesFromResolvingSurfaces(t *testing.T) {
 // would disagree about what is inert.
 func TestUnknownSurfaceDoesNotResolve(t *testing.T) {
 	for _, surface := range []string{"", "unknown", SurfacePolicy} {
-		if SurfaceResolvesFromSource(surface) {
+		if SurfaceReadsSource(surface) {
 			t.Errorf("%q must not resolve", surface)
 		}
 	}

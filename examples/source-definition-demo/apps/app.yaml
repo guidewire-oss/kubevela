@@ -12,7 +12,7 @@ spec:
 
   components:
     # Writes the resolved tenant and cluster data into a ConfigMap. Values are
-    # substituted via fromSource before the component renders, so the ConfigMap
+    # substituted before the component renders, so the ConfigMap
     # is created with concrete data.
     - name: tenant-config
       type: k8s-objects
@@ -25,11 +25,11 @@ spec:
               namespace: source-demo
             data:
               tenantName:
-                fromSource: tenant.name
+                '$(source.tenant.name)'
               department:
-                fromSource: tenant.department
+                '$(source.tenant.department)'
               environment:
-                fromSource: tenant.environment
+                '$(source.tenant.environment)'
               # costCenter is optional in the tenant-data schema, so it may be
               # absent at resolution time. The target here is a free-form
               # ConfigMap field (not a typed required parameter), so admission
@@ -37,14 +37,10 @@ spec:
               # good practice: without it, an absent costCenter would omit the
               # key entirely. (Admission only *requires* a default when an
               # optional source field feeds a required target parameter.)
-              costCenter:
-                fromSource:
-                  name: tenant
-                  path: costCenter
-                  default: "unassigned"
+              costCenter: '$(*source.tenant.costCenter | "unassigned")'
               region:
-                fromSource: cluster.region
+                '$(source.cluster.region)'
               zone:
-                fromSource: cluster.zone
+                '$(source.cluster.zone)'
               provider:
-                fromSource: cluster.provider
+                '$(source.cluster.provider)'
