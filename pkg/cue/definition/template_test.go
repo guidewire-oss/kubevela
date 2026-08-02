@@ -1853,7 +1853,7 @@ func TestResolveSourceNode(t *testing.T) {
 		"region": `$(source["cluster-info"].region)`,
 		"tier":   `$(source["cluster-info"].nested.tier)`,
 	}
-	resolver := newSourceResolver(process.NewContext(process.ContextData{}))
+	resolver := newSourceResolver(process.NewContext(process.ContextData{}), SurfaceComponent)
 	resolver.resolved = sources
 	resolver.sourceTypes = map[string]string{"cluster-info": "cluster"}
 	got, err := resolveSourceNode(in, resolver)
@@ -1870,7 +1870,7 @@ func TestResolveSourceNode(t *testing.T) {
 
 func TestResolveChainedSourceProperties(t *testing.T) {
 	ctx := process.NewContext(process.ContextData{})
-	resolver := newSourceResolver(ctx)
+	resolver := newSourceResolver(ctx, SurfaceComponent)
 	resolver.sourceTypes = map[string]string{
 		"sourceA": "typeA",
 		"sourceB": "typeB",
@@ -1985,7 +1985,7 @@ func TestResolveSourceUsesStaleCacheOnRefreshFailure(t *testing.T) {
 
 	ctx := process.NewContext(process.ContextData{})
 	ctx.PushData(process.ContextAppSourceCacheStore, NewSecretSourceCacheStore(cli))
-	resolver := newSourceResolver(ctx)
+	resolver := newSourceResolver(ctx, SurfaceComponent)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": resolver_stale_cache_use_template,
@@ -2030,7 +2030,7 @@ func TestResolveSourceFailsOnStaleRefreshFailureWhenPolicyFail(t *testing.T) {
 
 	ctx := process.NewContext(process.ContextData{})
 	ctx.PushData(process.ContextAppSourceCacheStore, NewSecretSourceCacheStore(cli))
-	resolver := newSourceResolver(ctx)
+	resolver := newSourceResolver(ctx, SurfaceComponent)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": resolver_stale_cache_fail_template,
@@ -2046,7 +2046,7 @@ func TestResolveSourceFailsOnStaleRefreshFailureWhenPolicyFail(t *testing.T) {
 
 func TestResolveSourceSchemaMismatchFails(t *testing.T) {
 	ctx := process.NewContext(process.ContextData{})
-	resolver := newSourceResolver(ctx)
+	resolver := newSourceResolver(ctx, SurfaceComponent)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
@@ -2073,7 +2073,7 @@ parameter: {
 
 func TestResolveSourceErrsFieldFails(t *testing.T) {
 	ctx := process.NewContext(process.ContextData{})
-	resolver := newSourceResolver(ctx)
+	resolver := newSourceResolver(ctx, SurfaceComponent)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `
@@ -2110,7 +2110,7 @@ parameter: {
 
 func TestResolveSourceErrsFieldEmptyIsIgnored(t *testing.T) {
 	ctx := process.NewContext(process.ContextData{})
-	resolver := newSourceResolver(ctx)
+	resolver := newSourceResolver(ctx, SurfaceComponent)
 	resolver.sourceTypes = map[string]string{"s": "t"}
 	resolver.sourceTemplates = map[string]string{
 		"t": `

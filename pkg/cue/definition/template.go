@@ -154,7 +154,7 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 
 	var paramFile = velaprocess.ParameterFieldName + ": {}"
 	if params != nil {
-		resolved, err := resolveSourceExpressions(ctx, params)
+		resolved, err := resolveSourceExpressions(ctx, params, SurfaceComponent)
 		if err != nil {
 			return errors.WithMessagef(err, "resolve source expressions for workload %s", wd.name)
 		}
@@ -339,7 +339,7 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 	abstractTemplate, _ = upgrade.EnsureCueVersionCompatibility(abstractTemplate, td.name, upgrade.TraitKind, upgrade.TemplateAreaMain)
 	buff := abstractTemplate + "\n"
 	if params != nil {
-		resolved, err := resolveSourceExpressions(ctx, params)
+		resolved, err := resolveSourceExpressions(ctx, params, SurfaceTrait)
 		if err != nil {
 			return errors.WithMessagef(err, "resolve source expressions for trait %s", td.name)
 		}
@@ -690,7 +690,12 @@ func FormatCUEError(err error, messagePrefix string, entityType, entityName stri
 	return fmt.Errorf("%s", strings.TrimRight(result.String(), "\n"))
 }
 
-func resolveSourceExpressions(ctx process.Context, params interface{}) (interface{}, error) {
+// resolveSourceExpressions substitutes $(...) expressions in a properties blob.
+//
+// surface names the call site, which decides both what a source may read from
+// context and - once the compatibility check lands - whether it may be consumed
+// here at all.
+func resolveSourceExpressions(ctx process.Context, params interface{}, surface string) (interface{}, error) {
 	if params == nil {
 		return nil, nil
 	}
@@ -702,7 +707,7 @@ func resolveSourceExpressions(ctx process.Context, params interface{}) (interfac
 	if err := json.Unmarshal(bt, &normalized); err != nil {
 		return nil, err
 	}
-	return resolveSourceNode(normalized, newSourceResolver(ctx))
+	return resolveSourceNode(normalized, newSourceResolver(ctx, surface))
 }
 
 func resolveSourceNode(node interface{}, resolver *sourceResolver) (interface{}, error) {
@@ -826,7 +831,11 @@ func lookupMapPath(data map[string]interface{}, path string) (interface{}, bool)
 }
 
 type sourceResolver struct {
-	ctx             process.Context
+	ctx process.Context
+	// surface is the call site this resolver is working on behalf of. It decides
+	// what a source may read from context: a chained source resolves inside
+	// whichever render triggered the outer binding, so it inherits this too.
+	surface         string
 	sourceProps     map[string]map[string]interface{}
 	sourceTypes     map[string]string
 	sourceTemplates map[string]string
@@ -850,7 +859,7 @@ type SourceResolutionStatus struct {
 	SensitivePaths []string
 }
 
-func newSourceResolver(ctx process.Context) *sourceResolver {
+func newSourceResolver(ctx process.Context, surface string) *sourceResolver {
 	sourceProps, _ := ctx.GetData(velaprocess.ContextAppSources).(map[string]map[string]interface{})
 	if sourceProps == nil {
 		sourceProps = map[string]map[string]interface{}{}
@@ -883,6 +892,7 @@ func newSourceResolver(ctx process.Context) *sourceResolver {
 		cacheStore = s
 	}
 	return &sourceResolver{
+		surface:         surface,
 		ctx:             ctx,
 		sourceProps:     sourceProps,
 		sourceTypes:     sourceTypes,
@@ -993,7 +1003,7 @@ func (r *sourceResolver) resolve(sourceName string) (map[string]interface{}, err
 	}
 	// A source is compiled against the context the cache-key rules make readable,
 	// not the component's - so it cannot depend on anything the key ignores.
-	c, err := sourceContext(r.ctx, sourceName)
+	c, err := sourceContext(r.ctx, sourceName, r.surface)
 	if err != nil {
 		r.setSourceStatus(sourceName, sourceType, "Failed", err.Error(), cachePolicy.Key, "", nil)
 		return nil, err
@@ -1067,7 +1077,7 @@ func (r *sourceResolver) resolveCachePolicy(sourceName, sourceType, sourceTempla
 			paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(raw))
 		}
 	}
-	c, err := sourceContext(r.ctx, sourceName)
+	c, err := sourceContext(r.ctx, sourceName, r.surface)
 	if err != nil {
 		return policy, err
 	}

@@ -106,6 +106,9 @@ func UnsupportedSurfaceMessage(surface string) string {
 // Workflow steps are supported by substituting before the workflow engine sees
 // them, rather than by changing that engine - so the engine receives ordinary
 // data and does not know sources exist.
-func ResolveSourceExpressions(ctx process.Context, params interface{}) (interface{}, error) {
-	return resolveSourceExpressions(ctx, params)
+//
+// surface names the call site, so a source reads the context that site actually
+// offers rather than a set curated for somewhere else.
+func ResolveSourceExpressions(ctx process.Context, params interface{}, surface string) (interface{}, error) {
+	return resolveSourceExpressions(ctx, params, surface)
 }

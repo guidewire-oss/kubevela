@@ -595,7 +595,7 @@ func resolveWorkflowStepSources(af *appfile.Appfile, steps []wfTypesv1alpha1.Wor
 		}
 		ctxData := appfile.GenerateContextDataFromAppFile(af, name)
 		pCtx := velaprocess.NewContext(ctxData)
-		resolved, err := veladefinition.ResolveSourceExpressions(pCtx, decoded)
+		resolved, err := veladefinition.ResolveSourceExpressions(pCtx, decoded, veladefinition.SurfaceWorkflowStep)
 		if err != nil {
 			return err
 		}

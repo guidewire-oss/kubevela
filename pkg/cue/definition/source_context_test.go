@@ -24,6 +24,7 @@ import (
 
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
 // componentContext stands in for the context a component render would produce -
@@ -96,4 +97,69 @@ func TestSourceContextNameIsTheBinding(t *testing.T) {
 	if strings.Contains(got, `"name":"api"`) {
 		t.Errorf("context.name is the consuming component, not the binding: %s", got)
 	}
+}
+
+// availableFields narrows what a source may read to what its call site offers.
+//
+// Today this removes nothing: every keyed field is offered by every surface that
+// resolves a source, which TestKeyedFieldsExistInTheContextRegistry enforces. The
+// no-op case is the one worth pinning - it is what makes this change safe to land
+// before any surface-specific field exists.
+func TestAvailableFields(t *testing.T) {
+	rules, err := cachekey.LoadRules()
+	if err != nil {
+		t.Fatalf("loading rules: %v", err)
+	}
+	all := rules.Fields()
+
+	t.Run("a no-op on every surface that resolves a source", func(t *testing.T) {
+		for _, surface := range []string{SurfaceComponent, SurfaceTrait, SurfaceWorkflowStep} {
+			got := availableFields(all, surface)
+			if len(got) != len(all) {
+				t.Errorf("%s: expected every keyed field to survive, got %d of %d: %v",
+					surface, len(got), len(all), got)
+			}
+		}
+	})
+
+	t.Run("narrows to what the surface offers", func(t *testing.T) {
+		// policy-app offers no cluster: that render targets none. A source is not
+		// consumable there yet, but the narrowing must be real rather than
+		// accidental, or the machinery proves nothing.
+		got := availableFields(all, "policy-app")
+		for _, field := range got {
+			if field == "cluster" {
+				t.Error("cluster survived narrowing to an application-scoped policy, which has none")
+			}
+		}
+		if len(got) >= len(all) {
+			t.Errorf("expected narrowing on policy-app, got %d of %d", len(got), len(all))
+		}
+	})
+
+	t.Run("context.name always survives", func(t *testing.T) {
+		// It is supplied from the binding, not the caller, so no surface can
+		// withhold it.
+		for _, surface := range append(sourceexpr.SurfaceNames(), SurfaceComponent) {
+			found := false
+			for _, field := range availableFields(all, surface) {
+				if field == velaprocess.ContextName {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: context.name must survive; it comes from the binding", surface)
+			}
+		}
+	})
+
+	// Failing open matters: a caller that forgot to name its surface should
+	// behave as it did before, not silently lose its whole context.
+	t.Run("an unknown or empty surface fails open", func(t *testing.T) {
+		for _, surface := range []string{"", "not-a-surface"} {
+			if got := availableFields(all, surface); len(got) != len(all) {
+				t.Errorf("%q: expected every field, got %d of %d", surface, len(got), len(all))
+			}
+		}
+	})
 }

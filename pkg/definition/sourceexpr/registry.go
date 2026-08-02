@@ -233,6 +233,13 @@ func SurfaceOffers(surface, field string) bool {
 	return v.LookupPath(cue.MakePath(cue.Str(field))).Exists()
 }
 
+// SurfaceDeclared reports whether the registry knows a surface, so a caller can
+// distinguish "offers nothing" from "never heard of it".
+func SurfaceDeclared(surface string) bool {
+	_, ok := registry.surfaces[surface]
+	return ok
+}
+
 // SurfaceNames lists the declared surfaces, for error messages and tests.
 func SurfaceNames() []string {
 	out := make([]string, 0, len(registry.surfaces))

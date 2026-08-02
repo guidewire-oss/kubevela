@@ -25,6 +25,7 @@ import (
 
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
 // sourceContextFile renders the `context:` a source template is compiled against.
@@ -59,13 +60,41 @@ func sourceContextFile(ctx process.Context, bindingName string, fields []string)
 	return fmt.Sprintf("context: %s", string(raw)), nil
 }
 
-// sourceContext renders the context for a binding using the current rules.
-func sourceContext(ctx process.Context, bindingName string) (string, error) {
+// sourceContext renders the context for a binding, using the current rules
+// narrowed to what the calling surface actually offers.
+//
+// A source's context has never been simply its caller's: the rules decide what a
+// source may read at all, and context.name is overridden to the binding. The
+// surface is the second half of that projection. Today it removes nothing - every
+// keyed field is offered by every surface that resolves a source, which
+// TestKeyedFieldsExistInTheContextRegistry enforces - so this is the machinery
+// for fields that are surface-specific, not a change in behaviour.
+//
+// An unrecognised surface is treated as offering everything the rules allow,
+// rather than nothing. Failing open matters here: a caller that forgot to name
+// its surface should behave as it did before, not silently lose its context.
+func sourceContext(ctx process.Context, bindingName, surface string) (string, error) {
 	rules, err := cachekey.LoadRules()
 	if err != nil {
 		return "", err
 	}
-	return sourceContextFile(ctx, bindingName, rules.Fields())
+	return sourceContextFile(ctx, bindingName, availableFields(rules.Fields(), surface))
+}
+
+// availableFields narrows the rules' field list to those the surface offers.
+func availableFields(fields []string, surface string) []string {
+	if surface == "" || !sourceexpr.SurfaceDeclared(surface) {
+		return fields
+	}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		// context.name is supplied from the binding rather than the caller, so it
+		// is available wherever a source resolves regardless of the surface.
+		if field == velaprocess.ContextName || sourceexpr.SurfaceOffers(surface, field) {
+			out = append(out, field)
+		}
+	}
+	return out
 }
 
 // identityContext gathers the values named by the generated keyInputs list.
