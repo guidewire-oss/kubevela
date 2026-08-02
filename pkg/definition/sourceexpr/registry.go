@@ -220,6 +220,19 @@ func knownField(name string) bool {
 	return false
 }
 
+// SurfaceOffers reports whether a surface offers a context field.
+//
+// Exported for the cache-key rules, which may only key on a field every surface
+// that resolves a source can supply - otherwise a source would resolve from one
+// call site and fail from another.
+func SurfaceOffers(surface, field string) bool {
+	v, ok := registry.surfaces[surface]
+	if !ok {
+		return false
+	}
+	return v.LookupPath(cue.MakePath(cue.Str(field))).Exists()
+}
+
 // SurfaceNames lists the declared surfaces, for error messages and tests.
 func SurfaceNames() []string {
 	out := make([]string, 0, len(registry.surfaces))
