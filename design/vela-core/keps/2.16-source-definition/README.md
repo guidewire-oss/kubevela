@@ -57,6 +57,7 @@ affected carry a pointer back to this list.
 | A8 | The author/platform boundary is widened, and held by a sandbox rather than by having no language | [Trust Model](#trust-model) | implemented |
 | A9 | `// +sensitive` covers every field beneath the one it marks | [Controller Guarantees](#controller-guarantees) | implemented |
 | A10 | `fromSource` is removed; expressions are the only consumption mechanism | [fromSource Semantics](#fromsource-semantics), [Application Usage](#application-usage) | implemented |
+| A11 | Every surface type-checks its expressions, not just components and traits | [Validation summary](#validation-summary) | implemented |
 
 **Reading the worked examples below.** Every example in the body writes its key by
 hand, as `storage: { key: "..." }`. Applied as written, all of them would now be
@@ -568,6 +569,52 @@ open field rather than descending into one.
 None of these were caught by the unit suites. They were caught by applying the
 shipped source library to a cluster, which is the argument for keeping that
 library exercised against a real API server rather than only in envtest.
+
+
+### A11: Every surface type-checks its expressions
+
+**Was:** the type check ran for components and traits only. A mismatch anywhere
+else was caught incidentally or not at all - a workflow step by JSON
+unmarshalling, naming a Go struct field; a policy by the dry-run render, naming a
+CUE path; and the "a possibly-absent read needs a default" rule did not run on
+either.
+
+**Is:** policies and workflow steps are typed against their own definition's
+`parameter:` block, with the roots that surface permits - `context` only for a
+policy, both for a step:
+
+```
+spec.workflow.steps[0].properties.parallelism: type mismatch: expression
+  $(source.env.name) is string but workflow step "deploy" parameter expects int
+
+spec.policies[0].properties.keepLegacyResource: type mismatch: expression
+  $(context.appName) is string but policy "garbage-collect" parameter expects bool
+
+spec.policies[0].properties.owner: context.appLabels.owner may be absent and
+  feeds required policy "cost-tag" parameter; supply a default with
+  *context.appLabels.owner | <fallback>
+```
+
+**Why it had not been running.** Not an oversight in the loop - the target
+parameter could not be loaded. `loadTargetParameter` compiled the *whole*
+definition template, which requires every package it imports to be registered
+with the compiler in hand, and that compiler carries the workload providers, not
+`vela/multicluster` or `vela/builtin`. So every workflow-step definition failed to
+compile, the check failed open, and it did so silently at `klog.V(4)`.
+
+Only the `parameter:` block is ever wanted, so only that is compiled now - lifted
+out of the template with its top-level definitions and compiled alone, with the
+full-template compile kept as a fallback. That makes the check independent of
+which providers the compiler happens to hold, which also fixes it for any
+component definition importing a package this compiler does not have.
+
+**Still outstanding, and not a validation problem.** An expression in a workflow
+step only substitutes where the target field is a string. The step's properties
+are decoded into a typed Go struct while the appfile is parsed - before
+substitution - so a correctly-typed `parallelism: '$(source.tenant.maxReplicas)'`
+is still refused, by the decoder rather than by any check here. Components and
+traits do not have this: their properties stay a `RawExtension` until after
+substitution. Fixing it means substituting before that decode.
 
 
 ## Mental Model

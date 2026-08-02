@@ -9,6 +9,7 @@ import (
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/ast"
+	cueast "cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/cuecontext"
 	cueformat "cuelang.org/go/cue/format"
 	cueparser "cuelang.org/go/cue/parser"
@@ -671,8 +672,21 @@ func (h *ValidatingHandler) loadTargetParameter(ctx context.Context, appNamespac
 	if !ok || strings.TrimSpace(tmpl) == "" {
 		return nil, nil
 	}
-	// Compile statically with provider imports available but provider functions
-	// disabled (we only need declared types, no rendering / I/O).
+	// Only the `parameter:` block is wanted, so only that is compiled.
+	//
+	// Compiling the whole template needs every package it imports to be
+	// registered with the compiler in hand, and WorkloadCompiler carries the
+	// workload providers - not vela/multicluster or vela/builtin. So every
+	// workflow-step definition failed to compile and the check silently passed,
+	// which is why a type mismatch in a step surfaced as a Go unmarshal error
+	// instead. The same applied to any component definition importing a package
+	// this compiler does not hold.
+	if param, ok := parameterBlockOnly(ctx, tmpl); ok {
+		return param, nil
+	}
+
+	// Fall back to compiling the whole template: a `parameter` that references
+	// something else in the file needs the file.
 	val, err := velacuex.WorkloadCompiler.Get().CompileStringWithOptions(
 		ctx, tmpl+velacue.BaseTemplate, upstreamcuex.DisableResolveProviderFunctions{})
 	if err != nil || val.Err() != nil {
@@ -684,6 +698,59 @@ func (h *ValidatingHandler) loadTargetParameter(ctx context.Context, appNamespac
 		return nil, nil
 	}
 	return &cueStruct{root: param}, nil
+}
+
+// parameterBlockOnly extracts a template's `parameter:` declaration and compiles
+// it on its own, without the imports or the body around it.
+//
+// A definition's parameter block is a plain type declaration - it is the
+// contract an author writes against - so it almost never needs the rest of the
+// file. Compiling it alone makes the type check independent of which providers
+// the compiler happens to hold, which is what stopped it running for workflow
+// steps at all.
+func parameterBlockOnly(ctx context.Context, tmpl string) (*cueStruct, bool) {
+	file, err := cueparser.ParseFile("-", tmpl, cueparser.ParseComments)
+	if err != nil || file == nil {
+		return nil, false
+	}
+
+	// The parameter field, plus any top-level definitions it might reference.
+	var keep []cueast.Decl
+	found := false
+	for _, decl := range file.Decls {
+		field, ok := decl.(*cueast.Field)
+		if !ok {
+			continue
+		}
+		name, _, lerr := cueast.LabelName(field.Label)
+		if lerr != nil {
+			continue
+		}
+		switch {
+		case name == "parameter":
+			keep = append(keep, decl)
+			found = true
+		case strings.HasPrefix(name, "#"):
+			keep = append(keep, decl)
+		}
+	}
+	if !found {
+		return nil, false
+	}
+
+	src, ferr := cueformat.Node(&cueast.File{Decls: keep})
+	if ferr != nil {
+		return nil, false
+	}
+	val := cuecontext.New().CompileBytes(src)
+	if val.Err() != nil {
+		return nil, false
+	}
+	param := val.LookupPath(cue.ParsePath("parameter"))
+	if !param.Exists() {
+		return nil, false
+	}
+	return &cueStruct{root: param}, true
 }
 
 // getDefinitionTemplate fetches a Component/Trait definition (app namespace with
@@ -702,6 +769,24 @@ func (h *ValidatingHandler) getDefinitionTemplate(ctx context.Context, appNamesp
 		return def.Spec.Schematic.CUE.Template, true
 	case "trait":
 		def := &v1beta1.TraitDefinition{}
+		if err := oamutil.GetDefinition(lookupCtx, h.Client, def, defName); err != nil {
+			return "", false
+		}
+		if def.Spec.Schematic == nil || def.Spec.Schematic.CUE == nil {
+			return "", false
+		}
+		return def.Spec.Schematic.CUE.Template, true
+	case "workflowstep":
+		def := &v1beta1.WorkflowStepDefinition{}
+		if err := oamutil.GetDefinition(lookupCtx, h.Client, def, defName); err != nil {
+			return "", false
+		}
+		if def.Spec.Schematic == nil || def.Spec.Schematic.CUE == nil {
+			return "", false
+		}
+		return def.Spec.Schematic.CUE.Template, true
+	case "policy":
+		def := &v1beta1.PolicyDefinition{}
 		if err := oamutil.GetDefinition(lookupCtx, h.Client, def, defName); err != nil {
 			return "", false
 		}

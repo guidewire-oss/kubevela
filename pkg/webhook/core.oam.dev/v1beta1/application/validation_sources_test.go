@@ -822,3 +822,65 @@ func TestSourceSchemaLookupShapes(t *testing.T) {
 		}
 	}
 }
+
+// The target parameter has to be readable without compiling the whole template.
+//
+// Regression test: loadTargetParameter compiled the entire definition, which
+// needs every package it imports registered with the compiler in hand.
+// WorkloadCompiler holds the workload providers, not vela/multicluster or
+// vela/builtin - so every workflow-step definition failed to compile and the
+// type check silently passed. A mismatch in a step surfaced as a Go unmarshal
+// error naming a struct field instead.
+func TestParameterBlockOnly(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("extracted without the imports the body needs", func(t *testing.T) {
+		// Shaped like the deploy step: imports this compiler does not hold.
+		tmpl := `
+import (
+	"vela/multicluster"
+	"vela/builtin"
+)
+deploy: multicluster.#Deploy & {$params: {policies: parameter.policies}}
+suspend: builtin.#Suspend & {$params: message: "\(context.stepName)"}
+parameter: {
+	auto: *true | bool
+	policies: *[] | [...string]
+	parallelism: *5 | int
+}
+`
+		param, ok := parameterBlockOnly(ctx, tmpl)
+		if !ok {
+			t.Fatal("the parameter block should compile on its own")
+		}
+		kind, declared := param.kindAt("parallelism")
+		if !declared || kind != cue.IntKind {
+			t.Fatalf("parallelism should be int, got %v (declared=%v)", kind, declared)
+		}
+		if kind, declared := param.kindAt("auto"); !declared || kind != cue.BoolKind {
+			t.Fatalf("auto should be bool, got %v (declared=%v)", kind, declared)
+		}
+	})
+
+	t.Run("a parameter referencing a local definition still resolves", func(t *testing.T) {
+		tmpl := `
+import "vela/kube"
+#Args: {name: string, replicas: int}
+output: kube.#Apply & {$params: {}}
+parameter: #Args
+`
+		param, ok := parameterBlockOnly(ctx, tmpl)
+		if !ok {
+			t.Fatal("a parameter aliased to a local definition should resolve")
+		}
+		if kind, declared := param.kindAt("replicas"); !declared || kind != cue.IntKind {
+			t.Fatalf("replicas should be int, got %v (declared=%v)", kind, declared)
+		}
+	})
+
+	t.Run("no parameter block reports not-found rather than guessing", func(t *testing.T) {
+		if _, ok := parameterBlockOnly(ctx, `output: {a: 1}`); ok {
+			t.Fatal("a template with no parameter block must not report one")
+		}
+	})
+}
