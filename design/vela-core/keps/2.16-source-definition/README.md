@@ -52,6 +52,10 @@ affected carry a pointer back to this list.
 | A3 | Cache identity is a readable prefix plus a hash of every resolution input | [Cache Key](#cache-key) | implemented, closes finding #11 |
 | A4 | A source may read only the context that is part of the key | [CUE Context in SourceDefinition](#cue-context-in-sourcedefinition), [Future Enhancements](#future-enhancements) | implemented |
 | A5 | Cache entries carry their identity as labels and annotations | [Operator Guidance](#operator-guidance-inspecting-cache-state) | implemented |
+| A6 | A property may be a CUE expression; `fromSource` is no longer the only consumption mechanism | [fromSource Semantics](#fromsource-semantics), [Application Usage](#application-usage) | implemented |
+| A7 | Expressions resolve on workflow steps, and on Application-scoped policies for `context` only | [fromSource Semantics](#fromsource-semantics), [Future Enhancements](#future-enhancements) | implemented |
+| A8 | The author/platform boundary is widened, and held by a sandbox rather than by having no language | [Trust Model](#trust-model) | implemented |
+| A9 | `// +sensitive` covers every field beneath the one it marks | [Controller Guarantees](#controller-guarantees) | implemented |
 
 **Reading the worked examples below.** Every example in the body writes its key by
 hand, as `storage: { key: "..." }`. Applied as written, all of them would now be
@@ -274,6 +278,189 @@ rather than by clipping the finished JSON, so the annotation always parses.
 rather than `kubectl`. These labels make selector filtering possible, but
 `vela config list` does not yet expose it; surfacing label selectors there would
 keep the documented CLI the complete answer.
+
+
+### A6: A property may be a CUE expression
+
+**Was:** `fromSource` was the only way to consume a resolved value — a directive
+naming a source and a path, optionally with a `default`. It yielded a whole value
+or nothing.
+
+**Is:** a property may also be a CUE expression, delimited by `$( )`:
+
+```yaml
+image:            '$(source.catalog.image + ":1.25.0")'   # concatenation
+replicas:         '$(source.tenant.maxReplicas div 2)'    # integer arithmetic
+port:             '$(source.catalog.httpPort)'            # stays an int
+labels:           '$(source.catalog.standardLabels)'      # a struct, whole
+value:            '$(*source.registry.mirror | "none")'   # default
+value:            '$(context.appName + "." + context.namespace)'
+value:            'https://$(source.registry.host)/health' # embedded in text
+```
+
+`fromSource` is unchanged and still supported. `$$(` escapes the delimiter.
+
+**Why.** `fromSource` could *name* a value but not compute with one. Concatenating
+a tag onto an image, halving a granted quota, or building a hostname from two
+fields each required a bespoke `WorkflowStepDefinition` — written, installed and
+maintained per platform — or was hardcoded and left to drift. Three of those
+operations were not expressible at any price: a trait cannot receive a workflow
+input, an Application-scoped policy renders before any workflow runs, and
+`context` is unavailable in an Application's properties at all.
+
+**What makes this more than string interpolation.** The expression is type-checked
+at admission against the parameter it feeds. The source's `schema:` is
+materialised into concrete sentinel values of the declared kinds, the expression
+is evaluated against those, and the resulting kind is compared with the
+consuming parameter's declared type. The schema supplies the types; the sentinel
+only makes the evaluator willing to run, because CUE will not compute on a
+non-concrete operand.
+
+| Written | Rejected at admission with |
+|---|---|
+| `port: '$(source.catalog.image)'` | *is string but component "webservice" parameter expects int* |
+| `image: '$(source.catalog.standardLabels)'` | *is object but … expects string* |
+| `image: '$(source.catalog.standardLabels)-x'` | *cannot be combined with text* |
+| `image: '$(source.registry.mirror)'` | *may be absent and feeds required … supply a default with `*… \| <fallback>`* |
+| `image: '$(source.registry.nope)'` | *not declared in the source's schema* |
+| `image: '$(parameter.image)'` | *unknown identifier "parameter"* |
+
+The optional-field rule is the same one the [validation summary](#validation-summary)
+states for `fromSource`, and is target-aware in the same way: a default is
+required exactly when a possibly-absent read feeds a *required* parameter.
+
+**What this costs.** Soundness requires that an expression's result type be a
+function of its operands' types and never of their values, so the grammar is
+restricted — no conditionals, no comparisons, no function calls, and exactly one
+disjunction, the default. Anything whose type could depend on data that does not
+exist at admission is refused rather than typed by guess. This is also what makes
+the sandbox in [A8](#a8-the-trust-boundary-is-widened-deliberately) enforceable.
+
+The reach is genuinely wider than `fromSource`: an application author can now
+express logic over platform data. That is the point, and it is a real change to
+the trust model rather than a convenience — recorded as [A8](#a8-the-trust-boundary-is-widened-deliberately).
+
+### A7: Expressions resolve on more surfaces than `fromSource` did
+
+**Was:** consumption was valid in component properties, trait properties, and a
+later `spec.sources[]` entry (chaining). Policies and workflow steps were
+explicitly excluded, and extending to them was a [Future Enhancement](#future-enhancements)
+blocked on a `context.name` hazard.
+
+**Is:**
+
+| Surface | `fromSource` | `$( )` reading `source` | `$( )` reading `context` |
+|---|---|---|---|
+| Component properties | yes | yes | yes |
+| Trait properties | yes | yes | yes |
+| Later `spec.sources[]` (chaining) | yes | yes | yes |
+| Workflow step properties | yes | yes | yes |
+| Application-scoped policy properties | no | **no** | **yes** |
+
+**Why workflow steps became available.** The blocker the Future Enhancement
+described — `context.name` meaning the component in one render and the
+application in another, silently splitting one cache entry in two — was closed by
+[A4](#a4-a-source-reads-only-keyed-context). `context.name` is now the
+`spec.sources[]` binding entry, stable on every surface, so the proposed
+`context.componentName` is unnecessary.
+
+**Why an Application-scoped policy gets half the feature.** Such a policy renders
+*before* the appfile exists, so there is no parsed `spec.sources[]` to resolve
+against — but `context` is built by hand for that render and is perfectly
+available. Permitting `context` and withholding `source` lets the surface carry
+expressions at all, rather than being excluded because half the feature cannot
+work there.
+
+Reading `source` there is **rejected with a reason** rather than silently
+substituted with nothing:
+
+```
+"source" cannot be read here; this surface permits "context"
+```
+
+That is the general rule and not a special case: each surface declares which
+roots it permits and which context fields it exposes, and admission types the
+expression against that surface's schema. Typing an Application-scoped policy's
+expression against a component's context would accept fields the surface never
+receives.
+
+**Still outstanding.** Resource-rendering policies *would* resolve today — they
+render through the same engine as components, so the resolution path already runs
+— but the surface is one boolean covering both policy kinds, and
+Application-scoped policies genuinely cannot resolve sources. Enabling them needs
+a scope-aware admission check that looks up the `PolicyDefinition` and refuses
+only `scope: Application`.
+
+### A8: The trust boundary is widened, deliberately
+
+**Was:** the [Trust Model](#trust-model) rested on the application author having
+no language. They could "bind a named `SourceDefinition` and supply properties,
+but cannot alter its resolution logic, access fields outside its declared
+`schema:`, or read raw resolution state" — and the KEP contrasts this favourably
+with workflow-step data passing, where the author had "unconstrained access".
+
+**Is:** the author can now write expressions over resolved data. Two of those
+three constraints are untouched — the schema still bounds what is readable, raw
+resolution state is still unreachable, and resolution logic is still
+platform-only. What changes is that computation over the readable set is now the
+author's.
+
+**Why state it rather than let it arrive sideways.** The KEP calls the
+platform/author separation load-bearing, so a change to it belongs in the
+document rather than in a commit message. The separation still holds, but the
+line has moved: it is no longer *"the author has no language"*, it is *"the
+author has a language that cannot escape the schema"*.
+
+**What holds it now.** The sandbox is structural, not advisory:
+
+| Property | Enforced by |
+|---|---|
+| Only `source` and `context` are reachable; no `parameter`, no imports | Grammar walk over the parsed expression |
+| Only the surface's permitted roots and declared context fields | Per-surface context schema |
+| Only fields the source's `schema:` declares | Type check against the schema's sentinel |
+| No I/O, no provider calls, no function calls of any kind | Grammar walk |
+| The scope is built from Go data, never concatenated as CUE text | `buildScope` encodes via JSON |
+
+That last row is a correctness property rather than a style preference. Binding
+names and label keys come from the Application spec, so they are
+attacker-controlled if the author is hostile; a name like `a": {pwned: "yes"}, "b`
+concatenated into CUE source would inject fields into the scope, and the failure
+would be silent because the injected fields would simply be there. Encoding the
+data means a name can only ever be a key. It has its own regression test.
+
+**What this costs.** An author can now construct a value the platform did not
+anticipate — `source.a.host + source.b.path` — from fields the platform did
+publish. That is a wider capability than `fromSource` and the honest framing is
+that it is a deliberate trade, not an unchanged model: the platform still decides
+what exists and what is readable, and no longer decides what may be computed from
+it.
+
+### A9: `// +sensitive` covers what sits beneath it
+
+**Was:** the [Controller Guarantees](#controller-guarantees) table states that
+"sensitive fields are redacted from `status` and logs". The implementation matched
+consumed paths against the marked set *exactly*.
+
+**Is:** a marker covers the field it names and every field beneath it, matched on
+path segments.
+
+**Why.** A marker can only be written where a schema declares a field. A source
+exposing an open struct — `properties: _`, whose shape is whatever produced it —
+has nowhere to put one except on the struct itself, so exact matching redacted a
+read of `properties` while publishing `properties.token` in the status beside it.
+That is precisely the case the marker exists for.
+
+The prefix is a path segment, not a string prefix: `propertiesExtra` is a
+different field and is not covered.
+
+**Where it bit.** The `vela-config` source in the shipped library returns a
+Config's `properties`, which are the *inputs* its ConfigTemplate took — and for a
+credential-bearing template those inputs are the credential. The `image-registry`
+template shipped with KubeVela declares `sensitive: false` and takes
+`auth.password` among its parameters, so `ReadConfig`'s own guard never fires for
+it. `properties` is marked `// +sensitive` there, which only means anything with
+this amendment.
+
 
 
 ## Mental Model
@@ -731,6 +918,8 @@ template: {
 
 ## Application Usage
 
+> Amended by [A6](#a6-a-property-may-be-a-cue-expression): a property may also be a `$( )` expression.
+
 Application authors declare source bindings in `spec.sources` and reference them via `fromSource`. Each entry names a `SourceDefinition` (via `type:`), assigns it a local name (via `name:`), and supplies instance properties that parameterise this particular use. The local name is the namespace for all `fromSource` references within this Application; components and traits read resolved values as `<local-name>.<field-path>`, never referencing the `SourceDefinition` directly.
 
 The shorthand string form is preferred for simple references:
@@ -926,7 +1115,10 @@ If the required label is absent, the `storage:` key interpolation produces an er
 
 ## fromSource Semantics
 
-`fromSource` is the **consumption mechanism**: it declares which field from a resolved source output goes into which component or trait property. Substitution happens in the `Complete()` phase of the component's reconcile (after context is built, before the CUE template runs). Resolution (the cache lookup and, on miss or expiry, `template:` execution) always completes before substitution: `fromSource` reads an already-resolved value, never an in-flight one. The `fromSource` references in a component's properties determine which sources are resolved during that component's reconcile and in what order.
+> Amended by [A6](#a6-a-property-may-be-a-cue-expression): `fromSource` is no longer the only
+> consumption mechanism. Everything below still holds for `fromSource` itself.
+
+`fromSource` is *a* **consumption mechanism**: it declares which field from a resolved source output goes into which component or trait property. Substitution happens in the `Complete()` phase of the component's reconcile (after context is built, before the CUE template runs). Resolution (the cache lookup and, on miss or expiry, `template:` execution) always completes before substitution: `fromSource` reads an already-resolved value, never an in-flight one. The `fromSource` references in a component's properties determine which sources are resolved during that component's reconcile and in what order.
 
 `fromSource` supports two forms:
 
@@ -976,7 +1168,7 @@ The admission webhook enforces the third row: if `path` names an optional schema
 
 **The component is the unit of source consumption.** A `fromSource` directive resolves identically whether it appears in a component's properties or in one of its traits' properties: the same context, the same cache key, the same entry. Traits have no separate identity in source resolution - they render against the component's context and their consumed sources are reported against the component in `status.services[]`. A trait is a modifier on the component's workload, not an independent consumer.
 
-**Where `fromSource` is valid.** In component properties, trait properties, and the `properties` of a later `spec.sources[]` entry (chaining). It is **not** supported in policy or workflow-step properties: resolution is wired into the component and trait render paths, so a directive elsewhere would reach the consumer as a literal `{"fromSource": ...}` map. The admission webhook rejects it rather than admitting something that silently never resolves. Extending resolution to those surfaces is a [Future Enhancement](#future-enhancements).
+**Where `fromSource` is valid.** *(Superseded by [A7](#a7-expressions-resolve-on-more-surfaces-than-fromsource-did): workflow steps now resolve. Policies still do not.)* In component properties, trait properties, and the `properties` of a later `spec.sources[]` entry (chaining). It was **not** supported in policy or workflow-step properties: resolution is wired into the component and trait render paths, so a directive elsewhere would reach the consumer as a literal `{"fromSource": ...}` map. The admission webhook rejects it rather than admitting something that silently never resolves. Extending resolution to those surfaces is a [Future Enhancement](#future-enhancements).
 
 `fromSource` is detected structurally during render (not by string matching). It is valid at any depth within `properties`, including nested objects and array entries. It is not valid as a map key. The admission webhook validates that every `path` names a field declared in the `schema:` block; unknown paths are rejected at apply time.
 
@@ -1237,6 +1429,9 @@ kubectl describe application <name>                               # events may i
 
 ### Trust Model
 
+> Amended by [A8](#a8-the-trust-boundary-is-widened-deliberately): expressions widen the application
+> author's tier. The separation still holds; the line has moved.
+
 `SourceDefinition` is designed around a deliberate two-tier trust model. The two tiers have different capabilities and different responsibilities:
 
 **Platform engineer (high trust).** A `SourceDefinition` carries arbitrary CueX logic (it can make outbound HTTP calls, read cluster resources, and write resolved values into Configs in `vela-system`). Executing that logic runs inside the controller process under the controller's service account, with no sandboxing or auditing. This is intentional and mirrors the trust model of `ComponentDefinition`: the platform engineer is a trusted author, and the controller executes their definition faithfully. The security boundary for this tier is RBAC; only platform engineers should be permitted to create or update `SourceDefinition` resources.
@@ -1256,7 +1451,7 @@ The following properties are enforced by the controller and do not require opera
 | `fromSource` paths are limited to declared `schema:` fields | Admission webhook (structural check) |
 | Application authors have `get` permission on referenced `SourceDefinition` | Admission webhook (`SubjectAccessReview`) |
 | Resolved cache entries cannot be overwritten by application authors | RBAC on `config.oam.dev/managed-by: source-controller` Secrets |
-| Sensitive fields are redacted from `status` and logs | Controller (`// +sensitive` marker in `schema:` or `output:`) |
+| Sensitive fields, and every field beneath them, are redacted from `status` and logs ([A9](#a9--sensitive-covers-what-sits-beneath-it)) | Controller (`// +sensitive` marker in `schema:` or `output:`) |
 | Sensitive values are not stored in the Application CR | Controller (substitution at render time, not at apply time) |
 
 ### Application Admission RBAC
@@ -1427,7 +1622,7 @@ Because resolved source outputs are stored as standard `Config` objects, any wor
 
 ## Future Enhancements
 
-- **`fromSource` in workflow steps and policies:** the `context.name` hazard this entry originally described is resolved by [A4](#a4-a-source-reads-only-keyed-context) — `context.name` is now the `spec.sources[]` binding entry, stable across every surface, so the proposed `context.componentName` is no longer needed. The original reasoning is kept for the record: `context.name` was not stable across render contexts - in a component or trait render it is the *component* name, while in a workflow-step context it is the *application* name. A source whose `storage.key` interpolates `context.name` would therefore compute a different key depending on which surface consumed it, silently splitting one logical cache entry in two. Extending resolution to those surfaces should introduce an explicit `context.componentName` (absent outside a component or trait render, so a component-scoped source fails loudly rather than resolving against the wrong identity) rather than inheriting `context.name`. The `consumableFrom` restriction above is the interim guard. `fromSource` in component and trait properties is the highest priority and the scope of this KEP. The same mechanism can be extended to `workflow: steps[]` and policy properties; both have access to `spec.sources[]` and the declarative type-safety model applies equally. The critical requirement for this extension is that the `fromSource` resolution logic is implemented behind a reusable internal API, callable from any rendering context without duplicating the cache lookup, key computation, or CueX execution paths.
+- **`fromSource` in workflow steps and policies:** *(workflow steps done — see [A7](#a7-expressions-resolve-on-more-surfaces-than-fromsource-did). Policies remain open, and A7 records what enabling them needs.)* the `context.name` hazard this entry originally described is resolved by [A4](#a4-a-source-reads-only-keyed-context) — `context.name` is now the `spec.sources[]` binding entry, stable across every surface, so the proposed `context.componentName` is no longer needed. The original reasoning is kept for the record: `context.name` was not stable across render contexts - in a component or trait render it is the *component* name, while in a workflow-step context it is the *application* name. A source whose `storage.key` interpolates `context.name` would therefore compute a different key depending on which surface consumed it, silently splitting one logical cache entry in two. Extending resolution to those surfaces should introduce an explicit `context.componentName` (absent outside a component or trait render, so a component-scoped source fails loudly rather than resolving against the wrong identity) rather than inheriting `context.name`. The `consumableFrom` restriction above is the interim guard. `fromSource` in component and trait properties is the highest priority and the scope of this KEP. The same mechanism can be extended to `workflow: steps[]` and policy properties; both have access to `spec.sources[]` and the declarative type-safety model applies equally. The critical requirement for this extension is that the `fromSource` resolution logic is implemented behind a reusable internal API, callable from any rendering context without duplicating the cache lookup, key computation, or CueX execution paths.
 - **Configurable Config namespace:** allow resolved Config objects that contain no `// +sensitive` fields to be written to a user-accessible namespace (e.g. the Application's namespace) so that end users can inspect resolved source data without access to `vela-system`. Requires a focused design pass on the scope/access model and enforcement that definitions with any `// +sensitive` fields cannot opt into this.
 - **Garbage collection of old ConfigTemplate versions:** remove versioned `ConfigTemplate` entries once no `ApplicationRevision` references that Definition revision.
 
