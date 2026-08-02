@@ -608,13 +608,27 @@ full-template compile kept as a fallback. That makes the check independent of
 which providers the compiler happens to hold, which also fixes it for any
 component definition importing a package this compiler does not have.
 
-**Still outstanding, and not a validation problem.** An expression in a workflow
-step only substitutes where the target field is a string. The step's properties
-are decoded into a typed Go struct while the appfile is parsed - before
-substitution - so a correctly-typed `parallelism: '$(source.tenant.maxReplicas)'`
-is still refused, by the decoder rather than by any check here. Components and
-traits do not have this: their properties stay a `RawExtension` until after
-substitution. Fixing it means substituting before that decode.
+**A correction, recorded because the first version of this amendment was wrong.**
+It claimed an expression in a workflow step only substitutes into a string field.
+That is not true, and a cluster showed it: `replicas: '$(source.num.count div 2)'`
+into `apply-deployment`'s `replicas: *1 | int` resolves to 3 and applies. Typed
+substitution works, because a CUE-based step's properties stay a `RawExtension`
+until after substitution, exactly as a component's do.
+
+The real limitation was one step. `LoadExternalPoliciesForWorkflow` strict-decodes
+`deploy` - and only `deploy` - into a Go struct while the appfile is built, to
+find the policy names it references. An unsubstituted expression is still a
+string at that point, so `parallelism: '$(...)'` was rejected before anything
+could resolve it, whatever it would have evaluated to.
+
+That decode is now lenient about *types* while staying strict about *field
+names*: it falls back only when the properties carry an expression, and decodes
+into a shadow struct with the same JSON names and `json.RawMessage` types, with
+`DisallowUnknownFields` still set. The first attempt dropped the field check
+along with the type check, which let `policys:` through whenever any expression
+was present - caught by testing the typo case rather than only the happy path. A
+test pins the shadow struct to `DeployWorkflowStepSpec` so a field added to one
+and not the other fails loudly.
 
 
 ## Mental Model
