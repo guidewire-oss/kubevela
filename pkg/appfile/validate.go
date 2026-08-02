@@ -41,6 +41,7 @@ import (
 	// config) and is initialized lazily (no init-time kubeconfig dependency).
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	"github.com/oam-dev/kubevela/pkg/cue/cuex/providers/helm"
+	"github.com/oam-dev/kubevela/pkg/cue/definition"
 	"github.com/oam-dev/kubevela/pkg/cue/upgrade"
 	"github.com/oam-dev/kubevela/pkg/features"
 
@@ -55,6 +56,15 @@ import (
 
 // ValidateCUESchematicAppfile validates CUE schematic workloads in an Appfile
 func (p *Parser) ValidateCUESchematicAppfile(a *Appfile) error {
+	// This render resolves sources for real - it has to, to type-check the
+	// result against the consuming parameter - but it is a validation, so it
+	// must not leave a cache entry behind. Reads still go through: not reading
+	// would make every admission repeat the source's live I/O, and would have
+	// validation resolve different data than the render that follows it.
+	restore := a.SourceCacheStore
+	a.SourceCacheStore = definition.NewReadOnlySourceCacheStore(sourceCacheStoreFor(a))
+	defer func() { a.SourceCacheStore = restore }()
+
 	for _, wl := range a.ParsedComponents {
 		// because helm & kube schematic has no CUE template
 		// it only validates CUE schematic workload
@@ -710,4 +720,14 @@ func getMapKeys(m map[string]any) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// sourceCacheStoreFor returns the store an Appfile would resolve against,
+// falling back to the Secret store exactly as GenerateContextDataFromAppFile
+// does when nothing has been injected.
+func sourceCacheStoreFor(a *Appfile) velaprocess.SourceCacheStore {
+	if a.SourceCacheStore != nil {
+		return a.SourceCacheStore
+	}
+	return definition.NewSecretSourceCacheStore(a.KubeClient)
 }
