@@ -42,6 +42,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/auth"
 	"github.com/oam-dev/kubevela/pkg/component"
 	"github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -344,6 +345,9 @@ func (p *Parser) parsePoliciesFromRevision(ctx context.Context, af *Appfile) (er
 	if err != nil {
 		return err
 	}
+	if err := resolvePolicyExpressions(af); err != nil {
+		return err
+	}
 	for _, policy := range af.Policies {
 		if af.AppRevision != nil && af.AppRevision.Spec.PolicyDefinitions != nil {
 			if policyDef, ok := af.AppRevision.Spec.PolicyDefinitions[policy.Type]; ok {
@@ -382,6 +386,9 @@ func (p *Parser) parsePoliciesFromRevision(ctx context.Context, af *Appfile) (er
 func (p *Parser) parsePolicies(ctx context.Context, af *Appfile) (err error) {
 	af.Policies, err = step.LoadExternalPoliciesForWorkflow(ctx, af.PolicyClient(p.client), af.app.GetNamespace(), af.WorkflowSteps, af.app.Spec.Policies)
 	if err != nil {
+		return err
+	}
+	if err := resolvePolicyExpressions(af); err != nil {
 		return err
 	}
 	for _, policy := range af.Policies {
@@ -845,4 +852,79 @@ func validateFromSourceSurfaces(af *Appfile) error {
 		}
 	}
 	return nil
+}
+
+// resolvePolicyExpressions substitutes $(context...) expressions in policy
+// properties, once, where every consumer of af.Policies will see the result.
+//
+// Admission permits `context` expressions in any policy's properties, but only
+// Application-scoped policies were substituting them. Everywhere else the
+// literal survived into the consumer: a topology policy written
+//
+//	namespace: '$(context.namespace)'
+//
+// was accepted at apply and then failed at deploy with
+// `namespaces "$(context.namespace)" not found` - the expression used verbatim
+// as a name. Resolving here closes that gap, because af.Policies is what the
+// deploy provider, the placement lookup and override configuration all read.
+//
+// `source` stays unavailable, matching what admission allows. Policy properties
+// are consumed outside any component render, so there is no resolver to reach a
+// source through; permitting context alone is what the surface can actually
+// honour.
+func resolvePolicyExpressions(af *Appfile) error {
+	base := map[string]interface{}{
+		"appName":     af.Name,
+		"namespace":   af.Namespace,
+		"appRevision": af.AppRevisionName,
+	}
+	if af.app != nil {
+		base["appLabels"] = nonNilStrings(af.app.GetLabels())
+		base["appAnnotations"] = nonNilStrings(af.app.GetAnnotations())
+	}
+
+	for i := range af.Policies {
+		raw := af.Policies[i].Properties
+		if raw == nil || len(raw.Raw) == 0 {
+			continue
+		}
+		var decoded interface{}
+		if err := json.Unmarshal(raw.Raw, &decoded); err != nil {
+			// Malformed properties are reported by the policy's own parsing,
+			// which gives a better message than anything available here.
+			continue
+		}
+		if !sourceexpr.HasExpression(decoded) {
+			continue
+		}
+
+		values := make(map[string]interface{}, len(base)+2)
+		for k, v := range base {
+			values[k] = v
+		}
+		values["policyName"] = af.Policies[i].Name
+		values["policyType"] = af.Policies[i].Type
+
+		resolved, err := sourceexpr.EvalTree(decoded, nil, values,
+			sourceexpr.ScopedPolicyContext, sourceexpr.ContextIdent)
+		if err != nil {
+			return fmt.Errorf("policy %q: %w", af.Policies[i].Name, err)
+		}
+		out, err := json.Marshal(resolved)
+		if err != nil {
+			return fmt.Errorf("policy %q: %w", af.Policies[i].Name, err)
+		}
+		// A fresh RawExtension rather than a write into the existing one:
+		// af.Policies may share pointers with the Application spec, which has to
+		// keep the author's text so a round-trip does not rewrite their source.
+		af.Policies[i].Properties = &runtime.RawExtension{Raw: out}
+	}
+	return nil
+}
+
+func nonNilStrings(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	return in
 }

@@ -53,7 +53,7 @@ affected carry a pointer back to this list.
 | A4 | A source may read only the context that is part of the key | [CUE Context in SourceDefinition](#cue-context-in-sourcedefinition), [Future Enhancements](#future-enhancements) | implemented |
 | A5 | Cache entries carry their identity as labels and annotations | [Operator Guidance](#operator-guidance-inspecting-cache-state) | implemented |
 | A6 | A property may be a CUE expression; `fromSource` is no longer the only consumption mechanism | [fromSource Semantics](#fromsource-semantics), [Application Usage](#application-usage) | implemented |
-| A7 | Expressions resolve on workflow steps, and on Application-scoped policies for `context` only | [fromSource Semantics](#fromsource-semantics), [Future Enhancements](#future-enhancements) | implemented |
+| A7 | Expressions resolve on workflow steps, and on every policy for `context` only | [fromSource Semantics](#fromsource-semantics), [Future Enhancements](#future-enhancements) | implemented |
 | A8 | The author/platform boundary is widened, and held by a sandbox rather than by having no language | [Trust Model](#trust-model) | implemented |
 | A9 | `// +sensitive` covers every field beneath the one it marks | [Controller Guarantees](#controller-guarantees) | implemented |
 
@@ -355,7 +355,7 @@ blocked on a `context.name` hazard.
 | Trait properties | yes | yes | yes |
 | Later `spec.sources[]` (chaining) | yes | yes | yes |
 | Workflow step properties | yes | yes | yes |
-| Application-scoped policy properties | no | **no** | **yes** |
+| Policy properties (any policy) | no | **no** | **yes** |
 
 **Why workflow steps became available.** The blocker the Future Enhancement
 described — `context.name` meaning the component in one render and the
@@ -364,12 +364,39 @@ application in another, silently splitting one cache entry in two — was closed
 `spec.sources[]` binding entry, stable on every surface, so the proposed
 `context.componentName` is unnecessary.
 
-**Why an Application-scoped policy gets half the feature.** Such a policy renders
+**Why a policy gets half the feature.** An Application-scoped policy renders
 *before* the appfile exists, so there is no parsed `spec.sources[]` to resolve
-against — but `context` is built by hand for that render and is perfectly
-available. Permitting `context` and withholding `source` lets the surface carry
-expressions at all, rather than being excluded because half the feature cannot
-work there.
+against. Every other policy is consumed outside any component render — the
+`deploy` provider, the placement lookup and override configuration all read
+`af.Policies` directly — so there is no resolver to reach a source through
+either. In both cases `context` is available and `source` is not, so permitting
+`context` and withholding `source` lets the surface carry expressions at all,
+rather than being excluded because half the feature cannot work there.
+
+Both kinds substitute, but in different places, because they render at different
+times: an Application-scoped policy in its own render path, every other policy in
+a pass over `af.Policies` as the appfile is built. That pass writes a fresh
+properties object rather than into the one the Application spec shares, so a
+round-trip does not rewrite the author's expression.
+
+**This was initially wrong in a way admission could not catch**, and it is worth
+recording as the failure mode rather than just the fix. Admission permitted
+`context` in *every* policy, while only Application-scoped policies substituted
+it. A topology policy written
+
+```yaml
+- name: place
+  type: topology
+  properties:
+    namespace: '$(context.namespace)'
+```
+
+was accepted at apply and then failed at deploy with
+`namespaces "$(context.namespace)" not found` — the expression used verbatim as a
+name. Two enforcement points disagreeing about a surface is exactly the class of
+bug that `resolvingSurfaces` exists to prevent for `fromSource`; expressions had
+no equivalent single list, and one enforcement point silently did less than the
+other promised.
 
 Reading `source` there is **rejected with a reason** rather than silently
 substituted with nothing:

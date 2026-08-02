@@ -1151,3 +1151,124 @@ func TestValidateFromSourceSurfaces(t *testing.T) {
 		})
 	}
 }
+
+// A context expression in any policy has to be substituted before af.Policies
+// reaches a consumer.
+//
+// This is a regression test for a failure that admission could not catch:
+// expressions were accepted in every policy's properties but only substituted
+// for Application-scoped ones, so a topology policy written
+// `namespace: '$(context.namespace)'` applied cleanly and then failed at deploy
+// with `namespaces "$(context.namespace)" not found` - the literal used as a
+// name.
+func TestResolvePolicyExpressions(t *testing.T) {
+	newApp := func() *v1beta1.Application {
+		return &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "checkout",
+				Namespace: "prod",
+				Labels:    map[string]string{"owner": "payments"},
+			},
+		}
+	}
+
+	t.Run("substitutes context in a non-scoped policy", func(t *testing.T) {
+		af := &Appfile{
+			Name:      "checkout",
+			Namespace: "prod",
+			app:       newApp(),
+			Policies: []v1beta1.AppPolicy{{
+				Name:       "place",
+				Type:       "topology",
+				Properties: &runtime.RawExtension{Raw: []byte(`{"namespace":"$(context.namespace)","clusters":["local"]}`)},
+			}},
+		}
+		if err := resolvePolicyExpressions(af); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := string(af.Policies[0].Properties.Raw)
+		if strings.Contains(got, "$(") {
+			t.Fatalf("expression survived into the consumer: %s", got)
+		}
+		if !strings.Contains(got, `"namespace":"prod"`) {
+			t.Fatalf("expected namespace to resolve to prod, got %s", got)
+		}
+	})
+
+	t.Run("reads app labels and policy identity", func(t *testing.T) {
+		af := &Appfile{
+			Name:      "checkout",
+			Namespace: "prod",
+			app:       newApp(),
+			Policies: []v1beta1.AppPolicy{{
+				Name: "tagger",
+				Type: "override",
+				Properties: &runtime.RawExtension{Raw: []byte(
+					`{"owner":"$(*context.appLabels[\"owner\"] | \"none\")","who":"$(context.policyName)"}`)},
+			}},
+		}
+		if err := resolvePolicyExpressions(af); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := string(af.Policies[0].Properties.Raw)
+		if !strings.Contains(got, `"owner":"payments"`) || !strings.Contains(got, `"who":"tagger"`) {
+			t.Fatalf("got %s", got)
+		}
+	})
+
+	// The Application spec is the author's text and a round-trip must not
+	// rewrite it, so the appfile gets a new RawExtension rather than a write
+	// into the one the spec shares.
+	t.Run("does not rewrite the Application spec", func(t *testing.T) {
+		shared := &runtime.RawExtension{Raw: []byte(`{"namespace":"$(context.namespace)"}`)}
+		app := newApp()
+		app.Spec.Policies = []v1beta1.AppPolicy{{Name: "place", Type: "topology", Properties: shared}}
+		af := &Appfile{
+			Name:      "checkout",
+			Namespace: "prod",
+			app:       app,
+			Policies:  []v1beta1.AppPolicy{{Name: "place", Type: "topology", Properties: shared}},
+		}
+		if err := resolvePolicyExpressions(af); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(string(app.Spec.Policies[0].Properties.Raw), "$(context.namespace)") {
+			t.Fatal("the Application spec was rewritten; it must keep the author's expression")
+		}
+	})
+
+	// Idempotent: already-resolved properties contain no expression, so a second
+	// pass is a no-op rather than an error.
+	t.Run("is idempotent", func(t *testing.T) {
+		af := &Appfile{
+			Name: "checkout", Namespace: "prod", app: newApp(),
+			Policies: []v1beta1.AppPolicy{{
+				Name: "place", Type: "topology",
+				Properties: &runtime.RawExtension{Raw: []byte(`{"namespace":"$(context.namespace)"}`)},
+			}},
+		}
+		for i := 0; i < 2; i++ {
+			if err := resolvePolicyExpressions(af); err != nil {
+				t.Fatalf("pass %d: %v", i, err)
+			}
+		}
+		if got := string(af.Policies[0].Properties.Raw); !strings.Contains(got, `"namespace":"prod"`) {
+			t.Fatalf("got %s", got)
+		}
+	})
+
+	// `source` is not offered on this surface, so a policy reading one fails
+	// here rather than resolving to nothing.
+	t.Run("refuses source", func(t *testing.T) {
+		af := &Appfile{
+			Name: "checkout", Namespace: "prod", app: newApp(),
+			Policies: []v1beta1.AppPolicy{{
+				Name: "place", Type: "topology",
+				Properties: &runtime.RawExtension{Raw: []byte(`{"namespace":"$(source.cfg.namespace)"}`)},
+			}},
+		}
+		if err := resolvePolicyExpressions(af); err == nil {
+			t.Fatal("expected reading a source in a policy to fail")
+		}
+	})
+}
