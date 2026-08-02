@@ -407,21 +407,21 @@ func TestContextTypesMatchTheRenderContext(t *testing.T) {
 	for iter.Next() {
 		field := iter.Selector().Unquoted()
 		seen[field] = true
-		_, readable := ComponentContext.types[field]
-		_, excluded := ComponentContext.notReadable[field]
+		_, readable := ComponentContext.field(field)
+		excluded := knownField(field)
 		switch {
-		case readable && excluded:
-			t.Errorf("%q is both readable and excluded; it must be one or the other", field)
+		case readable && registry.excluded[field] != "":
+			t.Errorf("%q is both readable and globally excluded; it must be one or the other", field)
 		case !readable && !excluded:
-			t.Errorf("the render context carries %q (%s) but this package neither types it nor "+
-				"explains why it is unavailable - classify it in ComponentContext",
+			t.Errorf("the render context carries %q (%s) but the registry has never heard of it - "+
+				"add it to a group in context.cue, or to excluded with a reason",
 				field, iter.Value().IncompleteKind())
 		}
 	}
 
 	// A type declared for a field the render context does not carry would type
 	// cleanly at admission and fail at render.
-	for field := range ComponentContext.types {
+	for _, field := range ComponentContext.readable() {
 		if !seen[field] {
 			t.Errorf("ComponentContext declares %q, which the render context does not carry", field)
 		}
@@ -1305,14 +1305,15 @@ func TestScopedPolicyContextMatchesTheRender(t *testing.T) {
 	for iter.Next() {
 		field := iter.Selector().Unquoted()
 		seen[field] = true
-		_, readable := ScopedPolicyContext.types[field]
-		_, excluded := ScopedPolicyContext.notReadable[field]
+		_, readable := ScopedPolicyContext.field(field)
+		excluded := knownField(field)
 		switch {
-		case readable && excluded:
-			t.Errorf("%q is both readable and excluded", field)
+		case readable && registry.excluded[field] != "":
+			t.Errorf("%q is both readable and globally excluded", field)
 		case !readable && !excluded:
-			t.Errorf("the scoped policy context carries %q (%s) but ScopedPolicyContext neither "+
-				"types it nor explains why it is unavailable", field, iter.Value().IncompleteKind())
+			t.Errorf("the scoped policy context carries %q (%s) but the registry has never heard of it - "+
+				"add it to a group in context.cue, or to excluded with a reason",
+				field, iter.Value().IncompleteKind())
 		}
 
 		// A readable field must actually be populated. An always-empty one would
@@ -1324,7 +1325,7 @@ func TestScopedPolicyContextMatchesTheRender(t *testing.T) {
 		}
 	}
 
-	for field := range ScopedPolicyContext.types {
+	for _, field := range ScopedPolicyContext.readable() {
 		if !seen[field] {
 			t.Errorf("ScopedPolicyContext declares %q, which the scoped render does not carry", field)
 		}
@@ -1976,35 +1977,19 @@ func componentRenderContext(t *testing.T) string {
 	return base
 }
 
-// declaredCUEKind is what a contextKind promises the render context will hold.
+// A surface's declared context must unify with the context that surface really
+// renders against.
 //
-// kindIndexedString is a struct in CUE - an open map of string to string - so it
-// shares StructKind with kindStruct. The distinction between them is about how a
-// read is *written* (with a key or by field), which the sentinel builder already
-// enforces separately.
-func declaredCUEKind(k contextKind) cue.Kind {
-	switch k {
-	case kindString:
-		return cue.StringKind
-	case kindInt:
-		return cue.IntKind
-	case kindIndexedString, kindStruct:
-		return cue.StructKind
-	}
-	return cue.BottomKind
-}
-
-// A declared context type must be the type the render context actually holds.
+// This is the whole point of declaring the registry in CUE. The membership tests
+// either side of this one check that every field is classified and every declared
+// field exists; unification adds the half that was missing - that a field's
+// declared *type* is the type the render actually holds. A field typed string
+// that is really an int used to pass every test, type cleanly at admission, and
+// fail at render.
 //
-// The membership tests either side of this one check that every field is
-// classified and that every classified field exists. Neither compares the
-// declared kind against the real one - so a field typed kindString that is really
-// an int types cleanly at admission, is accepted into a string parameter, and
-// fails at render with a CUE error naming a sentinel the author never wrote.
-//
-// This is the missing half of that pair, and it applies to every surface: the
-// value is already in hand at the point membership is checked.
-func TestDeclaredContextTypesMatchTheRenderContext(t *testing.T) {
+// CUE reports the conflict itself, naming the field and both types, so this needs
+// no per-kind mapping to keep in step.
+func TestSurfaceTypesUnifyWithTheRenderContext(t *testing.T) {
 	for _, tc := range []struct {
 		surface string
 		schema  ContextSchema
@@ -2014,26 +1999,21 @@ func TestDeclaredContextTypesMatchTheRenderContext(t *testing.T) {
 		{"application-scoped policy", ScopedPolicyContext, scopedPolicyContext(t)},
 	} {
 		t.Run(tc.surface, func(t *testing.T) {
-			v := cuecontext.New().CompileString(tc.render)
-			if v.Err() != nil {
-				t.Fatalf("compiling the render context: %v", v.Err())
+			real := registryContext.CompileString(tc.render).LookupPath(cue.ParsePath("context"))
+			if real.Err() != nil {
+				t.Fatalf("compiling the render context: %v", real.Err())
 			}
-			iter, err := v.LookupPath(cue.ParsePath("context")).Fields(cue.All())
-			if err != nil {
-				t.Fatal(err)
-			}
-			for iter.Next() {
-				field := iter.Selector().Unquoted()
-				declared, readable := tc.schema.types[field]
-				if !readable {
-					continue // membership is the other tests' job
+			// Only the declared fields: the render context carries more, and what
+			// it may carry beyond them is the membership tests' business.
+			for _, field := range tc.schema.readable() {
+				declared, _ := tc.schema.field(field)
+				actual := real.LookupPath(cue.MakePath(cue.Str(field)))
+				if !actual.Exists() {
+					continue // reported by the membership test
 				}
-				want := declaredCUEKind(declared)
-				got := iter.Value().IncompleteKind()
-				if want != got {
-					t.Errorf("context.%s is declared %v but the %s render context holds %v; "+
-						"admission would promise a type the render does not produce",
-						field, want, tc.surface, got)
+				if err := declared.Unify(actual).Validate(); err != nil {
+					t.Errorf("context.%s does not unify with the %s render context: %v",
+						field, tc.surface, err)
 				}
 			}
 		})

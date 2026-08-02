@@ -18,18 +18,12 @@ package sourceexpr
 
 import (
 	"fmt"
-	"sort"
 )
 
 // Fields lists the context fields this surface exposes, so a caller can pull
 // exactly those out of its process context without knowing the schema's shape.
 func (c ContextSchema) Fields() []string {
-	out := make([]string, 0, len(c.types))
-	for name := range c.types {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
+	return c.readable()
 }
 
 // HasExpression reports whether a decoded properties tree contains anything to

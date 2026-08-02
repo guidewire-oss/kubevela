@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"cuelang.org/go/cue"
 )
 
 // ContextIdent is the second identifier an expression may reference, so an
@@ -40,160 +42,77 @@ import (
 // - so that constraint simply does not apply.
 const ContextIdent = "context"
 
-// contextKind is how a context field is represented, which is all the type
-// checker needs to know about it.
-type contextKind int
-
-const (
-	kindString contextKind = iota
-	kindInt
-	// kindIndexedString is an open map of string to string - appLabels and
-	// appAnnotations. Any key may be read, so the sentinel for one cannot be
-	// written ahead of time; it is materialised per referenced key.
-	kindIndexedString
-	// kindStruct is a value with no single scalar form, readable only through
-	// its fields.
-	kindStruct
-)
-
-// contextTypes declares the type of each readable context field.
-//
-// Membership follows one rule: an expression sees what the definition it is
-// feeding sees, at the moment it is rendered. A property expression is
-// substituted immediately before the ComponentDefinition's template runs, so the
-// readable set is that template's context - not the cache-key rules, which are
-// policy about a SourceDefinition's cache identity and curate a different set
-// for a different purpose.
-//
-// That rule also settles context.name. In a SourceDefinition it is the binding
-// entry (KEP amendment A4); here it is the component, because that is what a
-// ComponentDefinition's context.name is. Each scope is internally consistent
-// with the definition it belongs to, which is the only property that can be kept
-// as more surfaces are added.
-//
-// TestContextTypesMatchTheRenderContext builds a real render context and
-// requires every field in it to be classified here or in notReadable, so a field
-// added upstream forces a decision instead of silently becoming unavailable.
 // ContextSchema is the readable context for one surface: which fields exist,
 // with what type, and why the others do not.
 //
-// There is one per surface because the contexts genuinely differ. An
-// Application-scoped policy is built by hand in renderPolicyCUETemplate and
-// never receives a cluster, publishVersion or workflowName - those keys exist but
-// hold the empty string forever. Declaring them readable would type cleanly at
-// admission and hand the author an empty value at render, which is the
-// clusterVersion.minor class of bug wearing a different hat.
+// It is a view over the registry in context.cue, not a declaration of its own.
+// The types are the CUE types written there, so what admission checks and what
+// render supplies come from the same place.
 type ContextSchema struct {
 	// Surface names the schema in error messages.
 	Surface string
-	types   map[string]contextKind
-	// notReadable explains each excluded field, so a new one upstream has to be
-	// classified rather than silently ignored.
-	notReadable map[string]string
+	// key is the registry's own name for this surface.
+	key string
+	// value is the composed type for this surface. A zero value means an unknown
+	// surface, which reports every field as unavailable.
+	value cue.Value
+	// excluded explains each field the render context carries that no surface
+	// offers, so a new one has to be classified rather than silently ignored.
+	excluded map[string]string
 }
 
 // ComponentContext is what a ComponentDefinition or TraitDefinition sees.
-var ComponentContext = ContextSchema{
-	Surface:     "component",
-	types:       componentContextTypes,
-	notReadable: componentNotReadable,
-}
+//
+// Membership follows one rule: an expression sees what the definition it is
+// feeding sees, at the moment it is rendered. A property expression is
+// substituted immediately before the template runs, so the readable set is that
+// template's context - not the cache-key rules, which are policy about a
+// SourceDefinition's cache identity and curate a different set for a different
+// purpose.
+//
+// That rule also settles context.name. In a SourceDefinition it is the binding
+// entry (KEP amendment A4); here it is the component, because that is what a
+// ComponentDefinition's context.name is.
+var ComponentContext = surfaceSchema("component")
+
+// WorkflowStepContext is what a workflow step's properties see. The step's
+// properties are substituted before the engine receives them, from a context
+// built the same way a component's is.
+var WorkflowStepContext = surfaceSchema("workflowstep")
+
+// PolicyContext is what a resource-rendering policy sees.
+//
+// Narrower than ScopedPolicyContext because the two policy paths run at
+// different times against different data: this one substitutes while the appfile
+// is built, before any render, from what the Appfile carries. There is no
+// cluster yet and no policy revision metadata.
+var PolicyContext = surfaceSchema("policy-default")
 
 // ScopedPolicyContext is what an Application-scoped PolicyDefinition sees.
 //
-// It is a subset, plus the policy identity fields the component context has no
-// equivalent of. Measured from a real renderPolicyCUETemplate context rather than
-// derived from the constructor, because NewContext pushes keys regardless of
-// whether the caller supplied a value.
-var ScopedPolicyContext = ContextSchema{
-	Surface: "application-scoped policy",
-	types: map[string]contextKind{
-		"appName":        kindString,
-		"namespace":      kindString,
-		"appRevision":    kindString,
-		"appRevisionNum": kindInt,
-		"clusterVersion": kindStruct,
-		"appLabels":      kindIndexedString,
-		"appAnnotations": kindIndexedString,
+// It gets revision metadata and clusterVersion but no cluster: that render
+// targets no cluster at all. context.name is omitted on both policy surfaces
+// because it means the Application on one path and the policy on the other -
+// expressions read appName or policyName, which say what they are.
+var ScopedPolicyContext = surfaceSchema("policy-app")
 
-		// Policy identity. policyName is the instance from spec.policies[].name,
-		// which is what context.name means on every other surface - hence
-		// excluding name below rather than aliasing it.
-		"policyName":         kindString,
-		"policyType":         kindString,
-		"policyRevisionName": kindString,
-		"policyRevisionHash": kindString,
-		"policyRevision":     kindInt,
-	},
-	notReadable: map[string]string{
-		// Present in the context but never populated on this path: the scoped
-		// render supplies no cluster, publish version, workflow or component, so
-		// these hold the empty string forever. Readable would mean typed at
-		// admission and empty at render.
-		"cluster":        "not supplied to an Application-scoped policy render; always empty",
-		"publishVersion": "not supplied to an Application-scoped policy render; always empty",
-		"workflowName":   "not supplied to an Application-scoped policy render; always empty",
-		"replicaKey":     "not supplied to an Application-scoped policy render; always empty",
-		"revision":       "not supplied to an Application-scoped policy render; always empty",
-
-		// context.name is the *application* name here, because the scoped render
-		// sets CompName to app.Name - while in a resource-rendering policy it is
-		// the policy name. One identifier meaning two things across two policy
-		// paths is the hazard KEP-2.16 records, so expressions read appName or
-		// policyName, both of which say what they are.
-		"name": "ambiguous across the two policy paths; use appName or policyName",
-
-		"appSources":               "internal plumbing for source resolution, not user-facing context",
-		"appSourceTypes":           "internal plumbing for source resolution, not user-facing context",
-		"appSourceTemplates":       "internal plumbing for source resolution, not user-facing context",
-		"appSourceSensitivePaths":  "internal plumbing for source resolution, not user-facing context",
-		"appSourceCacheStore":      "internal plumbing for source resolution, not user-facing context",
-		"sourceResolutionStatuses": "internal plumbing for source resolution, not user-facing context",
-		"components":               "an app-wide list; readable in principle but not yet typed here",
-		"appComponents":            "an app-wide list; readable in principle but not yet typed here",
-		"appPolicies":              "an app-wide list; readable in principle but not yet typed here",
-		"appWorkflow":              "an app-wide object; readable in principle but not yet typed here",
-		"output":                   "produced by the render, so it does not exist when properties are substituted",
-		"outputs":                  "produced by the render, so it does not exist when properties are substituted",
-		"outputSecretName":         "produced by the render, so it does not exist when properties are substituted",
-		"parameter":                "the properties being substituted; reading them from within is circular",
-	},
+// field returns the declared type of a context field on this surface.
+func (c ContextSchema) field(name string) (cue.Value, bool) {
+	if !c.value.Exists() {
+		return cue.Value{}, false
+	}
+	v := c.value.LookupPath(cue.MakePath(cue.Str(name)))
+	return v, v.Exists()
 }
 
-var componentContextTypes = map[string]contextKind{
-	"name":           kindString,
-	"cluster":        kindString,
-	"clusterVersion": kindStruct,
-	"namespace":      kindString,
-	"appName":        kindString,
-	"appRevision":    kindString,
-	"appRevisionNum": kindInt,
-	"publishVersion": kindString,
-	"workflowName":   kindString,
-	"replicaKey":     kindString,
-	"revision":       kindString,
-	"appLabels":      kindIndexedString,
-	"appAnnotations": kindIndexedString,
-}
-
-// notReadable are context fields a property expression deliberately cannot see,
-// each with the reason. Being explicit is what makes the drift test useful: a new
-// field cannot be quietly ignored, it has to be put in one list or the other.
-var componentNotReadable = map[string]string{
-	"appSources":               "internal plumbing for source resolution, not user-facing context",
-	"appSourceTypes":           "internal plumbing for source resolution, not user-facing context",
-	"appSourceTemplates":       "internal plumbing for source resolution, not user-facing context",
-	"appSourceSensitivePaths":  "internal plumbing for source resolution, not user-facing context",
-	"appSourceCacheStore":      "internal plumbing for source resolution, not user-facing context",
-	"sourceResolutionStatuses": "internal plumbing for source resolution, not user-facing context",
-	"components":               "an app-wide list; readable in principle but not yet typed here",
-	"appComponents":            "an app-wide list; readable in principle but not yet typed here",
-	"appPolicies":              "an app-wide list; readable in principle but not yet typed here",
-	"appWorkflow":              "an app-wide object; readable in principle but not yet typed here",
-	"output":                   "produced by the render, so it does not exist when properties are substituted",
-	"outputs":                  "produced by the render, so it does not exist when properties are substituted",
-	"outputSecretName":         "produced by the render, so it does not exist when properties are substituted",
-	"parameter":                "the properties being substituted; reading them from within is circular",
+// isIndexed reports a field that is an open map - appLabels and friends - which
+// must be read with a key.
+func (c ContextSchema) isIndexed(name string) bool {
+	v, ok := c.field(name)
+	if !ok {
+		return false
+	}
+	return v.LookupPath(cue.MakePath(cue.AnyString)).Exists()
 }
 
 // sentinelContext builds the context sentinels for exactly the fields an
@@ -212,41 +131,40 @@ func sentinelContext(refs []Reference, schema ContextSchema) (map[string]interfa
 			continue
 		}
 		field := ref.Path[0]
-		kind, ok := schema.types[field]
+		declared, ok := schema.field(field)
 		if !ok {
 			return nil, fmt.Errorf("context.%s is not readable in %s properties%s; readable fields are %s",
 				field, schema.Surface, schema.why(field), strings.Join(schema.readable(), ", "))
 		}
 
-		switch kind {
-		case kindIndexedString:
+		// An open map has no concrete field at any key, so the key actually read
+		// is materialised from the pattern's type.
+		if schema.isIndexed(field) {
 			if len(ref.Path) < 2 {
 				return nil, fmt.Errorf("context.%s must be read with a key, e.g. context.%s[\"my-label\"]",
 					field, field)
+			}
+			value, err := sentinelFor(declared.LookupPath(cue.MakePath(cue.AnyString)))
+			if err != nil {
+				return nil, fmt.Errorf("context.%s: %w", field, err)
 			}
 			nested, _ := out[field].(map[string]interface{})
 			if nested == nil {
 				nested = map[string]interface{}{}
 				out[field] = nested
 			}
-			nested[ref.Path[1]] = "x"
-		case kindString:
-			out[field] = "x"
-		case kindInt:
-			out[field] = 1
-		case kindStruct:
-			// clusterVersion. Its shape is fixed, so the sentinel can be too -
-			// but it has to match what parseClusterVersion actually builds.
-			// minor is an int64 there (strconv.ParseInt), not a string, and
-			// declaring it a string made admission promise a type render would
-			// not produce.
-			out[field] = map[string]interface{}{
-				"major":      "1",
-				"minor":      1,
-				"gitVersion": "x",
-				"platform":   "x",
-			}
+			nested[ref.Path[1]] = value
+			continue
 		}
+
+		// Everything else comes from the declared type, through the same builder
+		// the source schemas use - so clusterVersion.minor is an int here because
+		// the registry says it is, not because a Go switch remembered to say so.
+		value, err := sentinelFor(declared)
+		if err != nil {
+			return nil, fmt.Errorf("context.%s: %w", field, err)
+		}
+		out[field] = value
 	}
 	return out, nil
 }
@@ -264,7 +182,7 @@ func contextValues(refs []Reference, values map[string]interface{}, schema Conte
 			continue
 		}
 		field := ref.Path[0]
-		if _, ok := schema.types[field]; !ok {
+		if _, ok := schema.field(field); !ok {
 			return nil, fmt.Errorf("context.%s is not readable in %s properties", field, schema.Surface)
 		}
 		if value, ok := values[field]; ok {
@@ -276,9 +194,16 @@ func contextValues(refs []Reference, values map[string]interface{}, schema Conte
 
 // readable lists the fields this surface exposes, for an error message.
 func (c ContextSchema) readable() []string {
-	out := make([]string, 0, len(c.types))
-	for name := range c.types {
-		out = append(out, name)
+	if !c.value.Exists() {
+		return nil
+	}
+	iter, err := c.value.Fields()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for iter.Next() {
+		out = append(out, iter.Selector().Unquoted())
 	}
 	sort.Strings(out)
 	return out
@@ -287,8 +212,13 @@ func (c ContextSchema) readable() []string {
 // why appends the recorded reason for an excluded field, so the author is told
 // that it exists and why they cannot have it rather than that it is unknown.
 func (c ContextSchema) why(field string) string {
-	if reason, ok := c.notReadable[field]; ok {
+	if reason, ok := c.excluded[field]; ok {
 		return " (" + reason + ")"
+	}
+	// Available somewhere, just not here. Saying where beats saying nothing, and
+	// beats prose that has to be kept true by hand.
+	if others := elsewhere(field, c.key); len(others) > 0 {
+		return " (available on: " + strings.Join(others, ", ") + ")"
 	}
 	return ""
 }
