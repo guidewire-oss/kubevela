@@ -1957,3 +1957,85 @@ func TestAssertedReadWithDefault(t *testing.T) {
 		}
 	}
 }
+
+// componentRenderContext builds the context a ComponentDefinition renders
+// against, matching what TestContextTypesMatchTheRenderContext constructs.
+func componentRenderContext(t *testing.T) string {
+	t.Helper()
+	ctx := velaprocess.NewContext(velaprocess.ContextData{
+		AppName: "checkout", CompName: "web", Namespace: "team-a",
+		AppRevisionName: "checkout-v3", WorkflowName: "deploy", PublishVersion: "v1",
+		Cluster:        "prod",
+		AppLabels:      map[string]string{"team": "payments"},
+		AppAnnotations: map[string]string{"note": "x"},
+	})
+	base, err := ctx.BaseContextFile()
+	if err != nil {
+		t.Fatalf("building the render context: %v", err)
+	}
+	return base
+}
+
+// declaredCUEKind is what a contextKind promises the render context will hold.
+//
+// kindIndexedString is a struct in CUE - an open map of string to string - so it
+// shares StructKind with kindStruct. The distinction between them is about how a
+// read is *written* (with a key or by field), which the sentinel builder already
+// enforces separately.
+func declaredCUEKind(k contextKind) cue.Kind {
+	switch k {
+	case kindString:
+		return cue.StringKind
+	case kindInt:
+		return cue.IntKind
+	case kindIndexedString, kindStruct:
+		return cue.StructKind
+	}
+	return cue.BottomKind
+}
+
+// A declared context type must be the type the render context actually holds.
+//
+// The membership tests either side of this one check that every field is
+// classified and that every classified field exists. Neither compares the
+// declared kind against the real one - so a field typed kindString that is really
+// an int types cleanly at admission, is accepted into a string parameter, and
+// fails at render with a CUE error naming a sentinel the author never wrote.
+//
+// This is the missing half of that pair, and it applies to every surface: the
+// value is already in hand at the point membership is checked.
+func TestDeclaredContextTypesMatchTheRenderContext(t *testing.T) {
+	for _, tc := range []struct {
+		surface string
+		schema  ContextSchema
+		render  string
+	}{
+		{"component", ComponentContext, componentRenderContext(t)},
+		{"application-scoped policy", ScopedPolicyContext, scopedPolicyContext(t)},
+	} {
+		t.Run(tc.surface, func(t *testing.T) {
+			v := cuecontext.New().CompileString(tc.render)
+			if v.Err() != nil {
+				t.Fatalf("compiling the render context: %v", v.Err())
+			}
+			iter, err := v.LookupPath(cue.ParsePath("context")).Fields(cue.All())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for iter.Next() {
+				field := iter.Selector().Unquoted()
+				declared, readable := tc.schema.types[field]
+				if !readable {
+					continue // membership is the other tests' job
+				}
+				want := declaredCUEKind(declared)
+				got := iter.Value().IncompleteKind()
+				if want != got {
+					t.Errorf("context.%s is declared %v but the %s render context holds %v; "+
+						"admission would promise a type the render does not produce",
+						field, want, tc.surface, got)
+				}
+			}
+		})
+	}
+}
