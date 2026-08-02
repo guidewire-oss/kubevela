@@ -17,6 +17,7 @@ limitations under the License.
 package sourceexpr
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ import (
 	"cuelang.org/go/cue/cuecontext"
 
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 var demoSchemas = map[string]string{
@@ -383,18 +385,7 @@ func TestSubtractionIsStillAllowed(t *testing.T) {
 // decision here rather than silently becoming unavailable, which would be
 // indistinguishable from a typo in an author's expression.
 func TestContextTypesMatchTheRenderContext(t *testing.T) {
-	ctx := velaprocess.NewContext(velaprocess.ContextData{
-		AppName: "checkout", CompName: "web", Namespace: "team-a",
-		AppRevisionName: "checkout-v3", WorkflowName: "deploy", PublishVersion: "v1",
-		Cluster:        "prod",
-		AppLabels:      map[string]string{"team": "payments"},
-		AppAnnotations: map[string]string{"note": "x"},
-	})
-	base, err := ctx.BaseContextFile()
-	if err != nil {
-		t.Fatalf("building the render context: %v", err)
-	}
-	v := cuecontext.New().CompileString(base)
+	v := cuecontext.New().CompileString(componentRenderContext(t))
 	if v.Err() != nil {
 		t.Fatalf("compiling the render context: %v", v.Err())
 	}
@@ -1270,6 +1261,9 @@ func scopedPolicyContext(t *testing.T) string {
 		AppRevisionName: "checkout-v3",
 		AppLabels:       map[string]string{"team": "payments"},
 		AppAnnotations:  map[string]string{"note": "x"},
+		// A later scoped policy sees what an earlier one published, because
+		// storeAdditionalContextInCtx merges rather than replaces.
+		Ctx: publishedContext(),
 	})
 	pCtx.PushData(velaprocess.ContextAppComponents, []string{})
 	pCtx.PushData(velaprocess.ContextAppWorkflow, nil)
@@ -1969,12 +1963,23 @@ func componentRenderContext(t *testing.T) string {
 		Cluster:        "prod",
 		AppLabels:      map[string]string{"team": "payments"},
 		AppAnnotations: map[string]string{"note": "x"},
+		Ctx:            publishedContext(),
 	})
 	base, err := ctx.BaseContextFile()
 	if err != nil {
 		t.Fatalf("building the render context: %v", err)
 	}
 	return base
+}
+
+// publishedContext carries what an Application-scoped policy emitted via
+// output.ctx, which NewContext wraps as context.custom.
+//
+// The drift tests need it: declaring `custom` readable without a render context
+// that produces it would assert availability rather than measure it.
+func publishedContext() context.Context {
+	return context.WithValue(context.Background(), oam.PolicyAdditionalContextKey,
+		map[string]interface{}{"region": "eu-west"})
 }
 
 // A surface's declared context must unify with the context that surface really
@@ -2018,4 +2023,79 @@ func TestSurfaceTypesUnifyWithTheRenderContext(t *testing.T) {
 			}
 		})
 	}
+}
+
+// context.custom is the one field that is both unshaped and possibly absent, so
+// reading it needs an assertion *and* a default.
+//
+// It carries whatever an Application-scoped policy published via output.ctx, so
+// the registry cannot type it beyond `_` and nothing guarantees a policy set it.
+// Both are existing rules rather than special cases - the same two a source's
+// `content: _` triggers - and this pins that they both apply here.
+func TestPublishedContextNeedsAssertionAndDefault(t *testing.T) {
+	noSources := map[string]string{}
+
+	t.Run("an unasserted read is refused, naming the surface", func(t *testing.T) {
+		_, err := TypeOf(`context.custom.region`, noSources)
+		if err == nil {
+			t.Fatal("expected a read into custom to demand a type")
+		}
+		for _, want := range []string{"leaves open", "component context", "& <type>"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("message should contain %q; got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("an assertion gives it a type", func(t *testing.T) {
+		got, err := TypeOf(`context.custom.region & string`, noSources)
+		if err != nil || got != cue.StringKind {
+			t.Fatalf("expected string, got %v (%v)", got, err)
+		}
+		if got, err := TypeOf(`context.custom.replicas & int`, noSources); err != nil || got != cue.IntKind {
+			t.Fatalf("expected int, got %v (%v)", got, err)
+		}
+	})
+
+	// Asserting says what it is, not that it is there. A policy may never have
+	// published it.
+	t.Run("an asserted read still needs a default", func(t *testing.T) {
+		undefended, err := UndefendedReads(`$(context.custom.region & string)`, noSources)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(undefended) != 1 || undefended[0].String() != "context.custom.region" {
+			t.Fatalf("expected the read to be undefended, got %v", undefended)
+		}
+		undefended, err = UndefendedReads(`$(*(context.custom.region & string) | "none")`, noSources)
+		if err != nil || len(undefended) != 0 {
+			t.Fatalf("a defaulted read needs nothing, got %v (%v)", undefended, err)
+		}
+	})
+
+	// The whole value is a struct and needs no assertion: nothing is being read
+	// through it.
+	t.Run("the whole value types as a struct", func(t *testing.T) {
+		if got, err := TypeOf(`context.custom`, noSources); err != nil || got != cue.StructKind {
+			t.Fatalf("expected struct, got %v (%v)", got, err)
+		}
+	})
+
+	// Admission and render must agree, or the assertion is theatre.
+	t.Run("render produces what admission promised", func(t *testing.T) {
+		values := map[string]interface{}{
+			"custom": map[string]interface{}{"region": "eu-west"},
+		}
+		got, err := EvalIn(`$(context.custom.region & string)`, nil, values,
+			ComponentContext, SourceIdent, ContextIdent)
+		if err != nil || got != "eu-west" {
+			t.Fatalf("expected eu-west, got %#v (%v)", got, err)
+		}
+		// And the default is what survives a policy never having published it.
+		got, err = EvalIn(`$(*(context.custom.region & string) | "none")`, nil,
+			map[string]interface{}{}, ComponentContext, SourceIdent, ContextIdent)
+		if err != nil || got != "none" {
+			t.Fatalf("expected the default, got %#v (%v)", got, err)
+		}
+	})
 }

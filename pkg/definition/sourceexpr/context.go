@@ -105,6 +105,35 @@ func (c ContextSchema) field(name string) (cue.Value, bool) {
 	return v, v.Exists()
 }
 
+// pathIsOpen reports whether a context read descends into a field the registry
+// leaves unshaped.
+//
+// `custom: _` is the case this exists for: an Application-scoped policy chooses
+// its shape, so nothing below it can be typed and the read has to say what it
+// expects. Mirrors PathIsOpen on the source side.
+func (c ContextSchema) pathIsOpen(path []string) bool {
+	if len(path) < 2 {
+		// The field itself, not a read through it. A whole `_` value types as
+		// whatever it holds and needs no assertion.
+		return false
+	}
+	cur, ok := c.field(path[0])
+	if !ok {
+		return false
+	}
+	for _, segment := range path[1:] {
+		if cur.IncompleteKind() == cue.TopKind {
+			return true
+		}
+		next := cur.LookupPath(cue.MakePath(cue.Str(segment)))
+		if !next.Exists() {
+			return false
+		}
+		cur = next
+	}
+	return cur.IncompleteKind() == cue.TopKind
+}
+
 // isIndexed reports a field that is an open map - appLabels and friends - which
 // must be read with a key.
 func (c ContextSchema) isIndexed(name string) bool {

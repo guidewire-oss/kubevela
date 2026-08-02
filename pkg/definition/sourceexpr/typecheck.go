@@ -96,6 +96,24 @@ func TypeOfIn(expr string, schemas map[string]string, ctxSchema ContextSchema, r
 		return cue.BottomKind, err
 	}
 
+	// The same rule on the context side. context.custom is whatever an
+	// Application-scoped policy published, so the registry can only type it `_`
+	// and a read through it has to say what it expects - exactly as a source's
+	// `content: _` does. Without this the assertion was accepted and then
+	// ignored, and a bare default typed as the fallback rather than the value.
+	for _, ref := range refs {
+		if ref.IsSource() || !ctxSchema.pathIsOpen(ref.Path) {
+			continue
+		}
+		typeName, ok := asserted[ref.String()]
+		if !ok {
+			return cue.BottomKind, fmt.Errorf("%s reads a field the %s context leaves open, so its "+
+				"type has to be given here: write %s & <type>, one of %s",
+				ref, ctxSchema.Surface, ref, strings.Join(AssertedKinds(), ", "))
+		}
+		materialiseAsserted(contextFields, ref.Path, typeName)
+	}
+
 	out, err := evalIn(ctx, buildScope(ctx, sources, contextFields), expr)
 	if err != nil {
 		return cue.BottomKind, err

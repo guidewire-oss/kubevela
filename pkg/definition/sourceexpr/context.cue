@@ -72,6 +72,20 @@
 	policyRevision:     int
 }
 
+// #PublishedContext is what an Application-scoped policy published via output.ctx,
+// wrapped under `custom` by NewContext and carried into every render that follows.
+//
+// Two things make it unlike every other field. It is absent unless some policy
+// set it, and its shape is whatever that policy chose - so it cannot be typed
+// beyond `_`. Both are already handled rules rather than special cases: a read
+// into an open region must assert its type (`& string`), and a read that may be
+// absent must carry a default (`*... | fallback`). Using it needs both.
+#PublishedContext: {
+	// +usage=Data published by an Application-scoped policy's output.ctx. Absent
+	// unless a policy set it, and unshaped - a read needs a type assertion and a default
+	custom: _
+}
+
 // labels name each surface in error messages, so the message says "application-
 // scoped policy" rather than the key used to look it up.
 labels: {
@@ -94,6 +108,7 @@ surfaces: {
 		#AppIdentity
 		#DeliveryIdentity
 		#ComponentIdentity
+		#PublishedContext
 		// +usage=The component being rendered
 		name: string
 	}
@@ -103,6 +118,7 @@ surfaces: {
 	workflowstep: {
 		#AppIdentity
 		#DeliveryIdentity
+		#PublishedContext
 		// +usage=The step being rendered
 		name: string
 	}
@@ -122,6 +138,9 @@ surfaces: {
 		#AppIdentity
 		#PolicyIdentity
 		#PolicyRevisionIdentity
+		// A later scoped policy sees what an earlier one published:
+		// storeAdditionalContextInCtx merges rather than replaces.
+		#PublishedContext
 		clusterVersion: {
 			major:      string
 			minor:      int
