@@ -46,6 +46,7 @@ var contextRegistrySource string
 type contextRegistry struct {
 	surfaces map[string]cue.Value
 	labels   map[string]string
+	plurals  map[string]string
 	excluded map[string]string
 }
 
@@ -83,23 +84,18 @@ func loadContextRegistry(source string) (contextRegistry, error) {
 		return contextRegistry{}, fmt.Errorf("the registry declares no surfaces")
 	}
 
-	labels := map[string]string{}
-	if lv := v.LookupPath(cue.ParsePath("labels")); lv.Exists() {
-		liter, lerr := lv.Fields()
-		if lerr != nil {
-			return contextRegistry{}, fmt.Errorf("reading surface labels: %w", lerr)
-		}
-		for liter.Next() {
-			label, serr := liter.Value().String()
-			if serr != nil {
-				return contextRegistry{}, fmt.Errorf("surface label %q: %w", liter.Selector().Unquoted(), serr)
-			}
-			labels[liter.Selector().Unquoted()] = label
-		}
+	labels, err := stringMapAt(v, "labels")
+	if err != nil {
+		return contextRegistry{}, err
+	}
+	plurals, err := stringMapAt(v, "plurals")
+	if err != nil {
+		return contextRegistry{}, err
 	}
 	for name := range surfaces {
-		if _, ok := labels[name]; !ok {
-			return contextRegistry{}, fmt.Errorf("surface %q has no label; every surface must name itself for error messages", name)
+		if labels[name] == "" || plurals[name] == "" {
+			return contextRegistry{}, fmt.Errorf(
+				"surface %q needs both a label and a plural; every surface must name itself for error messages", name)
 		}
 	}
 
@@ -107,7 +103,49 @@ func loadContextRegistry(source string) (contextRegistry, error) {
 	if err != nil {
 		return contextRegistry{}, err
 	}
-	return contextRegistry{surfaces: surfaces, labels: labels, excluded: excluded}, nil
+	return contextRegistry{surfaces: surfaces, labels: labels, plurals: plurals, excluded: excluded}, nil
+}
+
+// stringMapAt decodes a top-level struct of strings from the registry.
+func stringMapAt(v cue.Value, path string) (map[string]string, error) {
+	out := map[string]string{}
+	field := v.LookupPath(cue.ParsePath(path))
+	if !field.Exists() {
+		return out, nil
+	}
+	iter, err := field.Fields()
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	for iter.Next() {
+		s, serr := iter.Value().String()
+		if serr != nil {
+			return nil, fmt.Errorf("%s.%s: %w", path, iter.Selector().Unquoted(), serr)
+		}
+		out[iter.Selector().Unquoted()] = s
+	}
+	return out, nil
+}
+
+// SurfacesOffering names, in the plural, every surface that offers a field.
+func SurfacesOffering(field string) []string {
+	var out []string
+	for name, v := range registry.surfaces {
+		if v.LookupPath(cue.MakePath(cue.Str(field))).Exists() {
+			out = append(out, registry.plurals[name])
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SurfacePlural names a surface in the plural, for a message that reads
+// "unavailable in workflow steps" rather than naming one instance.
+func SurfacePlural(surface string) string {
+	if p := registry.plurals[surface]; p != "" {
+		return p
+	}
+	return surface
 }
 
 // excludedReasons reads the +reason= annotation off each field in `excluded`.
@@ -195,7 +233,7 @@ func elsewhere(field, exceptKey string) []string {
 			continue
 		}
 		if v.LookupPath(cue.MakePath(cue.Str(field))).Exists() {
-			out = append(out, registry.labels[name])
+			out = append(out, registry.plurals[name])
 		}
 	}
 	sort.Strings(out)

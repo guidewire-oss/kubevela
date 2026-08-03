@@ -98,14 +98,15 @@ func CheckSurface(fields []string, surface string) error {
 		return nil
 	}
 	sort.Strings(missing)
-	return fmt.Errorf("reads context %s, which a %s does not have",
-		strings.Join(quoted(missing), ", "), surface)
+	return fmt.Errorf("reads %s, which is unavailable in %s",
+		strings.Join(dotted(missing), ", "), sourceexpr.SurfacePlural(surface))
 }
 
-func quoted(in []string) []string {
+// dotted names a context field the way an author wrote it.
+func dotted(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, s := range in {
-		out = append(out, "\""+s+"\"")
+		out = append(out, "context."+s)
 	}
 	return out
 }

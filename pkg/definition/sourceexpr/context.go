@@ -257,7 +257,7 @@ func (c ContextSchema) why(field string) string {
 	// Available somewhere, just not here. Saying where beats saying nothing, and
 	// beats prose that has to be kept true by hand.
 	if others := elsewhere(field, c.key); len(others) > 0 {
-		return " (available on: " + strings.Join(others, ", ") + ")"
+		return " (available in " + strings.Join(others, ", ") + ")"
 	}
 	return ""
 }

@@ -1127,14 +1127,26 @@ func validateSourceContextReads(app *v1beta1.Application, effective map[string][
 							continue
 						}
 						errs = append(errs, field.Invalid(lf.fieldPath, text,
-							fmt.Sprintf("reads context.%s, which a %s does not have - "+
-								"source %q is consumed from %v",
-								read.Path[0], sourceexpr.ContextFor(surface).Surface,
-								src.Name, effective[src.Name])))
+							contextUnavailableMessage(read.Path[0], surface, src.Name)))
 					}
 				}
 			}
 		}
 	}
 	return errs
+}
+
+// contextUnavailableMessage states the field, the surface that lacks it, why that
+// surface is being mentioned, and where the field would work.
+//
+// The last clause is the one that decides what the author does next: move the
+// consumption, or stop reading the field. Omitted when nothing offers it, since
+// "available in" with an empty list reads as a bug.
+func contextUnavailableMessage(field, surface, binding string) string {
+	msg := fmt.Sprintf("context.%s is unavailable in %s, where source %q is consumed",
+		field, sourceexpr.SurfacePlural(surface), binding)
+	if available := sourceexpr.SurfacesOffering(field); len(available) > 0 {
+		msg += "; it is available in " + strings.Join(available, ", ")
+	}
+	return msg
 }

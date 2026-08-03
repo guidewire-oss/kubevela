@@ -111,14 +111,27 @@
 	custom: _
 }
 
-// labels name each surface in error messages, so the message says "application-
+// labels name each surface in error messages, so a message says "application-
 // scoped policy" rather than the key used to look it up.
+//
+// Both forms are declared because both are needed and neither is derivable:
+// "policy" pluralises to "policies", and a message reads either "unavailable in
+// workflow steps" or "not readable in workflow step properties" depending on
+// what it is saying.
 labels: {
 	component:        "component"
 	trait:            "trait"
 	workflowstep:     "workflow step"
 	"policy-default": "policy"
 	"policy-app":     "application-scoped policy"
+}
+
+plurals: {
+	component:        "components"
+	trait:            "traits"
+	workflowstep:     "workflow steps"
+	"policy-default": "policies"
+	"policy-app":     "application-scoped policies"
 }
 
 // surfaces are the call sites. Each is the readable context at that point.

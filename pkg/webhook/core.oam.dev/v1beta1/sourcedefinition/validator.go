@@ -28,6 +28,7 @@ import (
 
 	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
 // ValidateSourceStorage checks the `storage:` block of a SourceDefinition template.
@@ -248,10 +249,10 @@ func ValidateSurfaceCompatibility(template string, consumable []string) error {
 	// sentence per surface, and name where it would work if anywhere does.
 	reason := cachekey.CheckSurface(fields, declared[0])
 	if elsewhere := cachekey.SurfacesSupporting(fields, veladefinition.ConsumableSurfaces); len(elsewhere) > 0 {
-		return fmt.Errorf("this source %v, so it cannot be consumed from %v; it would work from %v",
-			reason, declared, elsewhere)
+		return fmt.Errorf("this source %v, where it declares it may be consumed; it is available in %s",
+			reason, strings.Join(pluralise(elsewhere), ", "))
 	}
-	return fmt.Errorf("this source %v, so it cannot be consumed from any surface", reason)
+	return fmt.Errorf("this source %v, and is available in no surface that resolves sources", reason)
 }
 
 // SurfaceAllowed reports whether a source declaring the given surfaces may be
@@ -272,4 +273,13 @@ func literalString(lit *ast.BasicLit) (string, error) {
 		return "", fmt.Errorf("invalid string literal %s: %w", lit.Value, err)
 	}
 	return value, nil
+}
+
+// pluralise names surfaces the way a message reads them.
+func pluralise(surfaces []string) []string {
+	out := make([]string, 0, len(surfaces))
+	for _, s := range surfaces {
+		out = append(out, sourceexpr.SurfacePlural(s))
+	}
+	return out
 }

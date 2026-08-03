@@ -171,7 +171,7 @@ func TestSurfaceCompatibilityPrimitives(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected an error")
 		}
-		for _, want := range []string{`"replicaKey"`, "workflowstep"} {
+		for _, want := range []string{"context.replicaKey", "workflow steps"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("message should contain %q; got %v", want, err)
 			}
