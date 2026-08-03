@@ -34,19 +34,19 @@ import (
 // its own.
 var sourceResolvingSurfaces = []string{"component", "trait", "workflowstep"}
 
-// A keyed field must exist in the context registry, and must exist on every
-// surface where a source can resolve.
+// A keyed field must be one some surface can actually supply.
 //
 // The rules file is hand-edited and its hash is stamped onto every generated
-// definition, so a mistake there is expensive and quiet. Two ways to get it
-// wrong:
+// definition, so a mistake there is expensive and quiet: sourceContext builds a
+// source's context from this list, so a typo or a field that does not exist is
+// silently absent and the template fails at render naming something the author
+// did write.
 //
-//   - a typo, or a field that simply does not exist. sourceContext builds a
-//     source's context from this list, so the field is silently absent and the
-//     template fails at render with an undefined field.
-//   - a field that exists but not everywhere. A source reading it would resolve
-//     from a component and fail from a workflow step, depending on where an
-//     Application happened to consume it.
+// A field offered by only *some* surfaces is deliberately allowed. That is what
+// lets a source read componentName and be restricted to components and traits,
+// rather than every source being confined to the intersection of every call
+// site. Where such a source may be consumed is enforced per binding by the
+// surface compatibility check, not here.
 //
 // Every rules file is checked, not just the current one, so a version added
 // later is covered without remembering to extend this.
@@ -71,21 +71,16 @@ func TestKeyedFieldsExistInTheContextRegistry(t *testing.T) {
 			}
 
 			for _, field := range fields {
-				var missing []string
-				for _, surface := range sourceResolvingSurfaces {
-					if !sourceexpr.SurfaceOffers(surface, field) {
-						missing = append(missing, surface)
-					}
-				}
-				switch {
-				case len(missing) == len(sourceResolvingSurfaces):
-					t.Errorf("keyed field %q is not in the context registry at all; "+
-						"a source reading it would find nothing at render. Add it to a group "+
+				// A keyed field must be offered by at least one surface that
+				// resolves sources. Fewer than all is fine and is the point: it
+				// narrows where a source reading it may be consumed, which the
+				// compatibility check enforces per binding. Zero is not - the
+				// field would be absent at render on every path, so no source
+				// could ever use it.
+				if len(SurfacesSupporting([]string{field}, sourceResolvingSurfaces)) == 0 {
+					t.Errorf("keyed field %q is offered by no surface that resolves sources, "+
+						"so a source reading it would find nothing at render. Add it to a group "+
 						"in pkg/definition/sourceexpr/context.cue, or remove it here", field)
-				case len(missing) > 0:
-					t.Errorf("keyed field %q is not offered on %v, so a source reading it would "+
-						"resolve from some call sites and fail at others. A field may only be "+
-						"keyed if every surface that resolves sources offers it", field, missing)
 				}
 			}
 		})
@@ -184,17 +179,42 @@ func TestSurfaceCompatibilityPrimitives(t *testing.T) {
 	})
 }
 
-// Every field the current rules key on must be readable from every surface a
-// source can resolve on - the same property TestKeyedFieldsExistInTheContextRegistry
-// asserts, stated through the primitive the checks actually use.
-func TestCurrentRulesSatisfyEverySourceSurface(t *testing.T) {
-	rules, err := LoadRules()
-	if err != nil {
-		t.Fatal(err)
+// A source reading only the universally-available fields must still resolve
+// everywhere.
+//
+// That is the common case and the one that must not regress: adding
+// surface-specific fields to the rules restricts the sources that read *those*,
+// and nothing else. If this ever fails, a field has been moved out of a group
+// every call site has.
+func TestUniversalFieldsResolveOnEverySourceSurface(t *testing.T) {
+	universal := []string{
+		"name", "appName", "namespace", "appRevision", "appRevisionNum",
+		"cluster", "clusterVersion", "publishVersion", "workflowName",
+		"appLabels", "appAnnotations",
 	}
 	for _, surface := range sourceResolvingSurfaces {
-		if err := CheckSurface(rules.Fields(), surface); err != nil {
-			t.Errorf("the current rules cannot resolve on %s: %v", surface, err)
+		if err := CheckSurface(universal, surface); err != nil {
+			t.Errorf("a source reading only universal context cannot resolve on %s: %v", surface, err)
+		}
+	}
+}
+
+// And the surface-specific ones must genuinely restrict, or keying on them says
+// nothing.
+func TestSurfaceSpecificFieldsRestrict(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		want  []string
+	}{
+		{"componentName", []string{"component", "trait"}},
+		{"componentType", []string{"component", "trait"}},
+		{"traitType", []string{"trait"}},
+		{"stepName", []string{"workflowstep"}},
+		{"stepType", []string{"workflowstep"}},
+	} {
+		got := SurfacesSupporting([]string{tc.field}, sourceResolvingSurfaces)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("a source keyed on %q should be consumable from %v, got %v", tc.field, tc.want, got)
 		}
 	}
 }
