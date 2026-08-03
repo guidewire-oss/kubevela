@@ -178,7 +178,7 @@ func unmarshalYAML(data []byte) (map[string]interface{}, error) {
 }
 
 // readCUEStringField compiles the small identity CUE file at path and
-// returns the string value at fieldPath (e.g. "module.name", "apiVersion").
+// returns the string value at fieldPath (e.g. "module", "version", "apiVersion").
 func readCUEStringField(path, fieldPath string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
