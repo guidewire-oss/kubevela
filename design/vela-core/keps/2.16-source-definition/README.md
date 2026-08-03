@@ -58,6 +58,7 @@ affected carry a pointer back to this list.
 | A9 | `// +sensitive` covers every field beneath the one it marks | [Controller Guarantees](#controller-guarantees) | implemented |
 | A10 | `fromSource` is removed; expressions are the only consumption mechanism | [fromSource Semantics](#fromsource-semantics), [Application Usage](#application-usage) | implemented |
 | A11 | Every surface type-checks its expressions, not just components and traits | [Validation summary](#validation-summary) | implemented |
+| A12 | Context is declared once in CUE, per surface, and a source reads what its call site offers | [A4](#a4-a-source-reads-only-keyed-context), [CUE Context in SourceDefinition](#cue-context-in-sourcedefinition) | implemented |
 
 **Reading the worked examples below.** Every example in the body writes its key by
 hand, as `storage: { key: "..." }`. Applied as written, all of them would now be
@@ -212,6 +213,10 @@ policy concern and belongs in admission or a `errs:` check in the definition, no
 in cache-key computation.
 
 ### A4: A source reads only keyed context
+
+> Refined by [A12](#a12-one-context-registry-per-surface): …and only where that
+> context exists. A source is compiled against the key policy narrowed to the
+> surface consuming it.
 
 **Was:** a source was compiled against the component's context, and the KEP listed
 the fields available.
@@ -629,6 +634,109 @@ along with the type check, which let `policys:` through whenever any expression
 was present - caught by testing the typo case rather than only the happy path. A
 test pins the shadow struct to `DeployWorkflowStepSpec` so a field added to one
 and not the other fails loudly.
+
+
+### A12: One context registry, per surface
+
+**Was:** what an expression could read was declared in Go, twice — a
+`componentContextTypes` map and a `ScopedPolicyContext.types` map, each with a
+`contextKind` enum and a hand-written `notReadable` map beside it. What a *source*
+could read was a third list, the cache-key rules. None of them said where a field
+exists, so the readable set was chosen by intersection: a field absent from any
+one call site was withheld from all of them.
+
+**Is:** `pkg/definition/sourceexpr/context.cue` declares every field once, in
+groups, composed into a type per call site.
+
+```cue
+#ComponentIdentity: {componentName: string, componentType: string, ...}
+#TraitIdentity:     {traitType: string}
+
+surfaces: {
+	component:    {#AppIdentity, #DeliveryIdentity, #ComponentIdentity, name: string}
+	trait:        {surfaces.component, #TraitIdentity}
+	workflowstep: {#AppIdentity, #DeliveryIdentity, #StepIdentity, name: string}
+	...
+}
+```
+
+Go reads it. `ComponentContext`, `TraitContext`, `WorkflowStepContext`,
+`PolicyContext` and `ScopedPolicyContext` are views over `surfaces.*`, and the
+`contextKind` enum is gone — a field's type is its CUE type.
+
+**Why one declaration rather than three.** They had already drifted, in both
+directions at once. A policy expression was type-checked against the *component's*
+context while being evaluated against its own, so `context.appRevisionNum` passed
+admission and failed at render as an undefined field, while `context.policyName`
+was supplied at render and refused at admission as *"not readable in component
+properties"*. Two tables cannot be kept in agreement by discipline; one cannot
+disagree with itself.
+
+**What the shape buys.** Declared type against real type is now *unification*
+rather than a comparison someone has to write:
+
+```
+surfaces.component & <a real render context>
+→ appRevisionNum: conflicting values "3" and int (mismatched types string and int)
+```
+
+The tests build a genuine render context per surface and unify. Membership is
+pinned both ways, so a field added upstream must be placed in a group or in
+`excluded` with a `+reason` the loader requires at startup. Exclusion messages are
+derived, not prose: a field offered elsewhere reports *"available on: component,
+trait, workflow step"*.
+
+### Each definition knows its own identity
+
+`context.name` means the component in a component, the component again in a
+trait, the step in a workflow step, and the binding inside a source (A4). That
+ambiguity is unfixable in place, so every definition now gets its own pair, set
+before it renders:
+
+| Render | Own | Inherited |
+|---|---|---|
+| component | `componentName`, `componentType` | — |
+| trait | `traitType` | `componentName`, `componentType` |
+| workflow step | `stepName`, `stepType` | — |
+| policy | `policyName`, `policyType` | — |
+
+There is no `traitName`: `ApplicationTrait` carries only a `Type`, and inventing
+an instance name would recreate the ambiguity this removes.
+
+### A source reads what its call site offers
+
+This refines A4. A source is compiled against the key policy *narrowed to the
+surface consuming it*:
+
+```
+source context = ( keyed ∩ surfaces[callerSurface] ) + name := binding
+```
+
+A chained source inherits its consumer's surface, because it resolves inside
+whichever render triggered the outer binding — so the surfaces it must satisfy are
+its consumers', accumulated across all of them and through however many hops.
+
+Two checks enforce it. At **SourceDefinition** admission, a definition whose
+template reads fields no single surface can supply — or that contradicts its own
+`consumableFrom` — is refused when it is created, not when someone first binds it.
+At **Application** admission, each binding is checked against the surfaces it
+actually resolves on.
+
+**Both are inert today, deliberately.** The rules admit only universally-available
+fields, so no definition can be built that trips them; a template reading
+`componentType` is refused before the check could run. The guard lands while it
+can be proven inert rather than alongside the first field that needs it. The rules
+file is also now validated against the registry: a keyed field must exist there,
+and must be offered by every surface that resolves a source — so a future version
+cannot key on something only some call sites have.
+
+**What this cost.** Four gaps had to close, three found only by applying the
+change to a cluster: `componentType` was pushed after the component's own template
+had run and so reached traits only; the admission dry-run built a context with no
+identity at all, so an expression failed there and worked in production; traits
+were typed against the component's context; and the render path hardcoded that
+context, mirroring the admission bug. Unit tests caught none of them, which is the
+argument for exercising the shipped source library against a real API server.
 
 
 ## Mental Model
