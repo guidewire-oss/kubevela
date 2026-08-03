@@ -60,6 +60,7 @@ affected carry a pointer back to this list.
 | A11 | Every surface type-checks its expressions, not just components and traits | [Validation summary](#validation-summary) | implemented |
 | A12 | Context is declared once in CUE, per surface, and a source reads what its call site offers | [A4](#a4-a-source-reads-only-keyed-context), [CUE Context in SourceDefinition](#cue-context-in-sourcedefinition) | implemented |
 | A13 | A resource-rendering policy resolves sources; "policy" was one name for three surfaces | [A7](#a7-expressions-resolve-on-more-surfaces-than-fromsource-did), [Future Enhancements](#future-enhancements) | implemented |
+| A14 | A source may key on its caller's identity, which restricts where it can be consumed | [A4](#a4-a-source-reads-only-keyed-context), [A12](#a12-one-context-registry-per-surface) | implemented |
 
 **Reading the worked examples below.** Every example in the body writes its key by
 hand, as `storage: { key: "..." }`. Applied as written, all of them would now be
@@ -726,13 +727,15 @@ template reads fields no single surface can supply — or that contradicts its o
 At **Application** admission, each binding is checked against the surfaces it
 actually resolves on.
 
-**Both are inert today, deliberately.** The rules admit only universally-available
-fields, so no definition can be built that trips them; a template reading
-`componentType` is refused before the check could run. The guard lands while it
-can be proven inert rather than alongside the first field that needs it. The rules
-file is also now validated against the registry: a keyed field must exist there,
-and must be offered by every surface that resolves a source — so a future version
-cannot key on something only some call sites have.
+**Both were inert when they landed, deliberately** — and are not any more; see
+[A14](#a14-a-source-may-key-on-its-callers-identity). At the time the rules
+admitted only universally-available fields, so no definition could be built that
+tripped them: a template reading `componentType` was refused before the check
+could run. The guard landed while it could be proven inert rather than alongside
+the first field that needed it. The rules file is also validated against the
+registry: a keyed field must exist there, and must be offered by at least one
+surface that resolves a source — a field offered by only *some* is the point, and
+is what restricts where a source may be consumed.
 
 **What this cost.** Four gaps had to close, three found only by applying the
 change to a cluster: `componentType` was pushed after the component's own template
@@ -802,6 +805,68 @@ counterpart to A12's unification tests, which pin types and membership but canno
 see that a declared field is permanently blank.
 
 
+### A14: A source may key on its caller's identity
+
+**Was:** every field a source could key on existed on every surface, so a source
+could always be consumed anywhere. The surface-compatibility checks introduced by
+[A12](#a12-one-context-registry-per-surface) were built and tested, and guarded a
+case that could not arise.
+
+**Is:** the caller's identity is keyable.
+
+| Added to `keyed` | A source reading it is consumable from |
+|---|---|
+| `componentName`, `componentType` | components, traits |
+| `traitType` | traits |
+| `stepName`, `stepType` | workflow steps |
+| `policyName`, `policyType` | policies that render resources ([A13](#a13-a-resource-rendering-policy-resolves-sources)) |
+
+```cue
+$internal: {
+	key: "per-component-\(context.namespace)-\(context.componentName)"
+	keyInputs: ["namespace", "componentName"]
+}
+```
+
+One cache entry per consuming component — observed on a cluster as
+`per-component-default-web-f61d170c`, with two components in one Application each
+resolving to their own value.
+
+**What makes this safe is the restriction, not the field.** A source reading
+`componentName` cannot resolve where no component is rendered, and that is
+enforced per binding at Application admission and reported by `vela def show`
+before anything is applied. The original Future Enhancement anticipated exactly
+this: *"introduce an explicit `context.componentName` (absent outside a component
+or trait render, so a component-scoped source fails loudly rather than resolving
+against the wrong identity)"*. It fails loudly at admission rather than at render.
+
+**`revision` and `replicaKey` are deliberately not keyed.** Both exist in the
+render context and in the registry, but caching per component revision or per
+replica is finer-grained than anything has needed, and each dimension multiplies
+cache entries.
+
+**This reverses a stated principle.** The rules previously held that *"a source's
+output must not depend on which consumer asked"*, with per-consumer variation
+routed through properties instead. That is still the simpler option and still
+works — the property route needs no surface restriction at all. What changed is
+that the alternative is now expressible, and expressible safely, because the
+compatibility machinery exists to bound it.
+
+**The hash moved to `bb2aa884`** and every generated definition was restamped.
+Nothing has shipped, so the rules were edited in place rather than versioned; the
+existing templates read only orders 1–11, so their `$internal` blocks are
+unchanged, and each definition was re-applied against admission, which re-derives
+the stamp and rejects a mismatch.
+
+**One bug became reachable, and was reachable only here.** The compatibility check
+tested every reference against every surface the binding was consumed on. A
+component reading a per-component source was therefore rejected as *"unavailable in
+workflow steps"* — naming a surface the author had not used for that property —
+because the same binding was also read from a step. A direct read resolves at its
+own call site, so only that surface has to satisfy it; the effective-surface set,
+which follows chains, is correct only for a chained read, where the source resolves
+inside whichever render triggered the outer binding. The distinction did not matter
+while every source was consumable everywhere.
 ## Mental Model
 
 **`SourceDefinition`: reusable source provider (platform engineer)**
