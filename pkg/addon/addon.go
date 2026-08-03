@@ -1038,10 +1038,7 @@ func (h *Installer) installDependency(ctx context.Context, addon *InstallPackage
 		r := registry
 		registries = append(registries, &r)
 	}
-	availableAddons, err := listAvailableAddons(registries)
-	if err != nil {
-		return err
-	}
+	availableAddons := listAvailableAddons(registries)
 
 	err = validateAddonDependencies(addon, installedAddons, availableAddons)
 	if err != nil {
@@ -1239,7 +1236,10 @@ func isSkippableRegistryError(err error) bool {
 
 // listAvailableAddons fetches a collection of addons available in a list of
 // registries. Returns a map of ItemInfo grouped by addon name.
-func listAvailableAddons(registries []ItemInfoLister) (itemInfoMap, error) {
+// listAvailableAddons aggregates addon info across registries. A registry that
+// fails to list is skipped (logged) rather than aborting the whole listing, so
+// this never returns an error.
+func listAvailableAddons(registries []ItemInfoLister) itemInfoMap {
 	availableAddons := make(itemInfoMap)
 
 	for _, registry := range registries {
@@ -1254,7 +1254,7 @@ func listAvailableAddons(registries []ItemInfoLister) (itemInfoMap, error) {
 		}
 		availableAddons = mergeAddonInfoMaps(availableAddons, addons)
 	}
-	return availableAddons, nil
+	return availableAddons
 }
 
 func mergeAddonInfoMaps(existingAddons itemInfoMap, newAddons itemInfoMap) itemInfoMap {

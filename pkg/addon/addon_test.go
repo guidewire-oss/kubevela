@@ -1498,9 +1498,8 @@ func TestListAvailableAddons(t *testing.T) {
 			},
 		},
 	}
-	res, err := listAvailableAddons(registries)
+	res := listAvailableAddons(registries)
 
-	assert.NoError(t, err)
 	expected := itemInfoMap{
 		// addon1 versions are merged
 		"addon1": {
@@ -1576,9 +1575,8 @@ func TestListAvailableAddonsSkipsFailingRegistry(t *testing.T) {
 			},
 		},
 	}
-	res, err := listAvailableAddons(registries)
+	res := listAvailableAddons(registries)
 
-	assert.NoError(t, err)
 	expected := itemInfoMap{
 		"velaux": {
 			Name:              "velaux",
@@ -1593,9 +1591,8 @@ func TestListAvailableAddonsAllRegistriesFail(t *testing.T) {
 		&AddonInfoListerMock{expectedErr: fmt.Errorf("401 Bad credentials")},
 		&AddonInfoListerMock{expectedErr: fmt.Errorf("invalid format: registry path is empty")},
 	}
-	res, err := listAvailableAddons(registries)
+	res := listAvailableAddons(registries)
 
-	assert.NoError(t, err)
 	assert.Equal(t, itemInfoMap{}, res)
 }
 
