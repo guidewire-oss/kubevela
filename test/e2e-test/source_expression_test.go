@@ -469,6 +469,81 @@ output: {
 		}))
 	})
 
+	It("resolves sources and context in a resource-rendering policy", func() {
+		// The third policy kind, and the only one that can resolve a source: a
+		// PolicyDefinition with a CUE template renders through the same engine a
+		// component does, so the resolver is in hand by the time its properties
+		// are substituted.
+		//
+		// It reads context.cluster deliberately. Most sources do a cluster-scoped
+		// lookup, so they read that field and key on it - a policy surface without
+		// it could consume almost no source at all. It is supplied as the hub,
+		// which is where a policy's manifests are dispatched.
+		applyDef(&v1beta1.PolicyDefinition{
+			TypeMeta:   metav1.TypeMeta{Kind: "PolicyDefinition", APIVersion: "core.oam.dev/v1beta1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "expr-render-policy", Namespace: namespaceName},
+			Spec: v1beta1.PolicyDefinitionSpec{
+				Schematic: &oamcomm.Schematic{CUE: &oamcomm.CUE{Template: `
+parameter: {host: string, where: string, who: string}
+output: {
+  apiVersion: "v1"
+  kind:       "ConfigMap"
+  metadata: name: "expr-render-policy-out"
+  data: {
+    host:  parameter.host
+    where: parameter.where
+    who:   parameter.who
+  }
+}
+`}},
+			},
+		})
+		applyDef(exprComponentDefinition(namespaceName, "expr-render-comp", `
+parameter: {}
+output: {
+  apiVersion: "v1"
+  kind:       "ConfigMap"
+  metadata: name: "expr-render-placeholder"
+  data: ok: "yes"
+}
+`))
+
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "expr-render-pol", Namespace: namespaceName},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{
+					Name:       "infra",
+					Type:       "infra-facts",
+					Properties: &runtime.RawExtension{Raw: []byte(`{"host":"db.internal","port":5432}`)},
+				}},
+				Components: []oamcomm.ApplicationComponent{{
+					Name: "placeholder", Type: "expr-render-comp",
+					Properties: &runtime.RawExtension{Raw: []byte(`{}`)},
+				}},
+				Policies: []v1beta1.AppPolicy{{
+					Name: "pinned", Type: "expr-render-policy",
+					Properties: &runtime.RawExtension{Raw: []byte(`{
+  "host":  "$(source.infra.host)",
+  "where": "$(context.cluster)",
+  "who":   "$(context.policyName + \"/\" + context.policyType)"
+}`)},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
+
+		Eventually(func() (map[string]string, error) {
+			return configMapData("expr-render-policy-out")
+		}, 120*time.Second, 2*time.Second).Should(SatisfyAll(
+			// The source resolved - this is the value the SourceDefinition
+			// returned, not the literal text of the expression.
+			HaveKeyWithValue("host", "db.internal"),
+			// And the policy's own identity and placement.
+			HaveKeyWithValue("where", "local"),
+			HaveKeyWithValue("who", "pinned/expr-render-policy"),
+		))
+	})
+
 	It("substitutes context expressions in an Application-scoped policy", func() {
 		// Scoped policies render before the appfile exists, so they can read
 		// context but not sources. This is the surface that has half the feature
@@ -559,6 +634,20 @@ output: {
 
 		BeforeEach(func() {
 			applyDef(exprComponentDefinition(namespaceName, "expr-probe-comp", probeComponent))
+			// The scoped policy the refusal table below uses. Its spec.scope is
+			// what makes it scoped rather than resource-rendering, and that
+			// distinction now decides whether a source may be read.
+			applyDef(&v1beta1.PolicyDefinition{
+				TypeMeta:   metav1.TypeMeta{Kind: "PolicyDefinition", APIVersion: "core.oam.dev/v1beta1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "expr-scope-policy", Namespace: namespaceName},
+				Spec: v1beta1.PolicyDefinitionSpec{
+					Scope: v1beta1.ApplicationScope,
+					Schematic: &oamcomm.Schematic{CUE: &oamcomm.CUE{Template: `
+parameter: {owner: string}
+output: labels: "policy-owner": parameter.owner
+`}},
+				},
+			})
 		})
 
 		It("denies a string expression feeding an int parameter", func() {
@@ -585,28 +674,44 @@ output: {
 			expectRejected(`{"host":"$(parameter.host)"}`, "unknown identifier")
 		})
 
-		It("denies a policy reading a source, which it cannot resolve", func() {
-			app := &v1beta1.Application{
-				ObjectMeta: metav1.ObjectMeta{Name: "expr-bad-policy", Namespace: namespaceName},
-				Spec: v1beta1.ApplicationSpec{
-					Sources: []v1beta1.ApplicationSource{{
-						Name:       "infra",
-						Type:       "infra-facts",
-						Properties: &runtime.RawExtension{Raw: []byte(`{"host":"h","port":1}`)},
-					}},
-					Components: []oamcomm.ApplicationComponent{{
-						Name: "probe", Type: "expr-probe-comp",
-						Properties: &runtime.RawExtension{Raw: []byte(`{"host":"$(source.infra.host)"}`)},
-					}},
-					Policies: []v1beta1.AppPolicy{{
-						Name: "p", Type: "expr-scope-policy",
-						Properties: &runtime.RawExtension{Raw: []byte(`{"owner":"$(source.infra.host)"}`)},
-					}},
-				},
-			}
-			err := k8sClient.Create(ctx, app)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("cannot be read here"))
-		})
+		// Whether a policy may read a source depends on which kind it is, so both
+		// refusing kinds are asserted. A resource-rendering PolicyDefinition is
+		// deliberately absent from this list: it renders through the same engine a
+		// component does, so it resolves sources, and the spec above proves it.
+		//
+		// The scoped definition is created here rather than relied on from another
+		// spec. It used to be incidental - every policy refused a source, so the
+		// type never had to resolve to anything. Now the type decides the answer,
+		// and a policy whose definition is missing is classified as rendered.
+		DescribeTable("denies a policy that cannot resolve a source",
+			func(policyType, props string) {
+				app := &v1beta1.Application{
+					ObjectMeta: metav1.ObjectMeta{Name: "expr-bad-policy", Namespace: namespaceName},
+					Spec: v1beta1.ApplicationSpec{
+						Sources: []v1beta1.ApplicationSource{{
+							Name:       "infra",
+							Type:       "infra-facts",
+							Properties: &runtime.RawExtension{Raw: []byte(`{"host":"h","port":1}`)},
+						}},
+						Components: []oamcomm.ApplicationComponent{{
+							Name: "probe", Type: "expr-probe-comp",
+							Properties: &runtime.RawExtension{Raw: []byte(`{"host":"$(source.infra.host)"}`)},
+						}},
+						Policies: []v1beta1.AppPolicy{{
+							Name: "p", Type: policyType,
+							Properties: &runtime.RawExtension{Raw: []byte(props)},
+						}},
+					},
+				}
+				err := k8sClient.Create(ctx, app)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("cannot be read here"))
+			},
+			// Renders before the appfile exists, so there is no spec.sources[] yet.
+			Entry("an Application-scoped policy", "expr-scope-policy", `{"owner":"$(source.infra.host)"}`),
+			// Read straight off the appfile by a provider - nothing renders it, so
+			// there is no resolver to reach a source through.
+			Entry("a built-in policy", "override", `{"components":["$(source.infra.host)"]}`),
+		)
 	})
 })

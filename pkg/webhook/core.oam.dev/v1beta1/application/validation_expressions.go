@@ -28,7 +28,9 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/appfile"
+	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
+	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
 // validateExpressions checks the $(...) expressions in an Application's
@@ -43,7 +45,10 @@ import (
 // Roots vary by surface. An Application-scoped policy renders before the appfile
 // exists, so it has no sources to read - permitting context there and refusing
 // source is what lets the surface carry expressions at all.
-func validateExpressions(app *v1beta1.Application) field.ErrorList {
+// appScoped reports whether a policy type is an Application-scoped
+// PolicyDefinition. Supplied by the caller because that needs a client lookup,
+// and this pass is otherwise a pure function of the Application.
+func validateExpressions(app *v1beta1.Application, appScoped func(string) bool) field.ErrorList {
 	var errs field.ErrorList
 
 	check := func(raw *runtime.RawExtension, path *field.Path, roots ...string) {
@@ -77,10 +82,10 @@ func validateExpressions(app *v1beta1.Application) field.ErrorList {
 		check(src.Properties, field.NewPath("spec", "sources").Index(i).Child("properties"), both...)
 	}
 	for i, policy := range app.Spec.Policies {
+		// A policy with a CUE template renders through the same engine a component
+		// does, so a source resolves there; a built-in one has no render at all.
 		roots := contextOnly
-		if !appfile.IsBuiltinPolicyType(policy.Type) {
-			// A policy with a CUE template renders through the same engine a
-			// component does, so a source resolves there.
+		if veladefinition.SurfaceReadsSource(appfile.PolicySurface(policy.Type, appScoped(policy.Type))) {
 			roots = both
 		}
 		check(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), roots...)
@@ -214,12 +219,14 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 		// how the two came to disagree. Which path depends on the kind - a
 		// built-in policy is consumed off the appfile, a rendered one goes through
 		// the engine and sees a render's context.
-		schema, roots := sourceexpr.PolicyContext, contextOnly
-		if !appfile.IsBuiltinPolicyType(policy.Type) {
-			schema, roots = sourceexpr.RenderedPolicyContext, both
+		scoped := h.policyIsAppScoped(ctx, app, policy.Type)
+		roots := contextOnly
+		if veladefinition.SurfaceReadsSource(appfile.PolicySurface(policy.Type, scoped)) {
+			roots = both
 		}
 		check(flattenLeafPaths(policy.Properties.Raw, base), loadTarget("policy", policy.Type),
-			fmt.Sprintf("policy %q parameter", policy.Type), schema, roots...)
+			fmt.Sprintf("policy %q parameter", policy.Type),
+			appfile.PolicyContextSchema(policy.Type, scoped), roots...)
 	}
 
 	if app.Spec.Workflow != nil {
@@ -293,4 +300,36 @@ func (h *ValidatingHandler) undefendedExpressionReads(ctx context.Context, appNa
 		return nil
 	}
 	return refs
+}
+
+// policyIsAppScoped reports whether a policy type is an Application-scoped
+// PolicyDefinition, which decides both the context it is typed against and
+// whether it may read a source at all.
+//
+// A built-in type never has a definition, so it is answered without a lookup. A
+// missing or unreadable definition answers false - the same fail-open every other
+// surface check uses, and the definition's own absence is reported elsewhere.
+func (h *ValidatingHandler) policyIsAppScoped(ctx context.Context, app *v1beta1.Application, policyType string) bool {
+	if appfile.IsBuiltinPolicyType(policyType) {
+		return false
+	}
+	def := &v1beta1.PolicyDefinition{}
+	if err := oamutil.GetCapabilityDefinition(ctx, h.Client, def, policyType, app.Annotations); err != nil {
+		return false
+	}
+	return def.Spec.Scope != v1beta1.DefaultScope
+}
+
+// policyScopeLookup returns a memoised classifier, so one Application does not
+// fetch the same PolicyDefinition once per policy.
+func (h *ValidatingHandler) policyScopeLookup(ctx context.Context, app *v1beta1.Application) func(string) bool {
+	seen := map[string]bool{}
+	return func(policyType string) bool {
+		if v, ok := seen[policyType]; ok {
+			return v
+		}
+		v := h.policyIsAppScoped(ctx, app, policyType)
+		seen[policyType] = v
+		return v
+	}
 }

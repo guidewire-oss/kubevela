@@ -138,7 +138,7 @@ func (p *Parser) GenerateAppFileFromApp(ctx context.Context, app *v1beta1.Applic
 	if err = p.parseReferredObjects(ctx, appFile); err != nil {
 		return nil, errors.Wrap(err, "failed to parseReferredObjects")
 	}
-	if err = validateExpressionSurfaces(appFile); err != nil {
+	if err = p.validateExpressionSurfaces(ctx, appFile); err != nil {
 		return nil, err
 	}
 
@@ -345,7 +345,7 @@ func (p *Parser) parsePoliciesFromRevision(ctx context.Context, af *Appfile) (er
 	if err != nil {
 		return err
 	}
-	if err := resolvePolicyExpressions(af); err != nil {
+	if err := p.resolvePolicyExpressions(ctx, af); err != nil {
 		return err
 	}
 	for _, policy := range af.Policies {
@@ -388,7 +388,7 @@ func (p *Parser) parsePolicies(ctx context.Context, af *Appfile) (err error) {
 	if err != nil {
 		return err
 	}
-	if err := resolvePolicyExpressions(af); err != nil {
+	if err := p.resolvePolicyExpressions(ctx, af); err != nil {
 		return err
 	}
 	for _, policy := range af.Policies {
@@ -817,7 +817,7 @@ func (p *Parser) ValidateComponentNames(app *v1beta1.Application) (int, error) {
 //
 // The rule itself lives in pkg/cue/definition, next to the resolver that
 // implements it, so the two enforcement points cannot drift apart.
-func validateExpressionSurfaces(af *Appfile) error {
+func (p *Parser) validateExpressionSurfaces(ctx context.Context, af *Appfile) error {
 	check := func(raw *runtime.RawExtension, surface, name string) error {
 		if raw == nil || len(raw.Raw) == 0 {
 			return nil
@@ -843,7 +843,7 @@ func validateExpressionSurfaces(af *Appfile) error {
 	}
 
 	for _, policy := range af.Policies {
-		if err := check(policy.Properties, definition.SurfacePolicy, policy.Name); err != nil {
+		if err := check(policy.Properties, PolicySurface(policy.Type, p.policyAppScoped(ctx, af, policy.Type)), policy.Name); err != nil {
 			return err
 		}
 	}
@@ -883,7 +883,7 @@ func validateExpressionSurfaces(af *Appfile) error {
 // appfile is built, so it has no cluster and no policy revision metadata. Using
 // the wider schema declared five fields it could not supply - reading any of them
 // passed admission and then failed here as an undefined field.
-func resolvePolicyExpressions(af *Appfile) error {
+func (p *Parser) resolvePolicyExpressions(ctx context.Context, af *Appfile) error {
 	// Exactly what PolicyContext declares - the registry is what admission types
 	// these expressions against, so supplying less accepts a read here and fails
 	// it at render, which is the bug this pass previously had.
@@ -900,11 +900,17 @@ func resolvePolicyExpressions(af *Appfile) error {
 	}
 
 	for i := range af.Policies {
-		// A policy with a CUE template renders through the workload engine, which
-		// substitutes its expressions with a resolver in hand. Doing it here as
-		// well would substitute context twice and would refuse the source reads
-		// that render can satisfy.
-		if !IsBuiltinPolicyType(af.Policies[i].Type) {
+		// A policy that renders through the workload engine substitutes its own
+		// expressions, with a resolver in hand. Doing it here as well would
+		// substitute context twice and would refuse the source reads that render
+		// can satisfy.
+		//
+		// Built-in and Application-scoped policies both need this pass: neither
+		// reaches that engine, so this is the only place their context is
+		// substituted. Their surfaces differ, though, so each is evaluated
+		// against its own schema rather than a shared one.
+		surface := PolicySurface(af.Policies[i].Type, p.policyAppScoped(ctx, af, af.Policies[i].Type))
+		if surface == definition.SurfacePolicyRendered {
 			continue
 		}
 		raw := af.Policies[i].Properties
@@ -929,7 +935,7 @@ func resolvePolicyExpressions(af *Appfile) error {
 		values["policyType"] = af.Policies[i].Type
 
 		resolved, err := sourceexpr.EvalTree(decoded, nil, values,
-			sourceexpr.PolicyContext, sourceexpr.ContextIdent)
+			sourceexpr.ContextFor(surface), sourceexpr.ContextIdent)
 		if err != nil {
 			return fmt.Errorf("policy %q: %w", af.Policies[i].Name, err)
 		}
@@ -960,4 +966,18 @@ func newEngineFor(capType types.CapType, name string) definition.AbstractEngine 
 		return definition.NewPolicyAbstractEngine(name)
 	}
 	return definition.NewWorkloadAbstractEngine(name)
+}
+
+// policyAppScoped reports whether a policy type is an Application-scoped
+// PolicyDefinition.
+//
+// Guards the lookup rather than making each caller do it: a built-in type never
+// has a definition to fetch, and both passes run against appfiles built without
+// an Application or a client - unit fixtures, and the dry-run paths. Answering
+// false there is the fail-open every other surface check uses.
+func (p *Parser) policyAppScoped(ctx context.Context, af *Appfile, policyType string) bool {
+	if IsBuiltinPolicyType(policyType) || p == nil || p.client == nil || af == nil || af.app == nil {
+		return false
+	}
+	return p.isApplicationScopedPolicy(ctx, policyType, af.app.Annotations)
 }

@@ -1135,7 +1135,7 @@ func TestValidateExpressionSurfaces(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateExpressionSurfaces(tc.af)
+			err := (&Parser{}).validateExpressionSurfaces(context.Background(), tc.af)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("expected acceptance, got: %v", err)
@@ -1183,7 +1183,7 @@ func TestResolvePolicyExpressions(t *testing.T) {
 				Properties: &runtime.RawExtension{Raw: []byte(`{"namespace":"$(context.namespace)","clusters":["local"]}`)},
 			}},
 		}
-		if err := resolvePolicyExpressions(af); err != nil {
+		if err := (&Parser{}).resolvePolicyExpressions(context.Background(), af); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		got := string(af.Policies[0].Properties.Raw)
@@ -1207,7 +1207,7 @@ func TestResolvePolicyExpressions(t *testing.T) {
 					`{"owner":"$(*context.appLabels[\"owner\"] | \"none\")","who":"$(context.policyName)"}`)},
 			}},
 		}
-		if err := resolvePolicyExpressions(af); err != nil {
+		if err := (&Parser{}).resolvePolicyExpressions(context.Background(), af); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		got := string(af.Policies[0].Properties.Raw)
@@ -1229,7 +1229,7 @@ func TestResolvePolicyExpressions(t *testing.T) {
 			app:       app,
 			Policies:  []v1beta1.AppPolicy{{Name: "place", Type: "topology", Properties: shared}},
 		}
-		if err := resolvePolicyExpressions(af); err != nil {
+		if err := (&Parser{}).resolvePolicyExpressions(context.Background(), af); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !strings.Contains(string(app.Spec.Policies[0].Properties.Raw), "$(context.namespace)") {
@@ -1248,7 +1248,7 @@ func TestResolvePolicyExpressions(t *testing.T) {
 			}},
 		}
 		for i := 0; i < 2; i++ {
-			if err := resolvePolicyExpressions(af); err != nil {
+			if err := (&Parser{}).resolvePolicyExpressions(context.Background(), af); err != nil {
 				t.Fatalf("pass %d: %v", i, err)
 			}
 		}
@@ -1267,7 +1267,7 @@ func TestResolvePolicyExpressions(t *testing.T) {
 				Properties: &runtime.RawExtension{Raw: []byte(`{"namespace":"$(source.cfg.namespace)"}`)},
 			}},
 		}
-		if err := resolvePolicyExpressions(af); err == nil {
+		if err := (&Parser{}).resolvePolicyExpressions(context.Background(), af); err == nil {
 			t.Fatal("expected reading a source in a policy to fail")
 		}
 	})
@@ -1309,7 +1309,7 @@ func TestPolicyExpressionValuesMatchPolicyContext(t *testing.T) {
 		}},
 	}
 
-	if err := resolvePolicyExpressions(af); err != nil {
+	if err := (&Parser{}).resolvePolicyExpressions(context.Background(), af); err != nil {
 		t.Fatalf("every field PolicyContext declares must be supplied: %v", err)
 	}
 	got := string(af.Policies[0].Properties.Raw)
@@ -1336,7 +1336,7 @@ func TestPolicyExpressionValuesMatchPolicyContext(t *testing.T) {
 		probe.Policies[0].Properties = &runtime.RawExtension{
 			Raw: []byte(`{"x":"` + strings.ReplaceAll(read, `"`, `\"`) + `"}`),
 		}
-		if err := resolvePolicyExpressions(probe); err != nil {
+		if err := (&Parser{}).resolvePolicyExpressions(context.Background(), probe); err != nil {
 			t.Errorf("PolicyContext declares %q but the pass does not supply it: %v", field, err)
 		}
 	}

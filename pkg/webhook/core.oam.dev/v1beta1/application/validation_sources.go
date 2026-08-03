@@ -70,7 +70,8 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 
 	// Expression syntax and sandbox first: it needs no definition lookups, so a
 	// typo is reported even when the rest of validation cannot run.
-	errs = append(errs, validateExpressions(app)...)
+	appScoped := h.policyScopeLookup(ctx, app)
+	errs = append(errs, validateExpressions(app, appScoped)...)
 
 	sourceNameToType := map[string]string{}
 	sourceNameToIndex := map[string]int{}
@@ -102,11 +103,7 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 	for i, policy := range app.Spec.Policies {
 		policyRefs, policyErrs := collectSourceRefs(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), -1)
 		errs = append(errs, policyErrs...)
-		surface := veladefinition.SurfacePolicy
-		if !appfile.IsBuiltinPolicyType(policy.Type) {
-			surface = veladefinition.SurfacePolicyRendered
-		}
-		refs = append(refs, withSurface(policyRefs, surface)...)
+		refs = append(refs, withSurface(policyRefs, appfile.PolicySurface(policy.Type, appScoped(policy.Type)))...)
 	}
 	if app.Spec.Workflow != nil {
 		for i, step := range app.Spec.Workflow.Steps {

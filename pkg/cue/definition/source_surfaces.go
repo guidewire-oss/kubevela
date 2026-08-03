@@ -50,6 +50,10 @@ const (
 	// template. It renders through the same engine a component does, so a source
 	// resolves there exactly as it would in a component.
 	SurfacePolicyRendered = "policy-rendered"
+	// SurfacePolicyApp is an expression in an Application-scoped PolicyDefinition.
+	// It renders before the appfile is built, so there is no spec.sources[] to
+	// resolve against - context only, substituted by the appfile-time pass.
+	SurfacePolicyApp = "policy-app"
 	// SurfaceWorkflowStep is an expression in a workflow step's (or sub-step's) properties.
 	SurfaceWorkflowStep = "workflowstep"
 	// SurfaceSource is an expression in a later spec.sources[] entry's properties,

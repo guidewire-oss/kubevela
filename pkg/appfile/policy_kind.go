@@ -18,6 +18,8 @@ package appfile
 
 import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
+	"github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
 // Policies fall into three kinds, and property expressions behave differently in
@@ -32,8 +34,11 @@ import (
 //   - rendered: any other type, which is a PolicyDefinition with a CUE template.
 //     It renders through NewWorkloadAbstractEngine exactly as a component does,
 //     so a source resolves there.
-//   - application-scoped: renders before the appfile exists, so there is no
-//     spec.sources[] to resolve against at all.
+//   - application-scoped: a PolicyDefinition whose spec.scope is not the default.
+//     It renders before the appfile exists, so there is no spec.sources[] to
+//     resolve against at all, and its context expressions are substituted by the
+//     appfile-time pass like a built-in policy's. Only spec.scope tells it apart
+//     from a rendered one - the type name looks identical.
 
 // builtinPolicyTypes are the policy types KubeVela consumes directly rather than
 // rendering.
@@ -57,6 +62,42 @@ var builtinPolicyTypes = map[string]bool{
 	v1alpha1.OverridePolicyType:       true,
 	v1alpha1.DebugPolicyType:          true,
 	v1alpha1.ReplicationPolicyType:    true,
+}
+
+// PolicySurface names the surface a policy's property expressions live on.
+//
+// There are three kinds, not two, and the middle one is easy to miss: an
+// Application-scoped PolicyDefinition is not built-in, but it does not render
+// through the workload engine either. Classifying it as rendered skips the
+// parse-time substitution it depends on, and its expressions reach the scoped
+// render as literal text - which is exactly what happened, and what the e2e spec
+// for scoped policies caught.
+//
+// appScoped cannot be derived from the type alone: it is spec.scope on the
+// PolicyDefinition, so every caller must look it up. Built-in types never have a
+// definition, so they are settled before the question arises.
+//
+// Five places need this answer - the parser's surface check and substitution
+// pass, and admission's three - and they must all give the same one, or a policy
+// is accepted by admission and refused by the parser.
+func PolicySurface(policyType string, appScoped bool) string {
+	switch {
+	case IsBuiltinPolicyType(policyType):
+		return definition.SurfacePolicy
+	case appScoped:
+		return definition.SurfacePolicyApp
+	default:
+		return definition.SurfacePolicyRendered
+	}
+}
+
+// PolicyContextSchema is the context a policy is evaluated against.
+//
+// Paired with PolicySurface for the same reason: the surface and the schema
+// describe one call site, and picking them independently is how they came to
+// disagree before.
+func PolicyContextSchema(policyType string, appScoped bool) sourceexpr.ContextSchema {
+	return sourceexpr.ContextFor(PolicySurface(policyType, appScoped))
 }
 
 // IsBuiltinPolicyType reports a policy KubeVela consumes rather than renders.

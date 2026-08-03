@@ -29,11 +29,23 @@
 	appAnnotations: [string]: string
 }
 
-// #DeliveryIdentity is what a render targeting a cluster knows. Absent from
-// paths that run before placement is decided.
-#DeliveryIdentity: {
+// #ClusterIdentity is the cluster a render is dispatched to.
+//
+// Kept separate from #DeliveryIdentity because the two are supplied by different
+// mechanisms and a surface can have one without the other - a component gets its
+// cluster per placement, while a policy is rendered once for the hub. Every
+// surface that embeds this must genuinely assign it: it was briefly absent on
+// the policy path, where it rendered "" while the component beside it in the
+// same reconcile read "local". TestRenderedPolicySurfaceMatchesTheRender exists
+// because of that, and an always-empty field fails it.
+#ClusterIdentity: {
 	// +usage=The cluster being rendered for
 	cluster: string
+}
+
+// #DeliveryIdentity is what any render built from the appfile knows about how the
+// Application is being delivered. Available even where no cluster is targeted.
+#DeliveryIdentity: {
 	// +usage=Version of the target cluster. A struct, so never a cache-key segment
 	clusterVersion: {
 		major:      string
@@ -147,6 +159,7 @@ surfaces: {
 	component: {
 		#AppIdentity
 		#DeliveryIdentity
+		#ClusterIdentity
 		#ComponentIdentity
 		#PublishedContext
 		// +usage=The component being rendered
@@ -162,6 +175,7 @@ surfaces: {
 	workflowstep: {
 		#AppIdentity
 		#DeliveryIdentity
+		#ClusterIdentity
 		#PublishedContext
 		#StepIdentity
 		// +usage=The step being rendered
@@ -171,10 +185,12 @@ surfaces: {
 	// A PolicyDefinition with a CUE template, rendered through the same engine a
 	// component uses (generatePolicyUnstructuredFromCUEModule). Its context is
 	// component-shaped because it is built the same way - but no component
-	// identity is pushed, and context.name is the policy.
+	// identity is pushed, and context.name is the policy. Its cluster is the hub:
+	// the render happens once and Dispatch sends the result there.
 	"policy-rendered": {
 		#AppIdentity
 		#DeliveryIdentity
+		#ClusterIdentity
 		#PublishedContext
 		#PolicyIdentity
 		// +usage=The policy being rendered

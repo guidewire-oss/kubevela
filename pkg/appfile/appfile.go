@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	pkgmulticluster "github.com/kubevela/pkg/multicluster"
 	"reflect"
 	"strings"
 
@@ -222,6 +223,17 @@ func (af *Appfile) GeneratePolicyManifests(ctx context.Context, cli client.Clien
 
 func (af *Appfile) generatePolicyUnstructured(workload *Component) ([]*unstructured.Unstructured, error) {
 	ctxData := GenerateContextDataFromAppFile(af, workload.Name)
+	// A policy's manifests are rendered once and dispatched to the hub - Dispatch
+	// is called with an empty cluster, which means local. GenerateContextDataFromAppFile
+	// leaves Cluster unset because it serves paths that decide placement later, so
+	// without this a policy read context.cluster as "" while the component beside
+	// it read "local" in the same reconcile.
+	//
+	// It is not cosmetic: most sources do a cluster-scoped lookup, so they read
+	// context.cluster and key on it. An unset cluster makes every such source
+	// unusable from a policy, and makes the two cache entries for one ConfigMap
+	// collide on "".
+	ctxData.Cluster = pkgmulticluster.Local
 	uns, err := generatePolicyUnstructuredFromCUEModule(workload, af.Artifacts, ctxData)
 	if err != nil {
 		return nil, err

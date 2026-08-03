@@ -1147,18 +1147,33 @@ parameter: {image: string}
 // The two policy surfaces must offer different context, or the distinction above
 // is cosmetic.
 //
-// A rendered policy is rendered for a cluster, so it gets the delivery context a
-// component does. A built-in policy is consumed before placement is decided and
-// has none of it - reading context.cluster there is the read that would type-check
-// at admission and be absent at render.
+// A rendered policy is built from the appfile through the render engine, so it
+// gets the delivery context. A built-in policy's properties are consumed before
+// any of that exists, so it has none - reading context.publishVersion there is
+// the read that would type-check at admission and be absent at render.
 func TestPolicySurfacesOfferDifferentContext(t *testing.T) {
-	for _, field := range []string{"cluster", "publishVersion", "workflowName"} {
+	for _, field := range []string{"publishVersion", "workflowName", "clusterVersion"} {
 		if !sourceexpr.RenderedPolicyContext.Offers(field) {
-			t.Errorf("a rendered policy renders for a cluster, so it should offer context.%s", field)
+			t.Errorf("a rendered policy is built from the appfile, so it should offer context.%s", field)
 		}
 		if sourceexpr.PolicyContext.Offers(field) {
-			t.Errorf("a built-in policy is consumed before placement, so context.%s cannot be offered", field)
+			t.Errorf("a built-in policy is consumed before the render, so context.%s cannot be offered", field)
 		}
+	}
+
+	// cluster is the one that matters most, and it was measured rather than
+	// reasoned about. A rendered policy must offer it: most sources do a
+	// cluster-scoped lookup, so they read context.cluster and key on it, and a
+	// surface without it can consume almost no source at all. It is supplied as
+	// the hub, which is where a policy's manifests are dispatched.
+	if !sourceexpr.RenderedPolicyContext.Offers("cluster") {
+		t.Error("a rendered policy must offer context.cluster, or the sources that " +
+			"key on it - which is most of them - cannot be consumed from a policy")
+	}
+	// A built-in policy still has no render at all, so it has no cluster either.
+	if sourceexpr.PolicyContext.Offers("cluster") {
+		t.Error("a built-in policy's properties are consumed before any dispatch, " +
+			"so context.cluster is not available there")
 	}
 	// Both are policies, so both know which policy they are.
 	for _, field := range []string{"policyName", "policyType", "appName", "namespace"} {

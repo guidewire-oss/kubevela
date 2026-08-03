@@ -239,6 +239,16 @@ func contextValues(refs []Reference, values map[string]interface{}, schema Conte
 }
 
 // readable lists the fields this surface exposes, for an error message.
+// ReadableFields lists the context fields this surface offers, sorted.
+//
+// Exported so a render path can assert it actually supplies what its surface
+// declares. Declaring a field the render omits - or supplies as a permanent
+// empty string - type-checks at admission and means nothing at render, which is
+// the failure this registry exists to make impossible.
+func (c ContextSchema) ReadableFields() []string {
+	return c.readable()
+}
+
 func (c ContextSchema) readable() []string {
 	if !c.value.Exists() {
 		return nil
