@@ -67,6 +67,19 @@ const (
 	ContextCompRevisionName = "revision"
 	// ContextComponents is the components of app
 	ContextComponents = "components"
+	// ContextComponentName is the component being rendered. It is what
+	// context.name means in a component's own template, named explicitly so a
+	// trait - and a source resolving on either - can ask for the component
+	// rather than for whatever "name" happens to mean where it is read.
+	ContextComponentName = "componentName"
+	// ContextTraitType is the trait being rendered. Traits have no instance name
+	// in the API - spec.components[].traits[] carries only a type - so there is
+	// no traitName to expose.
+	ContextTraitType = "traitType"
+	// ContextStepName is the workflow step being rendered.
+	ContextStepName = "stepName"
+	// ContextStepType is that step's definition type.
+	ContextStepType = "stepType"
 	// ContextComponentType is the component type of current trait binding with
 	ContextComponentType = "componentType"
 	// ContextDataArtifacts is used to store unstructured resources of components

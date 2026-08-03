@@ -119,6 +119,9 @@ func (p *Parser) ValidateCUESchematicAppfile(a *Appfile) error {
 				// references to fields that are populated/injected during runtime only
 				continue
 			}
+			// The same identity baseGenerateComponent pushes on the real path.
+			// Trait.Name is the TraitDefinition's name - the trait's type.
+			pCtx.PushData(velaprocess.ContextTraitType, tr.Name)
 			if err := tr.EvalContext(pCtx); err != nil {
 				return errors.WithMessagef(err, "cannot evaluate trait %q", tr.Name)
 			}
@@ -497,6 +500,11 @@ func newValidationProcessContext(c *Component, ctxData velaprocess.ContextData) 
 	// Dry-run mode is already set on ctxData.Ctx by the caller
 	// (ValidateCUESchematicAppfile) so provider functions use client-only rendering.
 	pCtx := velaprocess.NewContext(ctxData)
+	// The same identity PrepareProcessContext pushes on the real path. Without it
+	// this render is missing context the live one has, so an expression reading it
+	// fails here and works in production - the worst possible split.
+	pCtx.PushData(velaprocess.ContextComponentName, c.Name)
+	pCtx.PushData(velaprocess.ContextComponentType, c.Type)
 	if err := c.EvalContext(pCtx); err != nil {
 		return nil, errors.Wrapf(err, "evaluate base template app=%s in namespace=%s", ctxData.AppName, ctxData.Namespace)
 	}

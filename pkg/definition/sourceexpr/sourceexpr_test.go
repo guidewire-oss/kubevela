@@ -437,10 +437,10 @@ func TestContextTypeOf(t *testing.T) {
 		{name: "a nested string field", expr: `context.clusterVersion.major`, want: cue.StringKind},
 		{name: "a numeric field", expr: `context.appRevisionNum * 2`, want: cue.IntKind},
 		{
-			// The same curated set the cache-key rules define, so a field that is
-			// not readable by a source is not readable here either.
-			name:    "an unsupported field is rejected",
-			expr:    `context.componentType`,
+			// Per-surface: a trait knows its own type, a component does not have
+			// one to know. The message says where it would work.
+			name:    "a field belonging to another surface is rejected",
+			expr:    `context.traitType`,
 			wantErr: "is not readable in component properties",
 		},
 		{
@@ -1965,6 +1965,10 @@ func componentRenderContext(t *testing.T) string {
 		AppAnnotations: map[string]string{"note": "x"},
 		Ctx:            publishedContext(),
 	})
+	// Mirrors PrepareProcessContext, which pushes the component's identity before
+	// its template - and therefore before any source consumed there resolves.
+	ctx.PushData(velaprocess.ContextComponentName, "web")
+	ctx.PushData(velaprocess.ContextComponentType, "webservice")
 	base, err := ctx.BaseContextFile()
 	if err != nil {
 		t.Fatalf("building the render context: %v", err)

@@ -788,14 +788,14 @@ func evaluateSourceExpression(raw string, resolver *sourceResolver) (interface{}
 	}
 
 	return sourceexpr.EvalIn(raw, resolved, resolver.expressionContext(),
-		sourceexpr.ComponentContext, sourceexpr.SourceIdent, sourceexpr.ContextIdent)
+		sourceexpr.ContextFor(resolver.surface), sourceexpr.SourceIdent, sourceexpr.ContextIdent)
 }
 
-// expressionContext pulls the fields ComponentContext declares readable out of
+// expressionContext pulls the fields this surface declares readable out of
 // the render's process context.
 func (r *sourceResolver) expressionContext() map[string]interface{} {
 	out := map[string]interface{}{}
-	for _, field := range sourceexpr.ComponentContext.Fields() {
+	for _, field := range sourceexpr.ContextFor(r.surface).Fields() {
 		if v := r.ctx.GetData(field); v != nil {
 			out[field] = v
 		}

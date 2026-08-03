@@ -75,6 +75,10 @@ type ContextSchema struct {
 // ComponentDefinition's context.name is.
 var ComponentContext = surfaceSchema("component")
 
+// TraitContext is what a TraitDefinition sees: its component's identity, plus
+// its own type. A trait has no instance name in the API to expose alongside it.
+var TraitContext = surfaceSchema("trait")
+
 // WorkflowStepContext is what a workflow step's properties see. The step's
 // properties are substituted before the engine receives them, from a context
 // built the same way a component's is.

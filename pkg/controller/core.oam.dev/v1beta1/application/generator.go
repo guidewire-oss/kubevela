@@ -582,7 +582,7 @@ func generateContextDataFromApp(goCtx context.Context, app *v1beta1.Application,
 // This runs entirely inside kubevela: the workflow engine receives ordinary data
 // and does not know sources exist.
 func resolveWorkflowStepSources(af *appfile.Appfile, steps []wfTypesv1alpha1.WorkflowStep) error {
-	substitute := func(name string, raw *runtime.RawExtension) error {
+	substitute := func(name, stepType string, raw *runtime.RawExtension) error {
 		if raw == nil || len(raw.Raw) == 0 {
 			return nil
 		}
@@ -595,6 +595,11 @@ func resolveWorkflowStepSources(af *appfile.Appfile, steps []wfTypesv1alpha1.Wor
 		}
 		ctxData := appfile.GenerateContextDataFromAppFile(af, name)
 		pCtx := velaprocess.NewContext(ctxData)
+		// The step's own identity. context.name is the step here too, but only by
+		// coincidence of how the context is built - stepName says what it is, and
+		// is what a source resolving on this surface can rely on.
+		pCtx.PushData(velaprocess.ContextStepName, name)
+		pCtx.PushData(velaprocess.ContextStepType, stepType)
 		resolved, err := veladefinition.ResolveSourceExpressions(pCtx, decoded, veladefinition.SurfaceWorkflowStep)
 		if err != nil {
 			return err
@@ -608,11 +613,12 @@ func resolveWorkflowStepSources(af *appfile.Appfile, steps []wfTypesv1alpha1.Wor
 	}
 
 	for i := range steps {
-		if err := substitute(steps[i].Name, steps[i].Properties); err != nil {
+		if err := substitute(steps[i].Name, steps[i].Type, steps[i].Properties); err != nil {
 			return err
 		}
 		for j := range steps[i].SubSteps {
-			if err := substitute(steps[i].SubSteps[j].Name, steps[i].SubSteps[j].Properties); err != nil {
+			if err := substitute(steps[i].SubSteps[j].Name, steps[i].SubSteps[j].Type,
+				steps[i].SubSteps[j].Properties); err != nil {
 				return err
 			}
 		}

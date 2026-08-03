@@ -233,6 +233,19 @@ func SurfaceOffers(surface, field string) bool {
 	return v.LookupPath(cue.MakePath(cue.Str(field))).Exists()
 }
 
+// ContextFor returns the readable context for a surface by name.
+//
+// An unrecognised surface falls back to the component's context, which is what
+// every caller used before surfaces existed. Failing open here matters: a render
+// path not yet taught to name itself should behave as it did, not lose its
+// context and start rejecting valid expressions.
+func ContextFor(surface string) ContextSchema {
+	if !SurfaceDeclared(surface) {
+		return ComponentContext
+	}
+	return surfaceSchema(surface)
+}
+
 // SurfaceDeclared reports whether the registry knows a surface, so a caller can
 // distinguish "offers nothing" from "never heard of it".
 func SurfaceDeclared(surface string) bool {

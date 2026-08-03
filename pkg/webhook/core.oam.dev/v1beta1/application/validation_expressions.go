@@ -190,7 +190,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 			}
 			base := field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties")
 			check(flattenLeafPaths(tr.Properties.Raw, base), loadTarget("trait", tr.Type),
-				fmt.Sprintf("trait %q parameter", tr.Type), sourceexpr.ComponentContext, both...)
+				fmt.Sprintf("trait %q parameter", tr.Type), sourceexpr.TraitContext, both...)
 		}
 	}
 

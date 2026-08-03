@@ -531,6 +531,12 @@ func PrepareProcessContext(comp *Component, ctxData velaprocess.ContextData) (pr
 	if comp.Ctx == nil {
 		comp.Ctx = NewBasicContext(ctxData, comp.Params)
 	}
+	// Before EvalContext, not after: that call runs the component's template, and
+	// a source consumed there resolves during it. Pushing this in
+	// baseGenerateComponent - where componentType used to live - was too late for
+	// the component's own render, which is why it only ever reached traits.
+	comp.Ctx.PushData(velaprocess.ContextComponentName, comp.Name)
+	comp.Ctx.PushData(velaprocess.ContextComponentType, comp.Type)
 	if err := comp.EvalContext(comp.Ctx); err != nil {
 		return nil, errors.Wrapf(err, "evaluate base template app=%s in namespace=%s", ctxData.AppName, ctxData.Namespace)
 	}
@@ -560,8 +566,14 @@ func generateComponentFromTerraformModule(comp *Component, appName, ns string) (
 
 func baseGenerateComponent(pCtx process.Context, comp *Component, appName, ns string) (*types.ComponentManifest, error) {
 	var err error
+	// The component identity is already in place from PrepareProcessContext; a
+	// trait inherits it and adds its own type.
+	pCtx.PushData(velaprocess.ContextComponentName, comp.Name)
 	pCtx.PushData(velaprocess.ContextComponentType, comp.Type)
 	for _, tr := range comp.Traits {
+		// Trait.Name is the TraitDefinition's name - the trait's *type*. There is
+		// no instance name in the API to expose alongside it.
+		pCtx.PushData(velaprocess.ContextTraitType, tr.Name)
 		if err := tr.EvalContext(pCtx); err != nil {
 			return nil, errors.Wrapf(err, "evaluate template trait=%s app=%s", tr.Name, comp.Name)
 		}

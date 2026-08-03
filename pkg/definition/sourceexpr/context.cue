@@ -48,12 +48,37 @@
 }
 
 // #ComponentIdentity is what a component or trait render knows about the
-// component it is rendering.
+// component being rendered.
+//
+// componentName duplicates context.name in a component's own template, which is
+// the point: `name` means the component there, the step in a workflow step, and
+// the binding inside a source. A definition that wants the component asks for the
+// component.
 #ComponentIdentity: {
+	// +usage=The component being rendered
+	componentName: string
+	// +usage=The component's definition type
+	componentType: string
 	// +usage=Name of the component revision
 	revision: string
 	// +usage=Replica key, set by the replication policy
 	replicaKey: string
+}
+
+// #TraitIdentity is the trait being rendered. There is no traitName: a trait has
+// no instance name in the API - spec.components[].traits[] carries only a type -
+// and inventing one would repeat the context.name ambiguity this scheme removes.
+#TraitIdentity: {
+	// +usage=The trait's definition type
+	traitType: string
+}
+
+// #StepIdentity is the workflow step being rendered.
+#StepIdentity: {
+	// +usage=The step being rendered
+	stepName: string
+	// +usage=The step's definition type
+	stepType: string
 }
 
 // #PolicyIdentity is the policy instance being rendered.
@@ -112,13 +137,18 @@ surfaces: {
 		// +usage=The component being rendered
 		name: string
 	}
-	trait: surfaces.component
+	// A trait renders against its component's context and adds its own type.
+	trait: {
+		surfaces.component
+		#TraitIdentity
+	}
 
 	// A workflow step's properties, substituted before the engine sees them.
 	workflowstep: {
 		#AppIdentity
 		#DeliveryIdentity
 		#PublishedContext
+		#StepIdentity
 		// +usage=The step being rendered
 		name: string
 	}
