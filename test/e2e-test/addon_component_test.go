@@ -14,20 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Prerequisites for running this suite (it exercises a live cluster, so it is
-// run manually, not in CI):
+// This suite is hermetic: it resolves the addon from the e2e mock registry
+// (e2e/addon/mock), which is started by the e2e setup and registered in the
+// vela-addon-registry ConfigMap as the OSS-type "KubeVela" registry. It does
+// not reach any external registry.
 //
-//   - A vela-core controller BUILT FROM THE feat/addon-component BRANCH is
-//     running against the target cluster with the addon renderer wired in and
-//     the ZstdResourceTracker feature gate enabled:
-//     --feature-gates=ZstdResourceTracker=true
-//   - The real addon registry ConfigMap (e.g. vela-addon-registry) is
-//     installed in vela-system so "fluxcd" can be resolved from the registry.
-//   - The "addon" ComponentDefinition (vela-templates/definitions/internal/
-//     component/addon.cue) is installed in vela-system.
-//   - "skipVersionValidate: true" is set on the component properties because
-//     when vela-core runs out-of-cluster its reported version cannot satisfy
-//     the addon's SystemRequirements check; skipping it mirrors the imperative
+//   - It installs the "example" addon (served by the mock registry) rather
+//     than "fluxcd": "example" is renderable (namespace + resources) and, being
+//     absent from the imperative pre-enable in the e2e setup, avoids a
+//     child-Application name collision on addon-<name>.
+//   - "skipVersionValidate: true" is set on the component properties so the
+//     addon's SystemRequirements check does not fail when the controller's
+//     reported version cannot satisfy it; this mirrors the imperative
 //     "vela addon enable --skip-version-validating" escape hatch.
 
 package controllers_test
@@ -56,13 +54,20 @@ var _ = Describe("Addon as component e2e", func() {
 	const (
 		systemNamespace = "vela-system"
 		// wrapping Application that declares the addon as a component.
-		wrappingAppName = "comp-fluxcd"
+		wrappingAppName = "comp-example"
+		// The addon and registry are served by the e2e mock registry
+		// (e2e/addon/mock, exposed as the OSS-type "KubeVela" registry), so the
+		// test is hermetic and does not reach any external registry. The
+		// "example" addon is renderable (namespace + resources) and, unlike
+		// "fluxcd", is not pre-enabled by the e2e setup, so there is no
+		// child-Application name collision.
+		addonRegistry = "KubeVela"
 		// the addon's own name and the child Application RenderApp produces
 		// (RenderApp forces the name to addon-<name> in vela-system).
-		addonName    = "fluxcd"
-		childAppName = "addon-fluxcd"
-		// an auxiliary the fluxcd addon renders: the helm ComponentDefinition.
-		helmCompDefName = "helm"
+		addonName    = "example"
+		childAppName = "addon-example"
+		// an auxiliary the example addon renders: the helm-example ComponentDefinition.
+		helmCompDefName = "helm-example"
 
 		waitTimeout = 300 * time.Second
 		pollPeriod  = 5 * time.Second
@@ -70,7 +75,7 @@ var _ = Describe("Addon as component e2e", func() {
 
 	// buildWrappingApp constructs the wrapping Application with a single
 	// type: addon component. Properties are carried as a RawExtension so the
-	// version and the skipVersionValidate escape hatch are threaded through to
+	// registry and the skipVersionValidate escape hatch are threaded through to
 	// the addon renderer.
 	buildWrappingApp := func() *v1beta1.Application {
 		return &v1beta1.Application{
@@ -81,9 +86,12 @@ var _ = Describe("Addon as component e2e", func() {
 			Spec: v1beta1.ApplicationSpec{
 				Components: []common.ApplicationComponent{
 					{
-						Name:       addonName,
-						Type:       "addon",
-						Properties: &runtime.RawExtension{Raw: []byte(`{"version":"3.0.2","skipVersionValidate":true}`)},
+						Name: addonName,
+						Type: "addon",
+						// properties.example is the "example" addon's own required
+						// parameter, threaded through the addon component's
+						// pass-through properties field.
+						Properties: &runtime.RawExtension{Raw: []byte(`{"registry":"` + addonRegistry + `","skipVersionValidate":true,"properties":{"example":"e2e"}}`)},
 					},
 				},
 			},
