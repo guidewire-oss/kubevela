@@ -24,6 +24,7 @@ import (
 	upstreamcuex "github.com/kubevela/pkg/cue/cuex"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
@@ -101,7 +102,11 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 	for i, policy := range app.Spec.Policies {
 		policyRefs, policyErrs := collectSourceRefs(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), -1)
 		errs = append(errs, policyErrs...)
-		refs = append(refs, withSurface(policyRefs, veladefinition.SurfacePolicy)...)
+		surface := veladefinition.SurfacePolicy
+		if !appfile.IsBuiltinPolicyType(policy.Type) {
+			surface = veladefinition.SurfacePolicyRendered
+		}
+		refs = append(refs, withSurface(policyRefs, surface)...)
 	}
 	if app.Spec.Workflow != nil {
 		for i, step := range app.Spec.Workflow.Steps {

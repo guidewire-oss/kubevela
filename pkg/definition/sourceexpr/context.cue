@@ -119,19 +119,21 @@
 // workflow steps" or "not readable in workflow step properties" depending on
 // what it is saying.
 labels: {
-	component:        "component"
-	trait:            "trait"
-	workflowstep:     "workflow step"
-	"policy-default": "policy"
-	"policy-app":     "application-scoped policy"
+	component:         "component"
+	trait:             "trait"
+	workflowstep:      "workflow step"
+	"policy-default":  "built-in policy"
+	"policy-rendered": "policy"
+	"policy-app":      "application-scoped policy"
 }
 
 plurals: {
-	component:        "components"
-	trait:            "traits"
-	workflowstep:     "workflow steps"
-	"policy-default": "policies"
-	"policy-app":     "application-scoped policies"
+	component:         "components"
+	trait:             "traits"
+	workflowstep:      "workflow steps"
+	"policy-default":  "built-in policies"
+	"policy-rendered": "policies"
+	"policy-app":      "application-scoped policies"
 }
 
 // surfaces are the call sites. Each is the readable context at that point.
@@ -166,8 +168,21 @@ surfaces: {
 		name: string
 	}
 
-	// A policy whose expressions are substituted while the appfile is built,
-	// before any render. Narrower than the scoped path because it draws on the
+	// A PolicyDefinition with a CUE template, rendered through the same engine a
+	// component uses (generatePolicyUnstructuredFromCUEModule). Its context is
+	// component-shaped because it is built the same way - but no component
+	// identity is pushed, and context.name is the policy.
+	"policy-rendered": {
+		#AppIdentity
+		#DeliveryIdentity
+		#PublishedContext
+		#PolicyIdentity
+		// +usage=The policy being rendered
+		name: string
+	}
+
+	// A built-in policy - topology, override and the rest - whose expressions are
+	// substituted while the appfile is built, before any render. Narrower than the scoped path because it draws on the
 	// Appfile alone - there is no cluster yet, and no policy revision metadata.
 	"policy-default": {
 		#AppIdentity

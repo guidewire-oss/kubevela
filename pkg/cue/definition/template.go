@@ -130,14 +130,27 @@ type def struct {
 
 type workloadDef struct {
 	def
+	// surface is the call site this definition renders on. A PolicyDefinition
+	// with a CUE template renders through this same engine, but it is not a
+	// component: its readable context differs, and context.name is the policy.
+	surface string
 }
 
 // NewWorkloadAbstractEngine create Workload Definition AbstractEngine
 func NewWorkloadAbstractEngine(name string) AbstractEngine {
 	return &workloadDef{
-		def: def{
-			name: name,
-		},
+		def:     def{name: name},
+		surface: SurfaceComponent,
+	}
+}
+
+// NewPolicyAbstractEngine creates the engine for a PolicyDefinition that renders
+// resources. Same machinery as a component, different surface - so its
+// expressions are typed and resolved against the context a policy render has.
+func NewPolicyAbstractEngine(name string) AbstractEngine {
+	return &workloadDef{
+		def:     def{name: name},
+		surface: SurfacePolicyRendered,
 	}
 }
 
@@ -154,9 +167,13 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 
 	var paramFile = velaprocess.ParameterFieldName + ": {}"
 	if params != nil {
-		resolved, err := resolveSourceExpressions(ctx, params, SurfaceComponent)
+		surface := wd.surface
+		if surface == "" {
+			surface = SurfaceComponent
+		}
+		resolved, err := resolveSourceExpressions(ctx, params, surface)
 		if err != nil {
-			return errors.WithMessagef(err, "resolve source expressions for workload %s", wd.name)
+			return errors.WithMessagef(err, "resolve source expressions for %s %s", surface, wd.name)
 		}
 		bt, err := json.Marshal(params)
 		if resolved != nil {

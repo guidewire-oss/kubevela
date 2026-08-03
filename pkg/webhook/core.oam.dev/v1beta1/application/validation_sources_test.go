@@ -15,6 +15,7 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
 func TestValidateSources(t *testing.T) {
@@ -1040,4 +1041,129 @@ func TestValidateSourceContextReads(t *testing.T) {
 			t.Fatalf("expected none, got %v", errs)
 		}
 	})
+}
+
+// Policies are two different things wearing one name, and the difference decides
+// whether a source can be read.
+//
+// A built-in policy - topology, override, garbage-collect - has its properties
+// read straight off the appfile by a provider. Nothing renders them, so there is
+// no resolver and a `source` read would survive as literal text. A policy with a
+// CUE template goes through the same engine a component does, so a source
+// resolves there exactly as it would in a component.
+//
+// Before this distinction existed both were refused, which made a
+// resource-rendering PolicyDefinition the one definition kind that could not use
+// the feature despite the machinery already being wired for it.
+func TestValidateSourcesDistinguishesPolicyKinds(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1beta1.AddToScheme(scheme)
+
+	src := &v1beta1.SourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "source-a", Namespace: "default"},
+		Spec: v1beta1.SourceDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {image: string}
+$internal: {key: "source-a"}
+output: {image: parameter.image}
+parameter: {image: string}
+`}},
+		},
+	}
+	// A PolicyDefinition with a CUE template - the rendered kind.
+	rendered := &v1beta1.PolicyDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "image-pin", Namespace: "default"},
+		Spec: v1beta1.PolicyDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+output: {
+	apiVersion: "v1"
+	kind:       "ConfigMap"
+	metadata: name: context.name
+	data: image: parameter.image
+}
+parameter: {image: string}
+`}},
+		},
+	}
+
+	app := func(policyType, props string) *v1beta1.Application {
+		return &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{
+					{Name: "img", Type: "source-a", Properties: rawJSON(`{"image":"nginx:1.25.0"}`)},
+				},
+				Components: []common.ApplicationComponent{
+					{Name: "web", Type: "webservice", Properties: rawJSON(`{"image":"nginx"}`)},
+				},
+				Policies: []v1beta1.AppPolicy{
+					{Name: "p", Type: policyType, Properties: rawJSON(props)},
+				},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name       string
+		policyType string
+		props      string
+		wantMsg    string
+	}{
+		{
+			name:       "a rendered policy resolves a source",
+			policyType: "image-pin",
+			props:      `{"image":"$(source.img.image)"}`,
+		},
+		{
+			name:       "a rendered policy reads context",
+			policyType: "image-pin",
+			props:      `{"image":"$(context.appName)"}`,
+		},
+		{
+			// The refusal must survive: a built-in policy still has no render.
+			name:       "a built-in policy still cannot",
+			policyType: "override",
+			props:      `{"image":"$(source.img.image)"}`,
+			wantMsg:    `"source" cannot be read here`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ValidatingHandler{Client: fake.NewClientBuilder().
+				WithScheme(scheme).WithObjects(src, rendered).Build()}
+			var joined string
+			for _, e := range h.ValidateSources(context.Background(), app(tc.policyType, tc.props)) {
+				joined += e.Error() + "\n"
+			}
+			switch {
+			case tc.wantMsg == "" && joined != "":
+				t.Fatalf("expected acceptance, got:\n%s", joined)
+			case tc.wantMsg != "" && !strings.Contains(joined, tc.wantMsg):
+				t.Fatalf("expected an error containing %q, got:\n%s", tc.wantMsg, joined)
+			}
+		})
+	}
+}
+
+// The two policy surfaces must offer different context, or the distinction above
+// is cosmetic.
+//
+// A rendered policy is rendered for a cluster, so it gets the delivery context a
+// component does. A built-in policy is consumed before placement is decided and
+// has none of it - reading context.cluster there is the read that would type-check
+// at admission and be absent at render.
+func TestPolicySurfacesOfferDifferentContext(t *testing.T) {
+	for _, field := range []string{"cluster", "publishVersion", "workflowName"} {
+		if !sourceexpr.RenderedPolicyContext.Offers(field) {
+			t.Errorf("a rendered policy renders for a cluster, so it should offer context.%s", field)
+		}
+		if sourceexpr.PolicyContext.Offers(field) {
+			t.Errorf("a built-in policy is consumed before placement, so context.%s cannot be offered", field)
+		}
+	}
+	// Both are policies, so both know which policy they are.
+	for _, field := range []string{"policyName", "policyType", "appName", "namespace"} {
+		if !sourceexpr.RenderedPolicyContext.Offers(field) || !sourceexpr.PolicyContext.Offers(field) {
+			t.Errorf("both policy surfaces should offer context.%s", field)
+		}
+	}
 }

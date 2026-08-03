@@ -568,7 +568,7 @@ func (p *Parser) makeComponent(ctx context.Context, name, typ string, capType ty
 	if err != nil {
 		return nil, errors.WithMessagef(err, "fetch component/policy type of %s", name)
 	}
-	return p.convertTemplate2Component(name, typ, props, templ)
+	return p.convertTemplate2Component(name, typ, capType, props, templ)
 }
 
 func (p *Parser) makeComponentFromRevision(name, typ string, capType types.CapType, props *runtime.RawExtension, appRev *v1beta1.ApplicationRevision) (*Component, error) {
@@ -577,10 +577,10 @@ func (p *Parser) makeComponentFromRevision(name, typ string, capType types.CapTy
 		return nil, errors.WithMessagef(err, "fetch component/policy type of %s from revision", name)
 	}
 
-	return p.convertTemplate2Component(name, typ, props, templ)
+	return p.convertTemplate2Component(name, typ, capType, props, templ)
 }
 
-func (p *Parser) convertTemplate2Component(name, typ string, props *runtime.RawExtension, templ *Template) (*Component, error) {
+func (p *Parser) convertTemplate2Component(name, typ string, capType types.CapType, props *runtime.RawExtension, templ *Template) (*Component, error) {
 	settings, err := util.RawExtension2Map(props)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "fail to parse settings for %s", name)
@@ -596,7 +596,7 @@ func (p *Parser) convertTemplate2Component(name, typ string, props *runtime.RawE
 		CapabilityCategory: templ.CapabilityCategory,
 		FullTemplate:       templ,
 		Params:             settings,
-		engine:             definition.NewWorkloadAbstractEngine(name),
+		engine:             newEngineFor(capType, name),
 	}, nil
 }
 
@@ -900,6 +900,13 @@ func resolvePolicyExpressions(af *Appfile) error {
 	}
 
 	for i := range af.Policies {
+		// A policy with a CUE template renders through the workload engine, which
+		// substitutes its expressions with a resolver in hand. Doing it here as
+		// well would substitute context twice and would refuse the source reads
+		// that render can satisfy.
+		if !IsBuiltinPolicyType(af.Policies[i].Type) {
+			continue
+		}
 		raw := af.Policies[i].Properties
 		if raw == nil || len(raw.Raw) == 0 {
 			continue
@@ -943,4 +950,14 @@ func nonNilStrings(in map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return in
+}
+
+// newEngineFor picks the render engine for a capability. A PolicyDefinition with
+// a CUE template renders through the same machinery as a component but on its own
+// surface, so its expressions see the context a policy render actually has.
+func newEngineFor(capType types.CapType, name string) definition.AbstractEngine {
+	if capType == types.TypePolicy {
+		return definition.NewPolicyAbstractEngine(name)
+	}
+	return definition.NewWorkloadAbstractEngine(name)
 }

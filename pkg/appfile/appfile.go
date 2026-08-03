@@ -240,6 +240,10 @@ func (af *Appfile) generatePolicyUnstructured(workload *Component) ([]*unstructu
 func generatePolicyUnstructuredFromCUEModule(comp *Component, artifacts []*types.ComponentManifest, ctxData velaprocess.ContextData) ([]*unstructured.Unstructured, error) {
 	pCtx := velaprocess.NewContext(ctxData)
 	pCtx.PushData(velaprocess.ContextDataArtifacts, prepareArtifactsData(artifacts))
+	// The policy's own identity, and the surface it renders on - its context is
+	// component-shaped but it is not a component, and context.name is the policy.
+	pCtx.PushData(velaprocess.ContextPolicyName, comp.Name)
+	pCtx.PushData(velaprocess.ContextPolicyType, comp.Type)
 	if err := comp.EvalContext(pCtx); err != nil {
 		return nil, errors.Wrapf(err, "evaluate base template app=%s in namespace=%s", ctxData.AppName, ctxData.Namespace)
 	}

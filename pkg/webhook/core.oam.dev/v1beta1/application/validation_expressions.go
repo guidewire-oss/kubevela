@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
@@ -76,7 +77,13 @@ func validateExpressions(app *v1beta1.Application) field.ErrorList {
 		check(src.Properties, field.NewPath("spec", "sources").Index(i).Child("properties"), both...)
 	}
 	for i, policy := range app.Spec.Policies {
-		check(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), contextOnly...)
+		roots := contextOnly
+		if !appfile.IsBuiltinPolicyType(policy.Type) {
+			// A policy with a CUE template renders through the same engine a
+			// component does, so a source resolves there.
+			roots = both
+		}
+		check(policy.Properties, field.NewPath("spec", "policies").Index(i).Child("properties"), roots...)
 	}
 	if app.Spec.Workflow != nil {
 		for i, step := range app.Spec.Workflow.Steps {
@@ -202,11 +209,17 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 			continue
 		}
 		base := field.NewPath("spec", "policies").Index(i).Child("properties")
-		// PolicyContext, not the component's: a policy is evaluated against what
-		// the appfile-time pass supplies, and typing it against anything else is
-		// how the two came to disagree.
+		// The policy's own context, not the component's: a policy is evaluated
+		// against what its path supplies, and typing it against anything else is
+		// how the two came to disagree. Which path depends on the kind - a
+		// built-in policy is consumed off the appfile, a rendered one goes through
+		// the engine and sees a render's context.
+		schema, roots := sourceexpr.PolicyContext, contextOnly
+		if !appfile.IsBuiltinPolicyType(policy.Type) {
+			schema, roots = sourceexpr.RenderedPolicyContext, both
+		}
 		check(flattenLeafPaths(policy.Properties.Raw, base), loadTarget("policy", policy.Type),
-			fmt.Sprintf("policy %q parameter", policy.Type), sourceexpr.PolicyContext, contextOnly...)
+			fmt.Sprintf("policy %q parameter", policy.Type), schema, roots...)
 	}
 
 	if app.Spec.Workflow != nil {

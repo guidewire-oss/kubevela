@@ -19,8 +19,12 @@ package definition
 import (
 	"fmt"
 	"slices"
+	"sort"
+	"strings"
 
 	"github.com/kubevela/workflow/pkg/cue/process"
+
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
 // Surfaces an Application can carry a property expression on.
@@ -37,10 +41,15 @@ const (
 	SurfaceComponent = "component"
 	// SurfaceTrait is an expression in a trait's properties.
 	SurfaceTrait = "trait"
-	// SurfacePolicy is an expression in a policy's properties. A policy may read
-	// `context` but not `source`: policy properties are consumed outside any
-	// component render, so there is no resolver to reach a source through.
-	SurfacePolicy = "policy"
+	// SurfacePolicy is an expression in a built-in policy's properties - topology,
+	// override and the rest. It may read `context` but not `source`: those
+	// properties are consumed straight off af.Policies by a provider, so nothing
+	// renders them and there is no resolver to reach a source through.
+	SurfacePolicy = "policy-default"
+	// SurfacePolicyRendered is an expression in a PolicyDefinition that has a CUE
+	// template. It renders through the same engine a component does, so a source
+	// resolves there exactly as it would in a component.
+	SurfacePolicyRendered = "policy-rendered"
 	// SurfaceWorkflowStep is an expression in a workflow step's (or sub-step's) properties.
 	SurfaceWorkflowStep = "workflowstep"
 	// SurfaceSource is an expression in a later spec.sources[] entry's properties,
@@ -61,6 +70,7 @@ var sourceReadingSurfaces = []string{
 	SurfaceTrait,
 	SurfaceSource,
 	SurfaceWorkflowStep,
+	SurfacePolicyRendered,
 }
 
 // ConsumableSurfaces are the surfaces a SourceDefinition may name in
@@ -96,8 +106,31 @@ func SurfaceReadsSource(surface string) bool {
 // UnsupportedSurfaceMessage is the single wording used wherever reading a source
 // on a surface that cannot resolve one is rejected, so admission and the parser
 // report the same thing.
+//
+// Where a source *can* be read is derived rather than written out: the sentence
+// listed "component and trait rendering only" long after workflow steps could do
+// it, because a hand-written list of the supported surfaces is one more thing to
+// remember when the supported set changes.
 func UnsupportedSurfaceMessage(surface string) string {
-	return fmt.Sprintf("a %s property cannot read \"source\"; sources are resolved during component and trait rendering only", surface)
+	return fmt.Sprintf("%s cannot read \"source\"; sources resolve in %s",
+		sourceexpr.SurfacePlural(surface), readableSurfacesPhrase())
+}
+
+// readableSurfacesPhrase names the source-reading surfaces in the plural, as
+// prose: "components, traits and workflow steps".
+func readableSurfacesPhrase() string {
+	names := make([]string, 0, len(ConsumableSurfaces))
+	for _, surface := range ConsumableSurfaces {
+		names = append(names, sourceexpr.SurfacePlural(surface))
+	}
+	sort.Strings(names)
+	switch len(names) {
+	case 0:
+		return "no surface"
+	case 1:
+		return names[0]
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // ResolveSourceExpressions substitutes $(...) expressions in a properties blob,

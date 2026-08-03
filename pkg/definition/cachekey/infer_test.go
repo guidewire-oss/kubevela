@@ -297,3 +297,31 @@ func TestUnsupportedContextIsOneMessage(t *testing.T) {
 		}
 	}
 }
+
+// The stamped hash is a published value, not an internal one.
+//
+// Every generated SourceDefinition carries definition.oam.dev/cache-key-rules,
+// and a definition stamped with one rules version resolving under another is the
+// silent failure the annotation exists to prevent. The literal is pinned here so
+// an accidental edit to the rules file is a failing test rather than a mismatch
+// discovered against a cluster - the other hash tests prove the function is
+// stable, not that this particular value has not moved.
+func TestStampedRulesHashHasNotMoved(t *testing.T) {
+	const stamped = "7fdfcad2" // as written into examples/source-library/*.yaml
+
+	rules, err := LoadRules()
+	if err != nil {
+		t.Fatalf("loading rules: %v", err)
+	}
+	got, err := rules.policyHash()
+	if err != nil {
+		t.Fatalf("hashing rules: %v", err)
+	}
+	if got != stamped {
+		t.Fatalf("the rules hash is now %q, was %q.\n"+
+			"If the keyed rules genuinely changed, restamp every generated definition "+
+			"(examples/source-library/*.yaml and examples/source-expressions-demo/definitions/*.yaml) "+
+			"and update this constant. If they did not, something edited "+
+			"pkg/definition/cachekey/rules/ by accident", got, stamped)
+	}
+}

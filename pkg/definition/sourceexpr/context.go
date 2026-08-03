@@ -92,6 +92,13 @@ var WorkflowStepContext = surfaceSchema("workflowstep")
 // cluster yet and no policy revision metadata.
 var PolicyContext = surfaceSchema("policy-default")
 
+// RenderedPolicyContext is what a PolicyDefinition with a CUE template sees.
+//
+// It renders through the workload engine, so it gets the delivery context a
+// component does and can resolve a source - unlike the built-in policies, whose
+// properties are read straight off the appfile with no render behind them.
+var RenderedPolicyContext = surfaceSchema("policy-rendered")
+
 // ScopedPolicyContext is what an Application-scoped PolicyDefinition sees.
 //
 // It gets revision metadata and clusterVersion but no cluster: that render

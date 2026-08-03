@@ -1827,3 +1827,72 @@ output: {
 `)
 	assert.Equal(t, []string{"token"}, paths)
 }
+
+// A rendered policy's context must carry its own identity.
+//
+// Its context is component-shaped because it is built the same way, but no
+// component identity is pushed - so a policy asking which policy it is had no
+// answer beyond context.name, which means something different at every call site.
+// The registry declares policyName and policyType on the policy-rendered surface;
+// this is the render side of that promise.
+func TestPolicyRenderSuppliesPolicyIdentity(t *testing.T) {
+	af := &Appfile{
+		Name:            "test-app",
+		Namespace:       "test-ns",
+		AppRevisionName: "test-app-v1",
+		ParsedPolicies: []*Component{
+			{
+				Name:   "pin-image",
+				Type:   "image-pin",
+				Params: map[string]interface{}{},
+				engine: definition.NewPolicyAbstractEngine("pin-image"),
+				FullTemplate: &Template{TemplateStr: `
+					output: {
+						apiVersion: "v1"
+						kind:       "ConfigMap"
+						metadata: name: context.name
+						data: {
+							policy: context.policyName
+							kind:   context.policyType
+							app:    context.appName
+						}
+					}
+					parameter: {}
+				`},
+			},
+		},
+	}
+
+	manifests, err := af.GeneratePolicyManifests(context.Background(), nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(manifests))
+
+	data, found, err := unstructured.NestedStringMap(manifests[0].Object, "data")
+	assert.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, "pin-image", data["policy"], "context.policyName should name the policy")
+	assert.Equal(t, "image-pin", data["kind"], "context.policyType should name its definition")
+	assert.Equal(t, "test-app", data["app"])
+}
+
+// And the parse-time pass must leave a rendered policy's expressions alone.
+//
+// Both passes substitute context. If the appfile-time one also handled a rendered
+// policy, the substitution would happen twice - and worse, it would refuse the
+// `source` reads the render can satisfy, because that pass has no resolver.
+func TestParseTimeSubstitutionSkipsRenderedPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		policyType string
+		builtin    bool
+	}{
+		{"override", true},
+		{"topology", true},
+		{"garbage-collect", true},
+		{"image-pin", false},
+		{"my-custom-policy", false},
+	} {
+		if got := IsBuiltinPolicyType(tc.policyType); got != tc.builtin {
+			t.Errorf("%s: consumed-not-rendered = %v, want %v", tc.policyType, got, tc.builtin)
+		}
+	}
+}
