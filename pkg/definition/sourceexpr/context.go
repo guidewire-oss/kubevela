@@ -138,6 +138,12 @@ func (c ContextSchema) pathIsOpen(path []string) bool {
 	return cur.IncompleteKind() == cue.TopKind
 }
 
+// Offers reports whether this surface makes a context field readable.
+func (c ContextSchema) Offers(field string) bool {
+	_, ok := c.field(field)
+	return ok
+}
+
 // isIndexed reports a field that is an open map - appLabels and friends - which
 // must be read with a key.
 func (c ContextSchema) isIndexed(name string) bool {

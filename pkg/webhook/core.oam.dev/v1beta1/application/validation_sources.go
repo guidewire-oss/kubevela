@@ -218,6 +218,10 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 		// the target parameter's optional/required marker.
 	}
 
+	// A source's properties are evaluated in the *consumer's* context, so a
+	// context read there must exist on every surface that consumes the binding.
+	errs = append(errs, validateSourceContextReads(app, effective)...)
+
 	// Input contract: validate each source's properties against that
 	// SourceDefinition's parameter: block (unknown fields + type compatibility).
 	errs = append(errs, h.validateSourceInputs(ctx, app, sourceNameToType, schemaValidators)...)
@@ -1071,4 +1075,66 @@ func (h *ValidatingHandler) requiredContext(ctx context.Context, appNamespace, s
 	}
 	cache[sourceType] = fields
 	return fields, nil
+}
+
+// validateSourceContextReads checks the context an Application reads inside
+// spec.sources[].properties against the surfaces that consume each binding.
+//
+// This is the other half of surface compatibility, and the half that is reachable
+// today. A SourceDefinition's own template may only read universally-available
+// context, so it can be consumed anywhere - but the *Application* can feed a
+// source from context, which is how a per-component source is written:
+//
+//	sources:
+//	  - name: own
+//	    type: percomp
+//	    properties: {component: '$(context.componentName)'}
+//
+// That binding now only works where componentName exists. Consumed from a
+// workflow step, the read has nothing to resolve against - and the failure was
+// silent: the step's expressions were left unsubstituted and the literal
+// "$(source.own.label)" was written into the rendered resource.
+func validateSourceContextReads(app *v1beta1.Application, effective map[string][]string) field.ErrorList {
+	var errs field.ErrorList
+	for i, src := range app.Spec.Sources {
+		if src.Properties == nil || len(src.Properties.Raw) == 0 || src.Name == "" {
+			continue
+		}
+		base := field.NewPath("spec", "sources").Index(i).Child("properties")
+		for _, lf := range flattenLeafPaths(src.Properties.Raw, base) {
+			text, ok := lf.literal.(string)
+			if !ok {
+				continue
+			}
+			parsed, perr := sourceexpr.Parse(text)
+			if perr != nil || !parsed.HasExpr() {
+				continue
+			}
+			for _, fragment := range parsed.Fragments {
+				if !fragment.IsExpr() {
+					continue
+				}
+				reads, rerr := sourceexpr.References(fragment.Expr)
+				if rerr != nil {
+					continue // reported by validateExpressions
+				}
+				for _, read := range reads {
+					if read.IsSource() || len(read.Path) == 0 {
+						continue
+					}
+					for _, surface := range effective[src.Name] {
+						if sourceexpr.ContextFor(surface).Offers(read.Path[0]) {
+							continue
+						}
+						errs = append(errs, field.Invalid(lf.fieldPath, text,
+							fmt.Sprintf("reads context.%s, which a %s does not have - "+
+								"source %q is consumed from %v",
+								read.Path[0], sourceexpr.ContextFor(surface).Surface,
+								src.Name, effective[src.Name])))
+					}
+				}
+			}
+		}
+	}
+	return errs
 }

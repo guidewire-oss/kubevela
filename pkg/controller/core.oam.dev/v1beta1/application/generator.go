@@ -109,7 +109,10 @@ func (h *AppHandler) GenerateApplicationSteps(ctx monitorContext.Context,
 		KubeClient: h.Client,
 	})
 	ctx.SetContext(ctxWithRuntimeParams)
-	instance := generateWorkflowInstance(af, app)
+	instance, err := generateWorkflowInstance(af, app)
+	if err != nil {
+		return nil, nil, err
+	}
 	executor.InitializeWorkflowInstance(instance)
 	runners, err := generator.GenerateRunners(ctx, instance, wfTypes.StepGeneratorOptions{
 		Compiler:       providers.DefaultCompiler.Get(),
@@ -156,7 +159,7 @@ func copyWorkflowStatusToInstance(app *v1beta1.Application, mode *wfTypesv1alpha
 	return status
 }
 
-func generateWorkflowInstance(af *appfile.Appfile, app *v1beta1.Application) *wfTypes.WorkflowInstance {
+func generateWorkflowInstance(af *appfile.Appfile, app *v1beta1.Application) (*wfTypes.WorkflowInstance, error) {
 	instance := &wfTypes.WorkflowInstance{
 		WorkflowMeta: wfTypes.WorkflowMeta{
 			Name:        af.Name,
@@ -178,12 +181,17 @@ func generateWorkflowInstance(af *appfile.Appfile, app *v1beta1.Application) *wf
 		Steps: af.WorkflowSteps,
 		Mode:  af.WorkflowMode,
 	}
-	// Substitute expressions in step properties before the workflow
-	// engine ever sees them. If this works, supporting workflow steps needs no
-	// change to the kubevela/workflow module at all - only a pre-pass here,
-	// which is the same shape as convertStepProperties below.
+	// Substitute expressions in step properties before the workflow engine ever
+	// sees them, so supporting workflow steps needs no change to the
+	// kubevela/workflow module - only a pre-pass here.
+	//
+	// The error is returned, not swallowed. Returning the instance unsubstituted
+	// left the expression's own text in the rendered resource: a step reading a
+	// source that could not resolve wrote the literal "$(source.x.y)" into a
+	// ConfigMap and the Application reported running. A failure to resolve has to
+	// fail the render.
 	if err := resolveWorkflowStepSources(af, instance.Steps); err != nil {
-		return instance
+		return nil, err
 	}
 
 	instance.Status = copyWorkflowStatusToInstance(app, af.WorkflowMode)
@@ -197,7 +205,7 @@ func generateWorkflowInstance(af *appfile.Appfile, app *v1beta1.Application) *wf
 	default:
 		instance.Status.Phase = workflowv1alpha1.WorkflowStateExecuting
 	}
-	return instance
+	return instance, nil
 }
 
 func convertStepProperties(step *wfTypesv1alpha1.WorkflowStep, app *v1beta1.Application) error {

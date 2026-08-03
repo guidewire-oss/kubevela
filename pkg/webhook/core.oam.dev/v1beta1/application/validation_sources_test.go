@@ -954,3 +954,90 @@ func TestEffectiveSurfaces(t *testing.T) {
 		}
 	})
 }
+
+// A source's properties are evaluated in its consumer's context, so a context
+// read there must exist on every surface that consumes the binding.
+//
+// This is the reachable half of surface compatibility. A SourceDefinition's own
+// template may only read universal context, so it can be consumed anywhere - but
+// an Application can feed a source *from* context, which is how a per-component
+// source is written, and that binding then only works where the field exists.
+//
+// The failure it prevents was silent: consumed from a workflow step, the read had
+// nothing to resolve against, the step's expressions were left unsubstituted, and
+// the literal "$(source.own.label)" was written into the rendered ConfigMap while
+// the Application reported running.
+func TestValidateSourceContextReads(t *testing.T) {
+	app := func(props string) *v1beta1.Application {
+		return &v1beta1.Application{
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{
+					Name: "own", Type: "percomp",
+					Properties: &runtime.RawExtension{Raw: []byte(props)},
+				}},
+			},
+		}
+	}
+
+	t.Run("component-only context consumed from a component is fine", func(t *testing.T) {
+		errs := validateSourceContextReads(
+			app(`{"component":"$(context.componentName)"}`),
+			map[string][]string{"own": {"component"}})
+		if len(errs) != 0 {
+			t.Fatalf("expected none, got %v", errs)
+		}
+	})
+
+	t.Run("component-only context consumed from a workflow step is refused", func(t *testing.T) {
+		errs := validateSourceContextReads(
+			app(`{"component":"$(context.componentName)"}`),
+			map[string][]string{"own": {"workflowstep"}})
+		if len(errs) != 1 {
+			t.Fatalf("expected one error, got %v", errs)
+		}
+		for _, want := range []string{"componentName", "workflow step", `"own"`} {
+			if !strings.Contains(errs[0].Error(), want) {
+				t.Errorf("message should name %q; got %v", want, errs[0])
+			}
+		}
+	})
+
+	// The same binding used from both: it must satisfy the stricter one.
+	t.Run("consumed from two surfaces, one of which lacks the field", func(t *testing.T) {
+		errs := validateSourceContextReads(
+			app(`{"component":"$(context.componentName)"}`),
+			map[string][]string{"own": {"component", "workflowstep"}})
+		if len(errs) != 1 {
+			t.Fatalf("expected the workflow step to be refused, got %v", errs)
+		}
+	})
+
+	t.Run("universal context is fine everywhere", func(t *testing.T) {
+		errs := validateSourceContextReads(
+			app(`{"component":"$(context.appName)"}`),
+			map[string][]string{"own": {"component", "trait", "workflowstep"}})
+		if len(errs) != 0 {
+			t.Fatalf("appName exists on every surface; got %v", errs)
+		}
+	})
+
+	// A source read is somebody else's business - chaining order and schema
+	// paths are checked by the reference loop.
+	t.Run("source reads are left to the reference pass", func(t *testing.T) {
+		errs := validateSourceContextReads(
+			app(`{"component":"$(source.other.field)"}`),
+			map[string][]string{"own": {"workflowstep"}})
+		if len(errs) != 0 {
+			t.Fatalf("expected none, got %v", errs)
+		}
+	})
+
+	// An unconsumed binding resolves nowhere, so it constrains nothing.
+	t.Run("an unconsumed binding is not judged", func(t *testing.T) {
+		errs := validateSourceContextReads(
+			app(`{"component":"$(context.componentName)"}`), map[string][]string{})
+		if len(errs) != 0 {
+			t.Fatalf("expected none, got %v", errs)
+		}
+	})
+}
