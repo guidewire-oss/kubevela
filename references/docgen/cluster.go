@@ -691,8 +691,7 @@ func GetCapabilityBySourceDefinitionObject(def v1beta1.SourceDefinition) (*types
 		// identity, the TTL is a policy about it.
 		capability.SourceStorage = append(internalCacheFields(capability.CueTemplate), capability.SourceStorage...)
 
-		surfaces, note := sourceSurfaces(capability.CueTemplate)
-		capability.SourceSurfaces, capability.SourceSurfaceNote = surfaces, note
+		capability.SourceSurfaces = sourceSurfaces(capability.CueTemplate)
 	}
 	return &capability, nil
 }
@@ -746,77 +745,53 @@ func formatKeyInputs(raw string) string {
 	return strings.Join(names, ", ")
 }
 
-// sourceSurfaces reports where this source may be consumed, and why that is
-// narrower than everywhere when it is.
+// sourceSurfaces reports, for every surface, whether this source can be consumed
+// there and why not when it cannot.
 //
-// Derived, never authored: a source is restricted by the context its template
-// reads - a source keyed on context.componentName cannot resolve in a workflow
-// step, because no component is being rendered there - and optionally narrowed
-// further by an authored consumableFrom. Both are already enforced at admission;
-// showing them here is what stops an author discovering the restriction by having
-// an Application rejected.
-func sourceSurfaces(template string) ([]types.SourceSurface, string) {
+// Derived, never authored. A source is restricted by the context its template
+// reads - one keyed on context.componentName cannot resolve in a workflow step,
+// because no component is being rendered there - and optionally narrowed further
+// by the definition's own consumableFrom. Both are already enforced at admission;
+// the only thing missing was telling the author before an Application is rejected.
+//
+// Every surface is returned, the reachable ones included, so the caller can show a
+// row each: "workflow steps: no, reads context.componentName" answers a question
+// that a list quietly omitting workflow steps does not.
+func sourceSurfaces(template string) []types.SourceSurface {
 	fields, err := cachekey.RequiredContext(template)
 	if err != nil {
 		klog.Warningf("infer source context reads: %v", err)
-		return nil, ""
-	}
-	allowed := cachekey.SurfacesSupporting(fields, veladefinition.ConsumableSurfaces)
-
-	// Two independent restrictions, stated separately: they have different causes
-	// and different fixes. The context one is a consequence of what the template
-	// reads and can only be changed by changing the reads; consumableFrom is a
-	// deliberate choice by the definition's author.
-	var reasons []string
-	for _, surface := range veladefinition.ConsumableSurfaces {
-		if slices.Contains(allowed, surface) {
-			continue
-		}
-		if err := cachekey.CheckSurface(fields, surface); err != nil {
-			reasons = append(reasons, err.Error())
-			break
-		}
+		return nil
 	}
 
-	if declared, derr := sourcedefinition.ParseConsumableFrom(template); derr == nil && len(declared) > 0 {
-		var kept []string
-		for _, surface := range allowed {
-			if slices.Contains(declared, surface) {
-				kept = append(kept, surface)
-			}
-		}
-		if len(kept) < len(allowed) {
-			reasons = append(reasons, "is limited by this definition's consumableFrom")
-		}
-		allowed = kept
+	// Absent consumableFrom means every surface; present means only those named.
+	declared, derr := sourcedefinition.ParseConsumableFrom(template)
+	if derr != nil {
+		klog.Warningf("parse source consumableFrom: %v", derr)
+		declared = nil
 	}
 
-	// Every surface, not just the reachable ones - the point of the table is that
-	// an author can see where the source does *not* work without knowing the full
-	// list of surfaces to check it against.
 	out := make([]types.SourceSurface, 0, len(veladefinition.ConsumableSurfaces))
 	for _, surface := range veladefinition.ConsumableSurfaces {
-		out = append(out, types.SourceSurface{
-			Name:       sourceexpr.SurfacePlural(surface),
-			Consumable: slices.Contains(allowed, surface),
-		})
+		row := types.SourceSurface{Name: sourceexpr.SurfacePlural(surface), Consumable: true}
+
+		// The two exclusions are reported together because they are independent
+		// and have different fixes: what a template reads can only change by
+		// changing the reads, while consumableFrom is a deliberate choice.
+		var reasons []string
+		if missing := cachekey.MissingOn(fields, surface); len(missing) > 0 {
+			reasons = append(reasons, "reads "+strings.Join(missing, ", "))
+		}
+		if len(declared) > 0 && !slices.Contains(declared, surface) {
+			reasons = append(reasons, "not in consumableFrom")
+		}
+		if len(reasons) > 0 {
+			row.Consumable, row.Reason = false, strings.Join(reasons, "; ")
+		}
+		out = append(out, row)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-
-	return out, restrictionNote(reasons)
-}
-
-// restrictionNote joins the reasons a source is narrower than everywhere.
-//
-// Separated from the derivation because only one of the two reasons is reachable
-// today - the cache-key rules permit only universally-available fields, so no
-// template can currently restrict itself by what it reads. That branch, and the
-// both-reasons wording, would otherwise be string-building no test could reach.
-func restrictionNote(reasons []string) string {
-	if len(reasons) == 0 {
-		return ""
-	}
-	return "Restricted: it " + strings.Join(reasons, ", and ") + "."
+	return out
 }
 
 // extractSourceOutputs parses the `schema:` block of a SourceDefinition template

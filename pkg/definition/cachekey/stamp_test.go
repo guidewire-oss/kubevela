@@ -105,9 +105,9 @@ parameter: {ref: string}
 			name:    "a forbidden read is reported rather than stamped",
 			defName: "bad",
 			template: `
-output: {p: context.policyName}
+output: {p: context.replicaKey}
 `,
-			wantErr: "policyName",
+			wantErr: "replicaKey",
 		},
 	}
 

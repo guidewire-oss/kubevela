@@ -189,7 +189,7 @@ func (ref *ConsoleReference) Show(ctx context.Context, c common.Args, ioStreams 
 			ioStreams.Info("# Consumable from")
 			table := tablewriter.NewWriter(os.Stdout)
 			table.SetColWidth(100)
-			table.SetHeader([]string{ref.I18N.Get("Surface"), ref.I18N.Get("Consumable")})
+			table.SetHeader([]string{ref.I18N.Get("Surface"), ref.I18N.Get("Consumable"), ref.I18N.Get("Reason")})
 			for _, sfc := range capability.SourceSurfaces {
 				// Matches the glyphs and colours `vela addon list` already uses,
 				// so a tick means the same thing across the CLI.
@@ -197,12 +197,9 @@ func (ref *ConsoleReference) Show(ctx context.Context, c common.Args, ioStreams 
 				if sfc.Consumable {
 					mark = color.GreenString("✔")
 				}
-				table.Append([]string{sfc.Name, mark})
+				table.Append([]string{sfc.Name, mark, sfc.Reason})
 			}
 			table.Render()
-			if capability.SourceSurfaceNote != "" {
-				ioStreams.Infof("\n%s\n", capability.SourceSurfaceNote)
-			}
 			ioStreams.Info("\n")
 		}
 	}

@@ -111,9 +111,6 @@ type Capability struct {
 	// consumed there. The unreachable ones are carried too: "traits: no" is the
 	// answer to a question, where a list that simply omits traits is silence.
 	SourceSurfaces []SourceSurface `json:"sourceSurfaces,omitempty"`
-	// SourceSurfaceNote explains a restricted surface list - either the context
-	// the template reads or an authored consumableFrom. Empty when unrestricted.
-	SourceSurfaceNote string `json:"sourceSurfaceNote,omitempty"`
 
 	// Namespace represents it's a system-level or user-level capability.
 	Namespace string `json:"namespace,omitempty"`
@@ -133,6 +130,9 @@ type SourceSurface struct {
 	Name string `json:"name"`
 	// Consumable reports whether this source can be consumed on that surface.
 	Consumable bool `json:"consumable"`
+	// Reason says why not, naming the context reads that surface cannot satisfy.
+	// Empty when the source is consumable there.
+	Reason string `json:"reason,omitempty"`
 }
 
 // SourceStorageField is one field of a SourceDefinition's storage: (caching)

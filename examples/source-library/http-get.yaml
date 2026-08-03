@@ -5,7 +5,7 @@ metadata:
   namespace: vela-system
   annotations:
     definition.oam.dev/description: "GETs a URL. The response is parsed when Content-Type says JSON or YAML; a non-2xx fails the source rather than becoming its value."
-    definition.oam.dev/cache-key-rules: "7fdfcad2"
+    definition.oam.dev/cache-key-rules: "bb2aa884"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
   schematic:

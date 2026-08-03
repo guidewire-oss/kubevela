@@ -31,8 +31,9 @@ import (
 // package - the list is short, and stating it keeps the dependency one-way.
 // Source chaining is absent deliberately: a chained source resolves inside
 // whichever render triggered the outer binding, so it introduces no context of
-// its own.
-var sourceResolvingSurfaces = []string{"component", "trait", "workflowstep"}
+// its own. policy-rendered is here because a PolicyDefinition with a CUE template
+// renders through the same engine a component does - see KEP-2.16 A13.
+var sourceResolvingSurfaces = []string{"component", "trait", "workflowstep", "policy-rendered"}
 
 // A keyed field must be one some surface can actually supply.
 //
@@ -211,6 +212,8 @@ func TestSurfaceSpecificFieldsRestrict(t *testing.T) {
 		{"traitType", []string{"trait"}},
 		{"stepName", []string{"workflowstep"}},
 		{"stepType", []string{"workflowstep"}},
+		{"policyName", []string{"policy-rendered"}},
+		{"policyType", []string{"policy-rendered"}},
 	} {
 		got := SurfacesSupporting([]string{tc.field}, sourceResolvingSurfaces)
 		if !reflect.DeepEqual(got, tc.want) {

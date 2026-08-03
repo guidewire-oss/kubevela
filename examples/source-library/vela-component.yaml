@@ -5,7 +5,7 @@ metadata:
   namespace: vela-system
   annotations:
     definition.oam.dev/description: "The status of one placement of one component of a KubeVela Application - health, message, details and traits keyed by type. Status only; never its spec."
-    definition.oam.dev/cache-key-rules: "7fdfcad2"
+    definition.oam.dev/cache-key-rules: "bb2aa884"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
   schematic:

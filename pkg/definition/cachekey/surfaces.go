@@ -90,6 +90,21 @@ func missingOn(fields []string, surface string) []string {
 // contextNameField is the binding entry - see KEP-2.16 amendment A4.
 const contextNameField = "name"
 
+// MissingOn names the context fields a surface cannot supply, as an author wrote
+// them - context.componentName, not componentName.
+//
+// Exported alongside CheckSurface because a caller reporting per surface already
+// knows which surface it is asking about, so the sentence CheckSurface builds
+// ends in a clause it would only have to strip back off.
+func MissingOn(fields []string, surface string) []string {
+	missing := missingOn(fields, surface)
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return dotted(missing)
+}
+
 // CheckSurface reports why a source reading these fields cannot resolve on a
 // surface, or nil if it can.
 func CheckSurface(fields []string, surface string) error {

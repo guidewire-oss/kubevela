@@ -5,7 +5,7 @@ metadata:
   namespace: vela-system
   annotations:
     definition.oam.dev/description: "Reads a file from a registry configured in this cluster, optionally at a given branch or tag. YAML and JSON are parsed; anything else comes back as a string."
-    definition.oam.dev/cache-key-rules: "7fdfcad2"
+    definition.oam.dev/cache-key-rules: "bb2aa884"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
   schematic:

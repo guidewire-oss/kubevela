@@ -331,6 +331,14 @@ var _ = Describe("test GetCapabilityFromDefinitionRevision", func() {
 // run. It is tested here directly because it is the branch that starts mattering
 // the day that changes, and because a note that reads wrongly is the kind of
 // thing nobody notices until a user quotes it back.
+func reasonBySurface(surfaces []types.SourceSurface) map[string]string {
+	out := map[string]string{}
+	for _, s := range surfaces {
+		out[s.Name] = s.Reason
+	}
+	return out
+}
+
 func consumableBySurface(surfaces []types.SourceSurface) map[string]bool {
 	out := map[string]bool{}
 	for _, s := range surfaces {
@@ -342,7 +350,7 @@ func consumableBySurface(surfaces []types.SourceSurface) map[string]bool {
 func TestSourceSurfaces(t *testing.T) {
 	// Reads nothing surface-specific, declares nothing: available everywhere.
 	t.Run("unrestricted", func(t *testing.T) {
-		surfaces, note := sourceSurfaces(`
+		surfaces := sourceSurfaces(`
 $internal: {key: "s", keyInputs: []}
 schema: {v: string}
 output: {v: "x"}
@@ -350,11 +358,13 @@ output: {v: "x"}
 		assert.Equal(t, map[string]bool{
 			"components": true, "traits": true, "workflow steps": true, "policies": true,
 		}, consumableBySurface(surfaces))
-		assert.Empty(t, note, "an unrestricted source should carry no explanation")
+		for _, sfc := range surfaces {
+			assert.Empty(t, sfc.Reason, "a consumable surface needs no reason")
+		}
 	})
 
 	t.Run("restricted by consumableFrom", func(t *testing.T) {
-		surfaces, note := sourceSurfaces(`
+		surfaces := sourceSurfaces(`
 $internal: {key: "s", keyInputs: []}
 consumableFrom: ["component", "trait"]
 schema: {v: string}
@@ -364,57 +374,67 @@ output: {v: "x"}
 		assert.Equal(t, map[string]bool{
 			"components": true, "traits": true, "workflow steps": false, "policies": false,
 		}, consumableBySurface(surfaces))
-		assert.Equal(t, "Restricted: it is limited by this definition's consumableFrom.", note)
+		assert.Equal(t, map[string]string{
+			"components": "", "traits": "",
+			"workflow steps": "not in consumableFrom", "policies": "not in consumableFrom",
+		}, reasonBySurface(surfaces))
 	})
 
 	// consumableFrom naming every surface is not a restriction, and must not be
 	// reported as one.
 	t.Run("consumableFrom that restricts nothing is not reported", func(t *testing.T) {
-		_, note := sourceSurfaces(`
+		surfaces := sourceSurfaces(`
 $internal: {key: "s", keyInputs: []}
 consumableFrom: ["component", "trait", "workflowstep", "policy-rendered"]
 schema: {v: string}
 output: {v: "x"}
 `)
-		assert.Empty(t, note)
+		for _, sfc := range surfaces {
+			assert.True(t, sfc.Consumable, sfc.Name)
+			assert.Empty(t, sfc.Reason, sfc.Name)
+		}
+	})
+
+	// The case the caller-identity keyed fields were added for: a source that
+	// resolves per consuming component, and so cannot resolve where no component
+	// is being rendered. The reason names the field, because "not consumable" on
+	// its own leaves the author guessing which read caused it.
+	t.Run("restricted by the context it reads", func(t *testing.T) {
+		surfaces := sourceSurfaces(`
+$internal: {key: "s-\(context.componentName)", keyInputs: ["componentName"]}
+schema: {v: string}
+output: {v: context.componentName}
+`)
+		assert.Equal(t, map[string]bool{
+			"components": true, "traits": true, "workflow steps": false, "policies": false,
+		}, consumableBySurface(surfaces))
+		assert.Equal(t, map[string]string{
+			"components": "", "traits": "",
+			"workflow steps": "reads context.componentName",
+			"policies":       "reads context.componentName",
+		}, reasonBySurface(surfaces))
+	})
+
+	// Both causes at once are joined, because they are independent.
+	t.Run("restricted by context and consumableFrom together", func(t *testing.T) {
+		surfaces := sourceSurfaces(`
+$internal: {key: "s-\(context.componentName)", keyInputs: ["componentName"]}
+consumableFrom: ["component"]
+schema: {v: string}
+output: {v: context.componentName}
+`)
+		reasons := reasonBySurface(surfaces)
+		assert.Empty(t, reasons["components"])
+		assert.Equal(t, "not in consumableFrom", reasons["traits"])
+		assert.Equal(t, "reads context.componentName; not in consumableFrom", reasons["workflow steps"])
 	})
 
 	// A template whose key cannot be inferred must not produce a half-answer: no
 	// surfaces rather than a wrong list. Every other extractor here fails open the
 	// same way.
 	t.Run("an unparseable template yields nothing", func(t *testing.T) {
-		surfaces, note := sourceSurfaces(`this is not CUE {{{`)
-		assert.Empty(t, surfaces)
-		assert.Empty(t, note)
+		assert.Empty(t, sourceSurfaces(`this is not CUE {{{`))
 	})
-}
-
-// The wording of the restriction note, including the shapes the derivation cannot
-// currently produce.
-//
-// A source restricted by what it reads is not reachable through a real
-// SourceDefinition today - the cache-key rules permit only universally-available
-// fields - so both that sentence and the two-reason join would otherwise ship
-// untested. They are one string concatenation away from reading "it reads ... it
-// reads", which is exactly the sort of thing found by a user quoting it back.
-func TestRestrictionNote(t *testing.T) {
-	assert.Empty(t, restrictionNote(nil))
-
-	assert.Equal(t,
-		"Restricted: it reads context.componentName, which is unavailable in workflow steps.",
-		restrictionNote([]string{"reads context.componentName, which is unavailable in workflow steps"}))
-
-	assert.Equal(t,
-		"Restricted: it is limited by this definition's consumableFrom.",
-		restrictionNote([]string{"is limited by this definition's consumableFrom"}))
-
-	assert.Equal(t,
-		"Restricted: it reads context.componentName, which is unavailable in workflow steps, "+
-			"and is limited by this definition's consumableFrom.",
-		restrictionNote([]string{
-			"reads context.componentName, which is unavailable in workflow steps",
-			"is limited by this definition's consumableFrom",
-		}))
 }
 
 // The generated $internal: block is where the cache key lives, and `vela def show`

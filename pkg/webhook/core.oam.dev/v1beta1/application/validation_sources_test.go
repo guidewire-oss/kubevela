@@ -13,7 +13,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	wfv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
@@ -1180,5 +1182,86 @@ func TestPolicySurfacesOfferDifferentContext(t *testing.T) {
 		if !sourceexpr.RenderedPolicyContext.Offers(field) || !sourceexpr.PolicyContext.Offers(field) {
 			t.Errorf("both policy surfaces should offer context.%s", field)
 		}
+	}
+}
+
+// A binding consumed from two surfaces is faulted only where it cannot resolve.
+//
+// A source keyed on caller identity - the per-component case the caller-identity
+// keyed fields exist for - resolves separately at each call site, so a component
+// reading it is correct even when the same binding is also read from a workflow
+// step. Only that second read is wrong.
+//
+// The first implementation checked every reference against every surface the
+// binding was consumed on, which reported the component's own read as
+// "unavailable in workflow steps" - a rejection naming a surface the author had
+// not used for that property. It was unreachable until caller identity became
+// keyable, so it had never run.
+func TestSurfaceCompatibilityFaultsOnlyTheOffendingReference(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1beta1.AddToScheme(scheme)
+
+	perComponent := &v1beta1.SourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "per-component", Namespace: "default"},
+		Spec: v1beta1.SourceDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {label: string}
+$internal: {key: "per-component-\(context.componentName)", keyInputs: ["componentName"]}
+output: {label: context.componentName}
+parameter: {}
+`}},
+		},
+	}
+	probe := &v1beta1.ComponentDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: "default"},
+		Spec: v1beta1.ComponentDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+output: {apiVersion: "v1", kind: "ConfigMap", metadata: name: context.name, data: who: parameter.who}
+parameter: {who: string}
+`}},
+		},
+	}
+
+	app := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+		Spec: v1beta1.ApplicationSpec{
+			Sources: []v1beta1.ApplicationSource{
+				{Name: "mine", Type: "per-component", Properties: rawJSON(`{}`)},
+			},
+			Components: []common.ApplicationComponent{
+				{Name: "web", Type: "probe", Properties: rawJSON(`{"who":"$(source.mine.label)"}`)},
+			},
+			Workflow: &v1beta1.Workflow{
+				Steps: []wfv1alpha1.WorkflowStep{{
+					WorkflowStepBase: wfv1alpha1.WorkflowStepBase{
+						Name: "s", Type: "step-group",
+						Properties: rawJSON(`{"label":"$(source.mine.label)"}`),
+					},
+				}},
+			},
+		},
+	}
+
+	h := &ValidatingHandler{Client: fake.NewClientBuilder().
+		WithScheme(scheme).WithObjects(perComponent, probe).Build()}
+	errs := h.ValidateSources(context.Background(), app)
+
+	var componentFaults, stepFaults int
+	var joined string
+	for _, e := range errs {
+		joined += e.Error() + "\n"
+		if strings.Contains(e.Error(), "spec.components") {
+			componentFaults++
+		}
+		if strings.Contains(e.Error(), "spec.workflow") {
+			stepFaults++
+		}
+	}
+	if componentFaults != 0 {
+		t.Errorf("the component read resolves - a component has context.componentName - "+
+			"so it must not be faulted. Got:\n%s", joined)
+	}
+	if stepFaults == 0 {
+		t.Errorf("the workflow-step read cannot resolve and must be faulted. Got:\n%s", joined)
 	}
 }

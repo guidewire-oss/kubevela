@@ -180,14 +180,24 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 			}
 		}
 
-		// A source resolves in its call site's context, so it can only be
-		// consumed where every field its template reads exists. A chained source
-		// resolves in whichever render triggered the outer binding, so the
-		// surfaces it must satisfy are its consumers', not its own - which is
-		// what effectiveSurfaces works out.
+		// A source resolves in its call site's context, so it can only be consumed
+		// where every field its template reads exists.
+		//
+		// Which surfaces that means depends on how this reference reaches the
+		// source. A direct read resolves right here, at this one call site, so
+		// only this surface has to satisfy it - a per-component source consumed by
+		// a component is fine even when the same binding is also read from a
+		// workflow step, and it is that second read alone that is wrong. A chained
+		// read resolves inside whichever render triggered the outer binding, so it
+		// must satisfy the outer binding's consumers - which is what
+		// effectiveSurfaces works out.
 		required, rerr := h.requiredContext(ctx, app.Namespace, sourceType, requiredContextCache)
 		if rerr == nil && len(required) > 0 {
-			for _, surface := range effective[ref.SourceName] {
+			mustSatisfy := []string{ref.Surface}
+			if ref.SourceIndex >= 0 {
+				mustSatisfy = effective[ref.SourceName]
+			}
+			for _, surface := range mustSatisfy {
 				if cerr := cachekey.CheckSurface(required, surface); cerr != nil {
 					fault(ref, ref.Path, fmt.Sprintf("SourceDefinition %q %v", sourceType, cerr))
 					break

@@ -112,21 +112,33 @@ output: {region: "us-east-1"}
 			want: []string{"cluster"},
 		},
 		{
-			// A source's output must not depend on which consumer asked, so the
-			// component's identity is not readable. One that genuinely varies per
-			// component takes it as a property.
-			name: "consumer identity is not readable",
+			// Caller identity is readable and becomes a key dimension, which is
+			// what makes a per-component source possible. It is safe because a
+			// source reading it is consumable only where that field exists - the
+			// surface-compatibility check enforces that per binding.
+			name: "consumer identity is readable and keyed",
 			template: `
-output: {t: context.componentType}
+output: {t: context.componentType, n: context.componentName}
 `,
-			wantErr: "componentType",
+			want: []string{"componentName", "componentType"},
 		},
 		{
-			name: "policy context is rejected",
+			name: "policy identity is readable and keyed",
 			template: `
 output: {p: context.policyName}
 `,
-			wantErr: "policyName",
+			want: []string{"policyName"},
+		},
+		{
+			// Present in the render context and in the registry, but deliberately
+			// not keyed: a source caching per component revision or per replica is
+			// finer-grained than anything has needed, and each extra dimension
+			// multiplies cache entries.
+			name: "component fields outside the keyed list are still rejected",
+			template: `
+output: {r: context.revision}
+`,
+			wantErr: "revision",
 		},
 		{
 			name: "internal plumbing is rejected",
@@ -283,7 +295,10 @@ func TestUnsupportedContextIsOneMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loading rules: %v", err)
 	}
-	for _, field := range []string{"policyName", "appSourceCacheStore", "componentType", "somethingNobodyHasAddedYet"} {
+	// Caller identity is keyed now, so the unsupported examples are fields that
+	// genuinely are not: internal plumbing, a component field left out of the
+	// keyed list on purpose, and one that does not exist at all.
+	for _, field := range []string{"appSourceCacheStore", "revision", "replicaKey", "somethingNobodyHasAddedYet"} {
 		_, err := Infer("output: {p: context."+field+"}\n", rules)
 		if err == nil {
 			t.Errorf("context.%s should be unsupported", field)
@@ -307,7 +322,7 @@ func TestUnsupportedContextIsOneMessage(t *testing.T) {
 // discovered against a cluster - the other hash tests prove the function is
 // stable, not that this particular value has not moved.
 func TestStampedRulesHashHasNotMoved(t *testing.T) {
-	const stamped = "7fdfcad2" // as written into examples/source-library/*.yaml
+	const stamped = "bb2aa884" // as written into examples/source-library/*.yaml
 
 	rules, err := LoadRules()
 	if err != nil {

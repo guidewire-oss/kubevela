@@ -469,6 +469,99 @@ output: {
 		}))
 	})
 
+	It("resolves a source per consuming component, and refuses it where no component exists", func() {
+		// The capability the caller-identity keyed fields were added for. A source
+		// reading context.componentName gets one cache entry per component, and is
+		// consumable only where a component is being rendered - which the
+		// surface-compatibility check enforces per binding.
+		applyDef(&v1beta1.SourceDefinition{
+			TypeMeta:   metav1.TypeMeta{Kind: "SourceDefinition", APIVersion: "core.oam.dev/v1beta1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "per-comp-src", Namespace: namespaceName},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &oamcomm.Schematic{CUE: &oamcomm.CUE{Template: `
+schema: {label: string}
+$internal: {
+	key: "per-comp-src-\(context.namespace)-\(context.componentName)"
+	keyInputs: ["namespace", "componentName"]
+}
+storage: {storageTTL: "10m"}
+output: {label: "\(context.componentName)@\(context.namespace)"}
+parameter: {}
+`}},
+			},
+		})
+		applyDef(exprComponentDefinition(namespaceName, "per-comp-consumer", `
+parameter: {who: string}
+output: {
+  apiVersion: "v1"
+  kind:       "ConfigMap"
+  metadata: name: context.name
+  data: who: parameter.who
+}
+`))
+
+		// Two components share one binding and must each resolve to their own
+		// value - the point of keying on the component.
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "per-comp-app", Namespace: namespaceName},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{
+					Name: "mine", Type: "per-comp-src",
+					Properties: &runtime.RawExtension{Raw: []byte(`{}`)},
+				}},
+				Components: []oamcomm.ApplicationComponent{
+					{
+						Name: "alpha", Type: "per-comp-consumer",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"who":"$(source.mine.label)"}`)},
+					},
+					{
+						Name: "beta", Type: "per-comp-consumer",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"who":"$(source.mine.label)"}`)},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
+
+		Eventually(func() (map[string]string, error) {
+			return configMapData("alpha")
+		}, 120*time.Second, 2*time.Second).Should(
+			HaveKeyWithValue("who", "alpha@"+namespaceName))
+		Eventually(func() (map[string]string, error) {
+			return configMapData("beta")
+		}, 120*time.Second, 2*time.Second).Should(
+			HaveKeyWithValue("who", "beta@"+namespaceName))
+
+		// The same binding read from a workflow step cannot resolve: no component
+		// is rendered there. Only that reference is refused - the component reads
+		// above are correct and must not be dragged down with it.
+		bad := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "per-comp-bad", Namespace: namespaceName},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{
+					Name: "mine", Type: "per-comp-src",
+					Properties: &runtime.RawExtension{Raw: []byte(`{}`)},
+				}},
+				Components: []oamcomm.ApplicationComponent{{
+					Name: "alpha", Type: "per-comp-consumer",
+					Properties: &runtime.RawExtension{Raw: []byte(`{"who":"$(source.mine.label)"}`)},
+				}},
+				Workflow: &v1beta1.Workflow{Steps: []wfTypesv1alpha1.WorkflowStep{{
+					WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{
+						Name: "s", Type: "step-group",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"label":"$(source.mine.label)"}`)},
+					},
+				}}},
+			},
+		}
+		err := k8sClient.Create(ctx, bad)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("context.componentName"))
+		Expect(err.Error()).To(ContainSubstring("spec.workflow"))
+		Expect(err.Error()).NotTo(ContainSubstring("spec.components"),
+			"the component read resolves; only the workflow-step read is wrong")
+	})
+
 	It("resolves sources and context in a resource-rendering policy", func() {
 		// The third policy kind, and the only one that can resolve a source: a
 		// PolicyDefinition with a CUE template renders through the same engine a

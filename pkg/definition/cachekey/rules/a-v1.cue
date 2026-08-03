@@ -72,4 +72,25 @@ keyed: {
 	// way every time.
 	appLabels: {order:      10, indexed: true}
 	appAnnotations: {order: 11, indexed: true}
+
+	// Caller identity: which component, trait, step or policy is being rendered.
+	//
+	// Unlike everything above, these do not exist on every surface - there is no
+	// component when a workflow step renders, and no step when a component does.
+	// A source reading one is therefore consumable only where that field exists,
+	// which the surface-compatibility check enforces per binding and `vela def
+	// show` reports. That restriction is the point: it is what makes a
+	// per-component source possible without it silently resolving against the
+	// wrong identity somewhere else.
+	//
+	// All are Kubernetes-style names or definition types, so all inline as
+	// segments. None is legitimately empty where it exists - if it is absent, the
+	// source should not have been consumable there in the first place.
+	componentName: {order: 12, segment: true}
+	componentType: {order: 13, segment: true}
+	traitType: {order:     14, segment: true}
+	stepName: {order:      15, segment: true}
+	stepType: {order:      16, segment: true}
+	policyName: {order:    17, segment: true}
+	policyType: {order:    18, segment: true}
 }
