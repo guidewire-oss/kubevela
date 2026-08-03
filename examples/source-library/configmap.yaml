@@ -5,7 +5,7 @@ metadata:
   namespace: vela-system
   annotations:
     definition.oam.dev/description: "Reads a ConfigMap's data, optionally from another cluster. Values are strings, as Kubernetes stores them."
-    definition.oam.dev/cache-key-rules: "bb2aa884"
+    definition.oam.dev/cache-key-rules: "6ac674fa"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
   schematic:

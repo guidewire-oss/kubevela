@@ -65,10 +65,9 @@ func TestSourceContextIsBuiltFromTheRules(t *testing.T) {
 // contribute to the key is absent, so it cannot be read even where admission is
 // disabled. Rejecting it at admission alone would leave that gap open.
 //
-// Consumer identity is deliberately not in that set any more - it is keyed, so it
-// reaches the template, and a source resolving per component is the reason. What
-// must still be absent is everything the rules do not name: component fields left
-// out of `keyed` on purpose, and internal plumbing.
+// Everything the registry offers a source-resolving surface is keyed now, so what
+// must still be absent is what the rules do not name at all: internal plumbing for
+// source resolution, and the products of a render that has not happened yet.
 func TestSourceContextOmitsUnreadableFields(t *testing.T) {
 	rules, err := cachekey.LoadRules()
 	if err != nil {
@@ -79,9 +78,10 @@ func TestSourceContextOmitsUnreadableFields(t *testing.T) {
 		t.Fatalf("rendering: %v", err)
 	}
 
-	// In the registry and in the render context, but not keyed - caching per
-	// component revision or per replica is finer than anything has needed.
-	for _, unreadable := range []string{"revision", "replicaKey", "appSourceCacheStore", "artifacts"} {
+	for _, unreadable := range []string{
+		"appSourceCacheStore", "appSourceTemplates", "sourceResolutionStatuses",
+		"artifacts", "outputs", "parameter",
+	} {
 		if strings.Contains(got, unreadable) {
 			t.Errorf("context.%s is not keyed, so it must not reach a source template; got %s",
 				unreadable, got)

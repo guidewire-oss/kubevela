@@ -840,10 +840,24 @@ this: *"introduce an explicit `context.componentName` (absent outside a componen
 or trait render, so a component-scoped source fails loudly rather than resolving
 against the wrong identity)"*. It fails loudly at admission rather than at render.
 
-**`revision` and `replicaKey` are deliberately not keyed.** Both exist in the
-render context and in the registry, but caching per component revision or per
-replica is finer-grained than anything has needed, and each dimension multiplies
-cache entries.
+**Everything a source-resolving surface offers is now keyed.** `revision`,
+`replicaKey` and `custom` were left out at first as too fine-grained to be worth
+it, which was the wrong test: the rules are the allowlist for a template, so a
+field the registry offers and the rules omit reads to an author as an oversight
+rather than a decision. They are hashed rather than inlined, for the same reason
+`appRevision` is — each is legitimately empty in normal operation (`replicaKey`
+only under the replication policy, `custom` only where a scoped policy published
+one), so inlining would put a blank segment in the key.
+
+A read still costs a cache entry per distinct value; that is the cost of reading
+one, not of listing it. `custom` collapses to a single dimension however deeply it
+is read — `context.custom.team` keys on the whole published structure — which is
+coarse but never wrong.
+
+What remains unreadable is what no surface offers: internal plumbing for source
+resolution, the products of a render that has not happened yet, and fields whose
+only surface resolves no sources at all (`policyRevisionName` and its siblings,
+which exist solely on `policy-app`).
 
 **This reverses a stated principle.** The rules previously held that *"a source's
 output must not depend on which consumer asked"*, with per-consumer variation

@@ -93,4 +93,30 @@ keyed: {
 	stepType: {order:      16, segment: true}
 	policyName: {order:    17, segment: true}
 	policyType: {order:    18, segment: true}
+
+	// The remainder of what the registry offers a source-resolving surface.
+	//
+	// Not because any of these is compelling - a source caching per component
+	// revision or per replica is finer-grained than anything has needed - but
+	// because "readable here, not there" is a distinction an author has no way to
+	// predict. The rules are the allowlist for a template, so a field the registry
+	// offers and the rules omit reads as an oversight rather than a decision.
+	//
+	// Hashed rather than inlined, for the reason appRevision and publishVersion
+	// are: each is legitimately empty in normal operation, so inlining would put
+	// a blank segment in the key. replicaKey is set only by the replication
+	// policy, custom only by an Application-scoped policy that published one, and
+	// custom has no rendered form in any case - it is whatever that policy chose.
+	// A hashed field still separates cache entries correctly; segments exist to
+	// be grepped, not to carry meaning.
+	//
+	// A read of any of these still costs a cache entry per distinct value. That
+	// is the cost of reading it, not of listing it here - a template that does
+	// not read one is unaffected.
+	revision: order:   19
+	replicaKey: order: 20
+	// Absent unless an Application-scoped policy set it, and untyped - a template
+	// reading it needs a default and a type assertion, exactly as it does anywhere
+	// else. Absence hashes as empty, like appRevision before the first revision.
+	custom: order: 21
 }

@@ -105,9 +105,9 @@ parameter: {ref: string}
 			name:    "a forbidden read is reported rather than stamped",
 			defName: "bad",
 			template: `
-output: {p: context.replicaKey}
+output: {p: context.appSourceCacheStore}
 `,
-			wantErr: "replicaKey",
+			wantErr: "appSourceCacheStore",
 		},
 	}
 

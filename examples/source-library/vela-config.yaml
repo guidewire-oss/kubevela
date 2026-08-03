@@ -5,7 +5,7 @@ metadata:
   namespace: vela-system
   annotations:
     definition.oam.dev/description: "Reads a KubeVela Config: its properties, the ConfigTemplate it satisfies, and references to the Secret and named objects that template produced. Output values are never returned, only their references. A Config marked sensitive is refused."
-    definition.oam.dev/cache-key-rules: "bb2aa884"
+    definition.oam.dev/cache-key-rules: "6ac674fa"
     definition.oam.dev/cache-key-rules-version: v1
 spec:
   schematic:
