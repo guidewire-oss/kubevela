@@ -755,7 +755,7 @@ func formatKeyInputs(raw string) string {
 // further by an authored consumableFrom. Both are already enforced at admission;
 // showing them here is what stops an author discovering the restriction by having
 // an Application rejected.
-func sourceSurfaces(template string) ([]string, string) {
+func sourceSurfaces(template string) ([]types.SourceSurface, string) {
 	fields, err := cachekey.RequiredContext(template)
 	if err != nil {
 		klog.Warningf("infer source context reads: %v", err)
@@ -791,11 +791,17 @@ func sourceSurfaces(template string) ([]string, string) {
 		allowed = kept
 	}
 
-	out := make([]string, 0, len(allowed))
-	for _, surface := range allowed {
-		out = append(out, sourceexpr.SurfacePlural(surface))
+	// Every surface, not just the reachable ones - the point of the table is that
+	// an author can see where the source does *not* work without knowing the full
+	// list of surfaces to check it against.
+	out := make([]types.SourceSurface, 0, len(veladefinition.ConsumableSurfaces))
+	for _, surface := range veladefinition.ConsumableSurfaces {
+		out = append(out, types.SourceSurface{
+			Name:       sourceexpr.SurfacePlural(surface),
+			Consumable: slices.Contains(allowed, surface),
+		})
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 
 	return out, restrictionNote(reasons)
 }

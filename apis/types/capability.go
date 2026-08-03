@@ -107,9 +107,10 @@ type Capability struct {
 	// provides back to consumers, and its caching (storage: block) fields.
 	SourceOutputs []Parameter          `json:"sourceOutputs,omitempty"`
 	SourceStorage []SourceStorageField `json:"sourceStorage,omitempty"`
-	// SourceSurfaces are the Application surfaces this source can be consumed
-	// from, in the plural and ready to print.
-	SourceSurfaces []string `json:"sourceSurfaces,omitempty"`
+	// SourceSurfaces is every Application surface and whether this source can be
+	// consumed there. The unreachable ones are carried too: "traits: no" is the
+	// answer to a question, where a list that simply omits traits is silence.
+	SourceSurfaces []SourceSurface `json:"sourceSurfaces,omitempty"`
 	// SourceSurfaceNote explains a restricted surface list - either the context
 	// the template reads or an authored consumableFrom. Empty when unrestricted.
 	SourceSurfaceNote string `json:"sourceSurfaceNote,omitempty"`
@@ -124,6 +125,14 @@ type Capability struct {
 	TerraformConfiguration string `json:"terraformConfiguration,omitempty"`
 	ConfigurationType      string `json:"configurationType,omitempty"`
 	Path                   string `json:"path,omitempty"`
+}
+
+// SourceSurface is one Application surface and whether a source resolves there.
+type SourceSurface struct {
+	// Name is the surface in the plural, ready to print - "workflow steps".
+	Name string `json:"name"`
+	// Consumable reports whether this source can be consumed on that surface.
+	Consumable bool `json:"consumable"`
 }
 
 // SourceStorageField is one field of a SourceDefinition's storage: (caching)

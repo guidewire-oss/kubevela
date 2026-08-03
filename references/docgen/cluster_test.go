@@ -331,6 +331,14 @@ var _ = Describe("test GetCapabilityFromDefinitionRevision", func() {
 // run. It is tested here directly because it is the branch that starts mattering
 // the day that changes, and because a note that reads wrongly is the kind of
 // thing nobody notices until a user quotes it back.
+func consumableBySurface(surfaces []types.SourceSurface) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range surfaces {
+		out[s.Name] = s.Consumable
+	}
+	return out
+}
+
 func TestSourceSurfaces(t *testing.T) {
 	// Reads nothing surface-specific, declares nothing: available everywhere.
 	t.Run("unrestricted", func(t *testing.T) {
@@ -339,7 +347,9 @@ $internal: {key: "s", keyInputs: []}
 schema: {v: string}
 output: {v: "x"}
 `)
-		assert.ElementsMatch(t, []string{"components", "traits", "workflow steps", "policies"}, surfaces)
+		assert.Equal(t, map[string]bool{
+			"components": true, "traits": true, "workflow steps": true, "policies": true,
+		}, consumableBySurface(surfaces))
 		assert.Empty(t, note, "an unrestricted source should carry no explanation")
 	})
 
@@ -350,7 +360,10 @@ consumableFrom: ["component", "trait"]
 schema: {v: string}
 output: {v: "x"}
 `)
-		assert.ElementsMatch(t, []string{"components", "traits"}, surfaces)
+		// Every surface is listed either way - the unreachable ones are the point.
+		assert.Equal(t, map[string]bool{
+			"components": true, "traits": true, "workflow steps": false, "policies": false,
+		}, consumableBySurface(surfaces))
 		assert.Equal(t, "Restricted: it is limited by this definition's consumableFrom.", note)
 	})
 

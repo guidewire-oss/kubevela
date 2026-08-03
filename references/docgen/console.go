@@ -19,6 +19,7 @@ package docgen
 import (
 	"context"
 	"fmt"
+	"github.com/fatih/color"
 	"os"
 
 	"github.com/olekukonko/tablewriter"
@@ -188,9 +189,15 @@ func (ref *ConsoleReference) Show(ctx context.Context, c common.Args, ioStreams 
 			ioStreams.Info("# Consumable from")
 			table := tablewriter.NewWriter(os.Stdout)
 			table.SetColWidth(100)
-			table.SetHeader([]string{ref.I18N.Get("Surface")})
+			table.SetHeader([]string{ref.I18N.Get("Surface"), ref.I18N.Get("Consumable")})
 			for _, sfc := range capability.SourceSurfaces {
-				table.Append([]string{sfc})
+				// Matches the glyphs and colours `vela addon list` already uses,
+				// so a tick means the same thing across the CLI.
+				mark := color.RedString("✘")
+				if sfc.Consumable {
+					mark = color.GreenString("✔")
+				}
+				table.Append([]string{sfc.Name, mark})
 			}
 			table.Render()
 			if capability.SourceSurfaceNote != "" {
