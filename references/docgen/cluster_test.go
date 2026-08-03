@@ -21,12 +21,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
 	"time"
 
 	"cuelang.org/go/cue"
 	"github.com/google/go-cmp/cmp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -312,3 +314,125 @@ var _ = Describe("test GetCapabilityFromDefinitionRevision", func() {
 		Expect(err).Should(Succeed())
 	})
 })
+
+// `vela def show` must tell an author where a source can be consumed, and say why
+// when that is narrower than everywhere.
+//
+// Two restrictions, from different causes. The context one is a consequence of
+// what the template reads - a source keyed on a field that only exists during a
+// component render cannot resolve in a workflow step - and can only be changed by
+// changing the reads. consumableFrom is a deliberate choice by the definition's
+// author. They compose, so the note has to read correctly with either alone or
+// both together.
+//
+// The context branch cannot be reached through a real SourceDefinition today:
+// the cache-key rules permit only universally-available fields, so a template
+// reading a surface-specific one is refused at `vela def apply` before this could
+// run. It is tested here directly because it is the branch that starts mattering
+// the day that changes, and because a note that reads wrongly is the kind of
+// thing nobody notices until a user quotes it back.
+func TestSourceSurfaces(t *testing.T) {
+	// Reads nothing surface-specific, declares nothing: available everywhere.
+	t.Run("unrestricted", func(t *testing.T) {
+		surfaces, note := sourceSurfaces(`
+$internal: {key: "s", keyInputs: []}
+schema: {v: string}
+output: {v: "x"}
+`)
+		assert.ElementsMatch(t, []string{"components", "traits", "workflow steps", "policies"}, surfaces)
+		assert.Empty(t, note, "an unrestricted source should carry no explanation")
+	})
+
+	t.Run("restricted by consumableFrom", func(t *testing.T) {
+		surfaces, note := sourceSurfaces(`
+$internal: {key: "s", keyInputs: []}
+consumableFrom: ["component", "trait"]
+schema: {v: string}
+output: {v: "x"}
+`)
+		assert.ElementsMatch(t, []string{"components", "traits"}, surfaces)
+		assert.Equal(t, "Restricted: it is limited by this definition's consumableFrom.", note)
+	})
+
+	// consumableFrom naming every surface is not a restriction, and must not be
+	// reported as one.
+	t.Run("consumableFrom that restricts nothing is not reported", func(t *testing.T) {
+		_, note := sourceSurfaces(`
+$internal: {key: "s", keyInputs: []}
+consumableFrom: ["component", "trait", "workflowstep", "policy-rendered"]
+schema: {v: string}
+output: {v: "x"}
+`)
+		assert.Empty(t, note)
+	})
+
+	// A template whose key cannot be inferred must not produce a half-answer: no
+	// surfaces rather than a wrong list. Every other extractor here fails open the
+	// same way.
+	t.Run("an unparseable template yields nothing", func(t *testing.T) {
+		surfaces, note := sourceSurfaces(`this is not CUE {{{`)
+		assert.Empty(t, surfaces)
+		assert.Empty(t, note)
+	})
+}
+
+// The wording of the restriction note, including the shapes the derivation cannot
+// currently produce.
+//
+// A source restricted by what it reads is not reachable through a real
+// SourceDefinition today - the cache-key rules permit only universally-available
+// fields - so both that sentence and the two-reason join would otherwise ship
+// untested. They are one string concatenation away from reading "it reads ... it
+// reads", which is exactly the sort of thing found by a user quoting it back.
+func TestRestrictionNote(t *testing.T) {
+	assert.Empty(t, restrictionNote(nil))
+
+	assert.Equal(t,
+		"Restricted: it reads context.componentName, which is unavailable in workflow steps.",
+		restrictionNote([]string{"reads context.componentName, which is unavailable in workflow steps"}))
+
+	assert.Equal(t,
+		"Restricted: it is limited by this definition's consumableFrom.",
+		restrictionNote([]string{"is limited by this definition's consumableFrom"}))
+
+	assert.Equal(t,
+		"Restricted: it reads context.componentName, which is unavailable in workflow steps, "+
+			"and is limited by this definition's consumableFrom.",
+		restrictionNote([]string{
+			"reads context.componentName, which is unavailable in workflow steps",
+			"is limited by this definition's consumableFrom",
+		}))
+}
+
+// The generated $internal: block is where the cache key lives, and `vela def show`
+// reads it from there.
+//
+// It used to be authored in storage:, and when it moved the extractor was not
+// followed - so the key, the one field an operator needs to correlate a source
+// with its cache entry, silently stopped being printed. This pins it.
+func TestInternalCacheFields(t *testing.T) {
+	fields := internalCacheFields(`
+$internal: {
+	key: "platform-registry-\(context.cluster)"
+	keyInputs: ["cluster", "namespace"]
+}
+storage: {storageTTL: "30m"}
+`)
+	byName := map[string]string{}
+	for _, f := range fields {
+		byName[f.Name] = f.Value
+	}
+	assert.Equal(t, `platform-registry-\(context.cluster)`, byName["key"])
+	// Rendered as the context reads an author writes, not as the CUE list the
+	// generator stores.
+	assert.Equal(t, "context.cluster, context.namespace", byName["keyInputs"])
+
+	t.Run("no context reads says so rather than printing an empty cell", func(t *testing.T) {
+		fields := internalCacheFields(`$internal: {key: "s", keyInputs: []}`)
+		byName := map[string]string{}
+		for _, f := range fields {
+			byName[f.Name] = f.Value
+		}
+		assert.Equal(t, "(none - one cache entry for the whole cluster)", byName["keyInputs"])
+	})
+}

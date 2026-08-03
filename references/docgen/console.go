@@ -181,6 +181,23 @@ func (ref *ConsoleReference) Show(ctx context.Context, c common.Args, ioStreams 
 			table.Render()
 			ioStreams.Info("\n")
 		}
+		// Where the source may be consumed. Derived from the context its template
+		// reads, so an author sees the restriction here rather than discovering it
+		// when an Application is rejected.
+		if len(capability.SourceSurfaces) > 0 {
+			ioStreams.Info("# Consumable from")
+			table := tablewriter.NewWriter(os.Stdout)
+			table.SetColWidth(100)
+			table.SetHeader([]string{ref.I18N.Get("Surface")})
+			for _, sfc := range capability.SourceSurfaces {
+				table.Append([]string{sfc})
+			}
+			table.Render()
+			if capability.SourceSurfaceNote != "" {
+				ioStreams.Infof("\n%s\n", capability.SourceSurfaceNote)
+			}
+			ioStreams.Info("\n")
+		}
 	}
 	return nil
 }

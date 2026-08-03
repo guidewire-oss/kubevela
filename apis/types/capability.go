@@ -107,6 +107,12 @@ type Capability struct {
 	// provides back to consumers, and its caching (storage: block) fields.
 	SourceOutputs []Parameter          `json:"sourceOutputs,omitempty"`
 	SourceStorage []SourceStorageField `json:"sourceStorage,omitempty"`
+	// SourceSurfaces are the Application surfaces this source can be consumed
+	// from, in the plural and ready to print.
+	SourceSurfaces []string `json:"sourceSurfaces,omitempty"`
+	// SourceSurfaceNote explains a restricted surface list - either the context
+	// the template reads or an authored consumableFrom. Empty when unrestricted.
+	SourceSurfaceNote string `json:"sourceSurfaceNote,omitempty"`
 
 	// Namespace represents it's a system-level or user-level capability.
 	Namespace string `json:"namespace,omitempty"`

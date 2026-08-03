@@ -19,6 +19,8 @@ package docgen
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 
 	"cuelang.org/go/cue/ast"
@@ -37,10 +39,14 @@ import (
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/cue"
+	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 	"github.com/oam-dev/kubevela/pkg/definition"
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
+	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/sourcedefinition"
 	"github.com/oam-dev/kubevela/references/docgen/fix"
 )
 
@@ -678,8 +684,133 @@ func GetCapabilityBySourceDefinitionObject(def v1beta1.SourceDefinition) (*types
 		} else {
 			capability.SourceStorage = storage
 		}
+		// The cache key moved into $internal: when it became generated rather than
+		// authored, and this extractor read only storage: - so `vela def show`
+		// stopped printing the one field an operator needs to correlate a source
+		// with its cache entry. Prepended rather than appended: the key is the
+		// identity, the TTL is a policy about it.
+		capability.SourceStorage = append(internalCacheFields(capability.CueTemplate), capability.SourceStorage...)
+
+		surfaces, note := sourceSurfaces(capability.CueTemplate)
+		capability.SourceSurfaces, capability.SourceSurfaceNote = surfaces, note
 	}
 	return &capability, nil
+}
+
+// internalCacheFields reads the generated $internal: block - the cache key and
+// the context fields it is built from.
+//
+// Non-fatal on any failure, like every other extractor here: a definition that
+// predates the generated block simply has nothing to show.
+func internalCacheFields(template string) []types.SourceStorageField {
+	fields, err := extractBlockFields(template, "$internal")
+	if err != nil {
+		klog.Warningf("parse source $internal block: %v", err)
+		return nil
+	}
+	var out []types.SourceStorageField
+	for _, f := range fields {
+		switch f.Name {
+		case "key":
+			out = append(out, f)
+		case "keyInputs":
+			out = append(out, types.SourceStorageField{
+				Name: "keyInputs", Value: formatKeyInputs(f.Value)})
+		}
+	}
+	return out
+}
+
+// formatKeyInputs renders the generated keyInputs list as the context reads an
+// author would recognise: `["cluster","namespace"]` becomes
+// `context.cluster, context.namespace`.
+//
+// The stored form is a CUE list because that is what the generator writes and
+// what admission re-derives; it is not what anyone wants to read in a table.
+func formatKeyInputs(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimPrefix(trimmed, "[")
+	trimmed = strings.TrimSuffix(trimmed, "]")
+	var names []string
+	for _, part := range strings.Split(trimmed, ",") {
+		part = strings.Trim(strings.TrimSpace(part), `"`)
+		if part != "" {
+			names = append(names, "context."+part)
+		}
+	}
+	if len(names) == 0 {
+		// Not a gap: a source that reads no context resolves to one entry shared
+		// by the whole cluster, which is worth stating rather than leaving blank.
+		return "(none - one cache entry for the whole cluster)"
+	}
+	return strings.Join(names, ", ")
+}
+
+// sourceSurfaces reports where this source may be consumed, and why that is
+// narrower than everywhere when it is.
+//
+// Derived, never authored: a source is restricted by the context its template
+// reads - a source keyed on context.componentName cannot resolve in a workflow
+// step, because no component is being rendered there - and optionally narrowed
+// further by an authored consumableFrom. Both are already enforced at admission;
+// showing them here is what stops an author discovering the restriction by having
+// an Application rejected.
+func sourceSurfaces(template string) ([]string, string) {
+	fields, err := cachekey.RequiredContext(template)
+	if err != nil {
+		klog.Warningf("infer source context reads: %v", err)
+		return nil, ""
+	}
+	allowed := cachekey.SurfacesSupporting(fields, veladefinition.ConsumableSurfaces)
+
+	// Two independent restrictions, stated separately: they have different causes
+	// and different fixes. The context one is a consequence of what the template
+	// reads and can only be changed by changing the reads; consumableFrom is a
+	// deliberate choice by the definition's author.
+	var reasons []string
+	for _, surface := range veladefinition.ConsumableSurfaces {
+		if slices.Contains(allowed, surface) {
+			continue
+		}
+		if err := cachekey.CheckSurface(fields, surface); err != nil {
+			reasons = append(reasons, err.Error())
+			break
+		}
+	}
+
+	if declared, derr := sourcedefinition.ParseConsumableFrom(template); derr == nil && len(declared) > 0 {
+		var kept []string
+		for _, surface := range allowed {
+			if slices.Contains(declared, surface) {
+				kept = append(kept, surface)
+			}
+		}
+		if len(kept) < len(allowed) {
+			reasons = append(reasons, "is limited by this definition's consumableFrom")
+		}
+		allowed = kept
+	}
+
+	out := make([]string, 0, len(allowed))
+	for _, surface := range allowed {
+		out = append(out, sourceexpr.SurfacePlural(surface))
+	}
+	sort.Strings(out)
+
+	return out, restrictionNote(reasons)
+}
+
+// restrictionNote joins the reasons a source is narrower than everywhere.
+//
+// Separated from the derivation because only one of the two reasons is reachable
+// today - the cache-key rules permit only universally-available fields, so no
+// template can currently restrict itself by what it reads. That branch, and the
+// both-reasons wording, would otherwise be string-building no test could reach.
+func restrictionNote(reasons []string) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	return "Restricted: it " + strings.Join(reasons, ", and ") + "."
 }
 
 // extractSourceOutputs parses the `schema:` block of a SourceDefinition template
@@ -702,10 +833,18 @@ func extractSourceOutputs(template string) ([]types.Parameter, error) {
 }
 
 // extractStorageFields parses the `storage:` block of a SourceDefinition
-// template into ordered name/value pairs (key, storageTTL, onStaleFailure, ...).
+// template into ordered name/value pairs (storageTTL, onStaleFailure, ...).
 // Values are the authored CUE expressions kept verbatim; interpolations like
 // \(parameter.min) are NOT evaluated.
 func extractStorageFields(template string) ([]types.SourceStorageField, error) {
+	return extractBlockFields(template, "storage")
+}
+
+// extractBlockFields returns the named top-level block's fields as ordered
+// name/value pairs. Used for both the authored `storage:` block and the
+// generated `$internal:` one, which have the same shape and are read the same
+// way - the difference between them is who writes them, not how they parse.
+func extractBlockFields(template, blockName string) ([]types.SourceStorageField, error) {
 	file, err := parser.ParseFile("-", template, parser.ParseComments)
 	if err != nil {
 		return nil, err
@@ -716,7 +855,7 @@ func extractStorageFields(template string) ([]types.SourceStorageField, error) {
 			continue
 		}
 		name, _, err := ast.LabelName(field.Label)
-		if err != nil || name != "storage" {
+		if err != nil || name != blockName {
 			continue
 		}
 		lit, ok := field.Value.(*ast.StructLit)
