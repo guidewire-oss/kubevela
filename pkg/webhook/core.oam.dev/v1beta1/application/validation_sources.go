@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -26,6 +27,7 @@ import (
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
@@ -121,6 +123,13 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 
 	schemaValidators := map[string]*sourceSchemaValidator{}
 	consumableFromCache := map[string][]string{}
+	requiredContextCache := map[string][]string{}
+	// Which surfaces each binding actually resolves on, chains followed.
+	bindingAt := map[int]string{}
+	for name, idx := range sourceNameToIndex {
+		bindingAt[idx] = name
+	}
+	effective := effectiveSurfaces(refs, bindingAt)
 	// Field paths this pass has already faulted. The type pass below reaches the
 	// same properties by a different route and would otherwise restate an
 	// undeclared source or an unknown schema path in its own words.
@@ -166,6 +175,21 @@ func (h *ValidatingHandler) ValidateSources(ctx context.Context, app *v1beta1.Ap
 				errs = append(errs, field.Invalid(ref.FieldPath, ref.Path,
 					fmt.Sprintf("SourceDefinition %q declares consumableFrom %v and cannot be consumed from a %s", sourceType, surfaces, ref.Surface)))
 				continue
+			}
+		}
+
+		// A source resolves in its call site's context, so it can only be
+		// consumed where every field its template reads exists. A chained source
+		// resolves in whichever render triggered the outer binding, so the
+		// surfaces it must satisfy are its consumers', not its own - which is
+		// what effectiveSurfaces works out.
+		required, rerr := h.requiredContext(ctx, app.Namespace, sourceType, requiredContextCache)
+		if rerr == nil && len(required) > 0 {
+			for _, surface := range effective[ref.SourceName] {
+				if cerr := cachekey.CheckSurface(required, surface); cerr != nil {
+					fault(ref, ref.Path, fmt.Sprintf("SourceDefinition %q %v", sourceType, cerr))
+					break
+				}
 			}
 		}
 		validator, exists := schemaValidators[sourceType]
@@ -960,4 +984,91 @@ func extractTopLevelBlock(template, blockName string) (string, error) {
 		return string(bt), nil
 	}
 	return "", nil
+}
+
+// effectiveSurfaces maps each source binding to the surfaces it really resolves
+// on, following chains.
+//
+// A binding consumed by a component resolves in a component's context. A binding
+// consumed only by another source resolves wherever *that* source is consumed -
+// so the surfaces propagate backwards along the chain, and a source used only for
+// chaining inherits every surface its consumers are used from.
+//
+// Chains are acyclic by construction: admission already refuses a source that
+// depends on a later one, so a fixpoint converges.
+func effectiveSurfaces(refs []sourceReference, bindingAt map[int]string) map[string][]string {
+	direct := map[string]map[string]bool{}
+	// consumers[a] are the bindings whose own properties read a.
+	consumers := map[string][]string{}
+
+	for _, ref := range refs {
+		if ref.SourceIndex >= 0 {
+			// A read inside spec.sources[i], so the reader is that binding.
+			if reader, ok := bindingAt[ref.SourceIndex]; ok {
+				consumers[ref.SourceName] = append(consumers[ref.SourceName], reader)
+			}
+			continue
+		}
+		if direct[ref.SourceName] == nil {
+			direct[ref.SourceName] = map[string]bool{}
+		}
+		direct[ref.SourceName][ref.Surface] = true
+	}
+
+	out := map[string][]string{}
+	for name, set := range direct {
+		for surface := range set {
+			out[name] = append(out[name], surface)
+		}
+	}
+	// Propagate until stable. The graph is small and acyclic; a bounded loop
+	// keeps a malformed spec from spinning.
+	for i := 0; i < len(refs)+1; i++ {
+		changed := false
+		for name, readers := range consumers {
+			have := map[string]bool{}
+			for _, s := range out[name] {
+				have[s] = true
+			}
+			for _, reader := range readers {
+				for _, s := range out[reader] {
+					if !have[s] {
+						have[s] = true
+						out[name] = append(out[name], s)
+						changed = true
+					}
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	for name := range out {
+		sort.Strings(out[name])
+	}
+	return out
+}
+
+// requiredContext returns the context fields a SourceDefinition's template reads,
+// memoised per source type.
+func (h *ValidatingHandler) requiredContext(ctx context.Context, appNamespace, sourceType string,
+	cache map[string][]string) ([]string, error) {
+	if fields, ok := cache[sourceType]; ok {
+		return fields, nil
+	}
+	def, err := h.getSourceDefinition(ctx, appNamespace, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	if def.Spec.Schematic == nil || def.Spec.Schematic.CUE == nil {
+		cache[sourceType] = nil
+		return nil, nil
+	}
+	fields, err := cachekey.RequiredContext(def.Spec.Schematic.CUE.Template)
+	if err != nil {
+		return nil, err
+	}
+	cache[sourceType] = fields
+	return fields, nil
 }

@@ -1,6 +1,6 @@
 apiVersion: core.oam.dev/v1beta1
 kind: Application
-metadata: {name: checkout, namespace: checkout-prod}
+metadata: {name: git-file-example, namespace: source-library-demo}
 spec:
   sources:
     # Same registry for all three - only the ref differs.

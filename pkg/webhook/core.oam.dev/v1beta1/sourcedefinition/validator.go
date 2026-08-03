@@ -211,6 +211,49 @@ func ValidateConsumableFrom(template string) error {
 	return err
 }
 
+// ValidateSurfaceCompatibility rejects a definition that can never resolve where
+// it says it can be consumed.
+//
+// A source's context is its call site's, narrowed to what the cache-key rules
+// allow. So a template reading a field some surfaces do not have is not usable
+// from those surfaces - and one reading fields no single surface has is not
+// usable anywhere, which is worth saying when the definition is created rather
+// than when someone first binds it.
+//
+// Inert while the rules permit only universally-available fields, which is why it
+// lands before the version that does not: the guard exists before the door opens.
+func ValidateSurfaceCompatibility(template string, consumable []string) error {
+	fields, err := cachekey.RequiredContext(template)
+	if err != nil {
+		// The template's context reads are validated by the cache-key check,
+		// which reports this better than repeating it here would.
+		return nil
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+
+	// Where the author said it may be consumed, or everywhere if unrestricted.
+	declared := consumable
+	if len(declared) == 0 {
+		declared = veladefinition.ConsumableSurfaces
+	}
+
+	supported := cachekey.SurfacesSupporting(fields, declared)
+	if len(supported) > 0 {
+		return nil
+	}
+
+	// Nothing works. Say why against one surface rather than repeating the same
+	// sentence per surface, and name where it would work if anywhere does.
+	reason := cachekey.CheckSurface(fields, declared[0])
+	if elsewhere := cachekey.SurfacesSupporting(fields, veladefinition.ConsumableSurfaces); len(elsewhere) > 0 {
+		return fmt.Errorf("this source %v, so it cannot be consumed from %v; it would work from %v",
+			reason, declared, elsewhere)
+	}
+	return fmt.Errorf("this source %v, so it cannot be consumed from any surface", reason)
+}
+
 // SurfaceAllowed reports whether a source declaring the given surfaces may be
 // consumed from surface. Nil surfaces means unrestricted.
 func SurfaceAllowed(surfaces []string, surface string) bool {

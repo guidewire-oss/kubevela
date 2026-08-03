@@ -4,6 +4,7 @@ import (
 	"context"
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -881,6 +882,75 @@ parameter: #Args
 	t.Run("no parameter block reports not-found rather than guessing", func(t *testing.T) {
 		if _, ok := parameterBlockOnly(ctx, `output: {a: 1}`); ok {
 			t.Fatal("a template with no parameter block must not report one")
+		}
+	})
+}
+
+// A chained source resolves in its consumer's render, so the surfaces it must
+// satisfy are its consumers', not its own.
+//
+// This is what makes the compatibility check correct rather than merely present:
+// checking a chained source against "source" would ask whether it can resolve on
+// a surface that has no context of its own, which is never the real question.
+func TestEffectiveSurfaces(t *testing.T) {
+	ref := func(name, surface string, idx int) sourceReference {
+		return sourceReference{SourceName: name, Surface: surface, SourceIndex: idx}
+	}
+
+	t.Run("a directly consumed binding gets its own surfaces", func(t *testing.T) {
+		got := effectiveSurfaces([]sourceReference{
+			ref("a", "component", -1),
+			ref("a", "workflowstep", -1),
+		}, map[int]string{})
+		if want := []string{"component", "workflowstep"}; !reflect.DeepEqual(got["a"], want) {
+			t.Fatalf("got %v, want %v", got["a"], want)
+		}
+	})
+
+	// b is consumed by a component; a is consumed only by b. So a resolves in a
+	// component's context, inherited through the chain.
+	t.Run("a chained binding inherits its consumer's surfaces", func(t *testing.T) {
+		got := effectiveSurfaces([]sourceReference{
+			ref("b", "component", -1),
+			ref("a", "source", 1), // read inside spec.sources[1], which is b
+		}, map[int]string{0: "a", 1: "b"})
+		if want := []string{"component"}; !reflect.DeepEqual(got["a"], want) {
+			t.Fatalf("a should inherit %v, got %v", want, got["a"])
+		}
+	})
+
+	// Two consumers on different surfaces: the chained source must satisfy both.
+	t.Run("surfaces accumulate across consumers", func(t *testing.T) {
+		got := effectiveSurfaces([]sourceReference{
+			ref("b", "component", -1),
+			ref("b", "workflowstep", -1),
+			ref("a", "source", 1),
+		}, map[int]string{0: "a", 1: "b"})
+		want := []string{"component", "workflowstep"}
+		if !reflect.DeepEqual(got["a"], want) {
+			t.Fatalf("a should satisfy both %v, got %v", want, got["a"])
+		}
+	})
+
+	// Two hops: c is consumed by a trait, b by c, a by b.
+	t.Run("inheritance propagates the length of the chain", func(t *testing.T) {
+		got := effectiveSurfaces([]sourceReference{
+			ref("c", "trait", -1),
+			ref("b", "source", 2), // inside c
+			ref("a", "source", 1), // inside b
+		}, map[int]string{0: "a", 1: "b", 2: "c"})
+		for _, name := range []string{"a", "b", "c"} {
+			if want := []string{"trait"}; !reflect.DeepEqual(got[name], want) {
+				t.Errorf("%s should be %v, got %v", name, want, got[name])
+			}
+		}
+	})
+
+	// A binding nothing consumes resolves nowhere, so it constrains nothing.
+	t.Run("an unconsumed binding has no surfaces", func(t *testing.T) {
+		got := effectiveSurfaces([]sourceReference{ref("a", "component", -1)}, map[int]string{})
+		if len(got["unused"]) != 0 {
+			t.Fatalf("expected none, got %v", got["unused"])
 		}
 	})
 }

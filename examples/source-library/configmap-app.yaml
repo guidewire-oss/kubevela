@@ -1,6 +1,6 @@
 apiVersion: core.oam.dev/v1beta1
 kind: Application
-metadata: {name: checkout, namespace: checkout-prod}
+metadata: {name: configmap-example, namespace: source-library-demo}
 spec:
   sources:
     # Defaults to the Application's own namespace.

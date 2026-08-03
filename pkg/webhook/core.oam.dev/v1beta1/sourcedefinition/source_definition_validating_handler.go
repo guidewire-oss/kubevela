@@ -114,8 +114,16 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 
 	// consumableFrom is optional, but a malformed one must not be accepted and
 	// then silently ignored when an Application binds the source.
-	if err := ValidateConsumableFrom(cueTemplate); err != nil {
+	consumable, err := ParseConsumableFrom(cueTemplate)
+	if err != nil {
 		logger.WithStep("validate-consumable-from").WithError(err).Error(err, "SourceDefinition consumableFrom is invalid")
+		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
+	}
+
+	// A definition that can never resolve where it says it may be consumed is
+	// wrong on its own terms, and says so now rather than when someone binds it.
+	if err := ValidateSurfaceCompatibility(cueTemplate, consumable); err != nil {
+		logger.WithStep("validate-surface-compatibility").WithError(err).Error(err, "SourceDefinition cannot resolve on the surfaces it declares")
 		return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
 	}
 
