@@ -40,12 +40,18 @@ import (
 // alone, without evaluating anything - so a parameter expecting an int can be
 // told at admission that "$(a) $(b)" will never satisfy it.
 func ValueType(raw string, schemas map[string]string) (cue.Kind, error) {
-	return ValueTypeIn(raw, schemas, SourceIdent, ContextIdent)
+	return ValueTypeIn(raw, schemas, ComponentContext, SourceIdent, ContextIdent)
 }
 
-// ValueTypeIn is ValueType restricted to the roots a surface permits, so a policy
-// property is typed against context alone.
-func ValueTypeIn(raw string, schemas map[string]string, roots ...string) (cue.Kind, error) {
+// ValueTypeIn is ValueType for a named surface: the context it offers, and the
+// roots it permits.
+//
+// Both vary, and taking only the roots was not enough. A policy property was
+// typed against the component's context while being evaluated against its own,
+// so the two disagreed in both directions: context.appRevisionNum passed here and
+// failed at render, while context.policyName was supplied at render and refused
+// here as "not readable in component properties".
+func ValueTypeIn(raw string, schemas map[string]string, ctxSchema ContextSchema, roots ...string) (cue.Kind, error) {
 	parsed, err := Parse(raw)
 	if err != nil {
 		return cue.BottomKind, err
@@ -54,7 +60,7 @@ func ValueTypeIn(raw string, schemas map[string]string, roots ...string) (cue.Ki
 		return cue.StringKind, nil
 	}
 	if expr, ok := parsed.SoleExpr(); ok {
-		return TypeOfIn(expr, schemas, ComponentContext, roots...)
+		return TypeOfIn(expr, schemas, ctxSchema, roots...)
 	}
 
 	// Interleaved with text, so the result is a string. Every fragment is still
@@ -66,7 +72,7 @@ func ValueTypeIn(raw string, schemas map[string]string, roots ...string) (cue.Ki
 		if !f.IsExpr() {
 			continue
 		}
-		kind, err := TypeOfIn(f.Expr, schemas, ComponentContext, roots...)
+		kind, err := TypeOfIn(f.Expr, schemas, ctxSchema, roots...)
 		if err != nil {
 			return cue.BottomKind, err
 		}

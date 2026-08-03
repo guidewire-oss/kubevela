@@ -123,7 +123,8 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 
 	schemasFor := h.sourceSchemaTexts(ctx, app.Namespace, sourceNameToType, schemaValidators)
 
-	check := func(leaves []inputLeaf, param *cueStruct, targetDesc string, roots ...string) {
+	check := func(leaves []inputLeaf, param *cueStruct, targetDesc string,
+		ctxSchema sourceexpr.ContextSchema, roots ...string) {
 		for _, lf := range leaves {
 			raw, ok := lf.literal.(string)
 			if !ok || lf.path == "" {
@@ -140,7 +141,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 				continue
 			}
 
-			srcKind, err := sourceexpr.ValueTypeIn(raw, schemasFor, roots...)
+			srcKind, err := sourceexpr.ValueTypeIn(raw, schemasFor, ctxSchema, roots...)
 			if err != nil {
 				errs = append(errs, field.Invalid(lf.fieldPath, raw, err.Error()))
 				continue
@@ -181,7 +182,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 		if comp.Properties != nil && len(comp.Properties.Raw) > 0 {
 			base := field.NewPath("spec", "components").Index(i).Child("properties")
 			check(flattenLeafPaths(comp.Properties.Raw, base), loadTarget("component", comp.Type),
-				fmt.Sprintf("component %q parameter", comp.Type), both...)
+				fmt.Sprintf("component %q parameter", comp.Type), sourceexpr.ComponentContext, both...)
 		}
 		for j, tr := range comp.Traits {
 			if tr.Properties == nil || len(tr.Properties.Raw) == 0 {
@@ -189,7 +190,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 			}
 			base := field.NewPath("spec", "components").Index(i).Child("traits").Index(j).Child("properties")
 			check(flattenLeafPaths(tr.Properties.Raw, base), loadTarget("trait", tr.Type),
-				fmt.Sprintf("trait %q parameter", tr.Type), both...)
+				fmt.Sprintf("trait %q parameter", tr.Type), sourceexpr.ComponentContext, both...)
 		}
 	}
 
@@ -201,8 +202,11 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 			continue
 		}
 		base := field.NewPath("spec", "policies").Index(i).Child("properties")
+		// PolicyContext, not the component's: a policy is evaluated against what
+		// the appfile-time pass supplies, and typing it against anything else is
+		// how the two came to disagree.
 		check(flattenLeafPaths(policy.Properties.Raw, base), loadTarget("policy", policy.Type),
-			fmt.Sprintf("policy %q parameter", policy.Type), contextOnly...)
+			fmt.Sprintf("policy %q parameter", policy.Type), sourceexpr.PolicyContext, contextOnly...)
 	}
 
 	if app.Spec.Workflow != nil {
@@ -211,7 +215,8 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 			if step.Properties != nil && len(step.Properties.Raw) > 0 {
 				check(flattenLeafPaths(step.Properties.Raw, p.Child("properties")),
 					loadTarget("workflowstep", step.Type),
-					fmt.Sprintf("workflow step %q parameter", step.Type), both...)
+					fmt.Sprintf("workflow step %q parameter", step.Type),
+					sourceexpr.WorkflowStepContext, both...)
 			}
 			for j, sub := range step.SubSteps {
 				if sub.Properties == nil || len(sub.Properties.Raw) == 0 {
@@ -219,7 +224,8 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 				}
 				check(flattenLeafPaths(sub.Properties.Raw, p.Child("subSteps").Index(j).Child("properties")),
 					loadTarget("workflowstep", sub.Type),
-					fmt.Sprintf("workflow step %q parameter", sub.Type), both...)
+					fmt.Sprintf("workflow step %q parameter", sub.Type),
+					sourceexpr.WorkflowStepContext, both...)
 			}
 		}
 	}

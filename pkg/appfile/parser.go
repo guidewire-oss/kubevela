@@ -878,11 +878,21 @@ func validateExpressionSurfaces(af *Appfile) error {
 // are consumed outside any component render, so there is no resolver to reach a
 // source through; permitting context alone is what the surface can actually
 // honour.
+//
+// The context is PolicyContext, not ScopedPolicyContext: this pass runs while the
+// appfile is built, so it has no cluster and no policy revision metadata. Using
+// the wider schema declared five fields it could not supply - reading any of them
+// passed admission and then failed here as an undefined field.
 func resolvePolicyExpressions(af *Appfile) error {
+	// Exactly what PolicyContext declares - the registry is what admission types
+	// these expressions against, so supplying less accepts a read here and fails
+	// it at render, which is the bug this pass previously had.
+	revisionNum, _ := util.ExtractRevisionNum(af.AppRevisionName, "-")
 	base := map[string]interface{}{
-		"appName":     af.Name,
-		"namespace":   af.Namespace,
-		"appRevision": af.AppRevisionName,
+		"appName":        af.Name,
+		"namespace":      af.Namespace,
+		"appRevision":    af.AppRevisionName,
+		"appRevisionNum": revisionNum,
 	}
 	if af.app != nil {
 		base["appLabels"] = nonNilStrings(af.app.GetLabels())
@@ -912,7 +922,7 @@ func resolvePolicyExpressions(af *Appfile) error {
 		values["policyType"] = af.Policies[i].Type
 
 		resolved, err := sourceexpr.EvalTree(decoded, nil, values,
-			sourceexpr.ScopedPolicyContext, sourceexpr.ContextIdent)
+			sourceexpr.PolicyContext, sourceexpr.ContextIdent)
 		if err != nil {
 			return fmt.Errorf("policy %q: %w", af.Policies[i].Name, err)
 		}

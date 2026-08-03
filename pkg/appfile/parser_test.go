@@ -37,6 +37,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
 )
@@ -1270,4 +1271,73 @@ func TestResolvePolicyExpressions(t *testing.T) {
 			t.Fatal("expected reading a source in a policy to fail")
 		}
 	})
+}
+
+// The values this pass supplies must be exactly what PolicyContext declares.
+//
+// Regression test for a mismatch that failed in both directions at once. The
+// pass supplied seven fields while declaring ScopedPolicyContext's twelve, so
+// context.appRevisionNum passed admission and died here as an undefined field;
+// meanwhile policyName was supplied here but refused at admission, which typed
+// policies against the component's context.
+//
+// Comparing the two directly is what stops them drifting again: a field added to
+// the registry without being supplied, or supplied without being declared, fails
+// here rather than in someone's Application.
+func TestPolicyExpressionValuesMatchPolicyContext(t *testing.T) {
+	af := &Appfile{
+		Name:            "checkout",
+		Namespace:       "prod",
+		AppRevisionName: "checkout-v3",
+		app: &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "checkout", Namespace: "prod",
+				Labels: map[string]string{"owner": "payments"},
+			},
+		},
+		Policies: []v1beta1.AppPolicy{{
+			Name: "place", Type: "topology",
+			// Reading every declared field proves each is genuinely supplied,
+			// rather than merely declared.
+			// Embedded in text, so each fragment renders as a string - no
+			// interpolation syntax, which is not a legal JSON escape.
+			Properties: &runtime.RawExtension{Raw: []byte(`{"probe":"` +
+				`$(context.appName)|$(context.namespace)|$(context.appRevision)|` +
+				`$(context.appRevisionNum)|$(*context.appLabels[\"owner\"] | \"none\")|` +
+				`$(*context.appAnnotations[\"note\"] | \"none\")|` +
+				`$(context.policyName)|$(context.policyType)"}`)},
+		}},
+	}
+
+	if err := resolvePolicyExpressions(af); err != nil {
+		t.Fatalf("every field PolicyContext declares must be supplied: %v", err)
+	}
+	got := string(af.Policies[0].Properties.Raw)
+	if strings.Contains(got, "$(") {
+		t.Fatalf("an expression survived: %s", got)
+	}
+	for _, want := range []string{"checkout", "prod", "checkout-v3", "3", "payments", "place", "topology"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in the resolved properties; got %s", want, got)
+		}
+	}
+
+	// And the reverse: nothing declared may be missing from the supply.
+	for _, field := range sourceexpr.PolicyContext.Fields() {
+		probe := &Appfile{
+			Name: "checkout", Namespace: "prod", AppRevisionName: "checkout-v3",
+			app:      af.app,
+			Policies: []v1beta1.AppPolicy{{Name: "place", Type: "topology"}},
+		}
+		read := "$(context." + field + ")"
+		if field == "appLabels" || field == "appAnnotations" {
+			read = `$(*context.` + field + `["k"] | "none")`
+		}
+		probe.Policies[0].Properties = &runtime.RawExtension{
+			Raw: []byte(`{"x":"` + strings.ReplaceAll(read, `"`, `\"`) + `"}`),
+		}
+		if err := resolvePolicyExpressions(probe); err != nil {
+			t.Errorf("PolicyContext declares %q but the pass does not supply it: %v", field, err)
+		}
+	}
 }
