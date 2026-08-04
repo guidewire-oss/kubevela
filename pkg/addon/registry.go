@@ -89,17 +89,27 @@ type RegistryDataStore interface {
 
 // NewRegistryDataStore get RegistryDataStore operation interface
 func NewRegistryDataStore(cli client.Client) RegistryDataStore {
-	return registryImpl{cli}
+	return registryImpl{cli, registryConfigMapName, tokenSecretNamePrefix}
+}
+
+// NewRegistryDataStoreFor returns a RegistryDataStore backed by the ConfigMap named
+// cmName, storing registry tokens in secrets named secretNamePrefix + registry name.
+// The module registry store uses this so its entries and credentials stay separate
+// from the addon registry store.
+func NewRegistryDataStoreFor(cli client.Client, cmName, secretNamePrefix string) RegistryDataStore {
+	return registryImpl{cli, cmName, secretNamePrefix}
 }
 
 type registryImpl struct {
-	client client.Client
+	client           client.Client
+	cmName           string
+	secretNamePrefix string
 }
 
 // getRegistries is a helper to fetch and unmarshal all registries from the ConfigMap
 func (r registryImpl) getRegistries(ctx context.Context) (map[string]Registry, *v1.ConfigMap, error) {
 	cm := &v1.ConfigMap{}
-	err := r.client.Get(ctx, types.NamespacedName{Namespace: velatypes.DefaultKubeVelaNS, Name: registryConfigMapName}, cm)
+	err := r.client.Get(ctx, types.NamespacedName{Namespace: velatypes.DefaultKubeVelaNS, Name: r.cmName}, cm)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -150,7 +160,7 @@ func (r registryImpl) ListRegistries(ctx context.Context) ([]Registry, error) {
 }
 
 func (r registryImpl) AddRegistry(ctx context.Context, registry Registry) error {
-	if err := createOrUpdateTokenSecret(ctx, r.client, &registry); err != nil {
+	if err := createOrUpdateTokenSecret(ctx, r.client, &registry, r.secretNamePrefix); err != nil {
 		return err
 	}
 
@@ -165,7 +175,7 @@ func (r registryImpl) AddRegistry(ctx context.Context, registry Registry) error 
 			}
 			cm := &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      registryConfigMapName,
+					Name:      r.cmName,
 					Namespace: velatypes.DefaultKubeVelaNS,
 				},
 				Data: map[string]string{
@@ -187,7 +197,7 @@ func (r registryImpl) AddRegistry(ctx context.Context, registry Registry) error 
 }
 
 // createOrUpdateTokenSecret will create or update a secret to store registry token
-func createOrUpdateTokenSecret(ctx context.Context, cli client.Client, registry *Registry) error {
+func createOrUpdateTokenSecret(ctx context.Context, cli client.Client, registry *Registry, secretNamePrefix string) error {
 	source := registry.GetTokenSource()
 	if source == nil {
 		return nil
@@ -196,14 +206,14 @@ func createOrUpdateTokenSecret(ctx context.Context, cli client.Client, registry 
 	if token == "" {
 		return nil
 	}
-	return migrateInlineTokenToSecret(ctx, cli, registry, source, token)
+	return migrateInlineTokenToSecret(ctx, cli, registry, source, token, secretNamePrefix)
 }
 
 // migrateInlineTokenToSecret will migrate an inline token to a secret.
 // It will take the token from the registry object, create/update a secret, and set the secret ref on the registry object.
-func migrateInlineTokenToSecret(ctx context.Context, cli client.Client, registry *Registry, source TokenSource, token string) error {
+func migrateInlineTokenToSecret(ctx context.Context, cli client.Client, registry *Registry, source TokenSource, token, secretNamePrefix string) error {
 	log := logf.FromContext(ctx)
-	secretName := tokenSecretNamePrefix + registry.Name
+	secretName := secretNamePrefix + registry.Name
 	source.SetTokenSecretRef(secretName)
 
 	secret := &v1.Secret{
@@ -275,7 +285,7 @@ func (r registryImpl) DeleteRegistry(ctx context.Context, name string) error {
 }
 
 func (r registryImpl) UpdateRegistry(ctx context.Context, registry Registry) error {
-	if err := createOrUpdateTokenSecret(ctx, r.client, &registry); err != nil {
+	if err := createOrUpdateTokenSecret(ctx, r.client, &registry, r.secretNamePrefix); err != nil {
 		return err
 	}
 	registries, cm, err := r.getRegistries(ctx)
