@@ -14,20 +14,27 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This suite is hermetic: it serves the "example" addon straight off disk from
-// the existing e2e/addon/mock/testdata fixture (the same fixture the
-// e2e/addon mock server uses) via an in-process httptest.Server (see
-// addon_mock_registry_test.go), and registers that server as an OSS-type addon
-// registry directly through the RegistryDataStore, in a BeforeEach/AfterEach
-// scoped to this Describe block. It does not depend on any externally started
-// process (e2e/addon/mock is a `package main` and cannot be imported, and
-// running it as a subprocess would reintroduce a process-lifetime dependency),
-// so there is no cross-step process-lifetime or ordering concern in CI, and it
-// does not reach any external registry.
+// This suite runs the real e2e/addon/mock server as a subprocess (see
+// addon_mock_subprocess_test.go) in BeforeEach, rather than reimplementing
+// its OSS protocol: e2e/addon/mock is a `package main` and cannot be
+// imported, so the only way to reuse its actual binary and embedded testdata
+// (which already includes the "example" addon) is to run it out-of-process.
 //
-//   - The registry is added under its own name (not "KubeVela") so this test
-//     never touches the chart-default "KubeVela" registry that other specs in
-//     this suite may rely on.
+// Doing so has two side effects, both handled below:
+//
+//   - Its listen port (9098) is hardcoded, so BeforeEach frees it first. This
+//     is safe by the time this suite runs: it is the last e2e suite in the CI
+//     pipeline to need anything on that port (e2e/addon and
+//     test/e2e-addon-test, the other suites that might rely on it, have
+//     already finished).
+//   - Its main() unconditionally overwrites the shared "KubeVela" addon
+//     registry ConfigMap entry to point at itself. BeforeEach snapshots the
+//     registry's prior value and AfterEach restores it, so this suite does
+//     not leave the chart-default "KubeVela" registry pointed at a server
+//     that no longer exists once the test ends.
+//
+// Other notes:
+//
 //   - It installs the "example" addon (served by the mock registry): it is
 //     renderable (namespace + resources) and, being absent from the
 //     imperative pre-enable in the e2e setup, avoids a child-Application name
@@ -42,7 +49,6 @@ package controllers_test
 import (
 	"context"
 	"fmt"
-	"net/http/httptest"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -61,23 +67,21 @@ import (
 
 var _ = Describe("Addon as component e2e", func() {
 	ctx := context.Background()
-	var mockServer *httptest.Server
+	var mockProc *mockAddonServerProcess
+	var savedKubeVelaRegistry *pkgaddon.Registry
 
 	const (
 		systemNamespace = "vela-system"
 		// wrapping Application that declares the addon as a component.
 		wrappingAppName = "comp-example"
-		// addonRegistry is registered against an in-process mock OSS server in
-		// BeforeEach below (see addon_mock_registry_test.go), not the
-		// chart-default "KubeVela" registry, so this test never depends on or
-		// mutates that shared registry.
-		addonRegistry = "e2e-mock-oss"
-		// addonMockTestdataDir is the real e2e/addon/mock testdata fixture tree,
-		// served directly off disk by our own in-process mock OSS server; the
-		// addon lives at addonMockTestdataDir/addonName. Reusing this directory
-		// (rather than a copy) means there is only one "example" fixture to keep
-		// in sync.
-		addonMockTestdataDir = "../../e2e/addon/mock/testdata"
+		// addonRegistry is the registry e2e/addon/mock's main() unconditionally
+		// self-registers when it starts (see utils.ApplyMockServerConfig); this
+		// suite cannot point it at a different name.
+		addonRegistry = "KubeVela"
+		// repoRoot lets the mock server subprocess resolve its own
+		// repo-root-relative paths (e.g. ./e2e/addon/mock/testrepo/...); Ginkgo
+		// runs this suite with its working directory set to this package.
+		repoRoot = "../.."
 		// the addon's own name and the child Application RenderApp produces
 		// (RenderApp forces the name to addon-<name> in vela-system).
 		addonName    = "example"
@@ -115,19 +119,21 @@ var _ = Describe("Addon as component e2e", func() {
 	}
 
 	BeforeEach(func() {
-		By("Starting the in-process mock OSS addon server")
-		server, err := newMockOSSAddonServer(addonMockTestdataDir)
-		Expect(err).NotTo(HaveOccurred())
-		mockServer = server
-
-		By("Registering the mock server as an OSS addon registry")
 		registryDS := pkgaddon.NewRegistryDataStore(k8sClient)
-		Expect(registryDS.AddRegistry(ctx, pkgaddon.Registry{
-			Name: addonRegistry,
-			OSS: &pkgaddon.OSSAddonSource{
-				Endpoint: mockServer.URL,
-			},
-		})).To(Succeed())
+
+		By("Snapshotting the current KubeVela addon registry so it can be restored")
+		original, err := registryDS.GetRegistry(ctx, addonRegistry)
+		if err == nil {
+			savedKubeVelaRegistry = &original
+		} else {
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(), "unexpected error reading the %q registry: %v", addonRegistry, err)
+			savedKubeVelaRegistry = nil
+		}
+
+		By("Starting the e2e/addon/mock server as a subprocess")
+		proc, err := startMockAddonServerProcess(repoRoot)
+		Expect(err).NotTo(HaveOccurred())
+		mockProc = proc
 	})
 
 	AfterEach(func() {
@@ -150,10 +156,16 @@ var _ = Describe("Addon as component e2e", func() {
 			return nil
 		}, waitTimeout, pollPeriod).Should(BeNil())
 
-		By("Removing the mock OSS addon registry and stopping its server")
+		By("Stopping the e2e/addon/mock subprocess")
+		Expect(mockProc.Stop()).To(Succeed())
+
+		By("Restoring the KubeVela addon registry to its pre-test value")
 		registryDS := pkgaddon.NewRegistryDataStore(k8sClient)
-		Expect(registryDS.DeleteRegistry(ctx, addonRegistry)).To(Succeed())
-		mockServer.Close()
+		if savedKubeVelaRegistry != nil {
+			Expect(registryDS.AddRegistry(ctx, *savedKubeVelaRegistry)).To(Succeed())
+		} else {
+			Expect(registryDS.DeleteRegistry(ctx, addonRegistry)).To(Succeed())
+		}
 	})
 
 	It("installs an addon declared as a component, tracks it, and heals its auxiliaries", func() {
