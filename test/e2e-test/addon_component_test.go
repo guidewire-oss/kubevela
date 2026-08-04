@@ -14,15 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This suite is hermetic: it resolves the addon from the e2e mock registry
-// (e2e/addon/mock), which is started by the e2e setup and registered in the
-// vela-addon-registry ConfigMap as the OSS-type "KubeVela" registry. It does
-// not reach any external registry.
+// This suite is hermetic: it serves the "example" addon straight off disk from
+// the existing e2e/addon/mock/testdata fixture (the same fixture the
+// e2e/addon mock server uses) via an in-process httptest.Server (see
+// addon_mock_registry_test.go), and registers that server as an OSS-type addon
+// registry directly through the RegistryDataStore, in a BeforeEach/AfterEach
+// scoped to this Describe block. It does not depend on any externally started
+// process (e2e/addon/mock is a `package main` and cannot be imported, and
+// running it as a subprocess would reintroduce a process-lifetime dependency),
+// so there is no cross-step process-lifetime or ordering concern in CI, and it
+// does not reach any external registry.
 //
-//   - It installs the "example" addon (served by the mock registry) rather
-//     than "fluxcd": "example" is renderable (namespace + resources) and, being
-//     absent from the imperative pre-enable in the e2e setup, avoids a
-//     child-Application name collision on addon-<name>.
+//   - The registry is added under its own name (not "KubeVela") so this test
+//     never touches the chart-default "KubeVela" registry that other specs in
+//     this suite may rely on.
+//   - It installs the "example" addon (served by the mock registry): it is
+//     renderable (namespace + resources) and, being absent from the
+//     imperative pre-enable in the e2e setup, avoids a child-Application name
+//     collision on addon-<name>.
 //   - "skipVersionValidate: true" is set on the component properties so the
 //     addon's SystemRequirements check does not fail when the controller's
 //     reported version cannot satisfy it; this mirrors the imperative
@@ -33,6 +42,7 @@ package controllers_test
 import (
 	"context"
 	"fmt"
+	"net/http/httptest"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -45,23 +55,29 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
 var _ = Describe("Addon as component e2e", func() {
 	ctx := context.Background()
+	var mockServer *httptest.Server
 
 	const (
 		systemNamespace = "vela-system"
 		// wrapping Application that declares the addon as a component.
 		wrappingAppName = "comp-example"
-		// The addon and registry are served by the e2e mock registry
-		// (e2e/addon/mock, exposed as the OSS-type "KubeVela" registry), so the
-		// test is hermetic and does not reach any external registry. The
-		// "example" addon is renderable (namespace + resources) and, unlike
-		// "fluxcd", is not pre-enabled by the e2e setup, so there is no
-		// child-Application name collision.
-		addonRegistry = "KubeVela"
+		// addonRegistry is registered against an in-process mock OSS server in
+		// BeforeEach below (see addon_mock_registry_test.go), not the
+		// chart-default "KubeVela" registry, so this test never depends on or
+		// mutates that shared registry.
+		addonRegistry = "e2e-mock-oss"
+		// addonMockTestdataDir is the real e2e/addon/mock testdata fixture tree,
+		// served directly off disk by our own in-process mock OSS server; the
+		// addon lives at addonMockTestdataDir/addonName. Reusing this directory
+		// (rather than a copy) means there is only one "example" fixture to keep
+		// in sync.
+		addonMockTestdataDir = "../../e2e/addon/mock/testdata"
 		// the addon's own name and the child Application RenderApp produces
 		// (RenderApp forces the name to addon-<name> in vela-system).
 		addonName    = "example"
@@ -98,6 +114,22 @@ var _ = Describe("Addon as component e2e", func() {
 		}
 	}
 
+	BeforeEach(func() {
+		By("Starting the in-process mock OSS addon server")
+		server, err := newMockOSSAddonServer(addonMockTestdataDir)
+		Expect(err).NotTo(HaveOccurred())
+		mockServer = server
+
+		By("Registering the mock server as an OSS addon registry")
+		registryDS := pkgaddon.NewRegistryDataStore(k8sClient)
+		Expect(registryDS.AddRegistry(ctx, pkgaddon.Registry{
+			Name: addonRegistry,
+			OSS: &pkgaddon.OSSAddonSource{
+				Endpoint: mockServer.URL,
+			},
+		})).To(Succeed())
+	})
+
 	AfterEach(func() {
 		By("Deleting the wrapping application")
 		app := &v1beta1.Application{
@@ -117,6 +149,11 @@ var _ = Describe("Addon as component e2e", func() {
 			}
 			return nil
 		}, waitTimeout, pollPeriod).Should(BeNil())
+
+		By("Removing the mock OSS addon registry and stopping its server")
+		registryDS := pkgaddon.NewRegistryDataStore(k8sClient)
+		Expect(registryDS.DeleteRegistry(ctx, addonRegistry)).To(Succeed())
+		mockServer.Close()
 	})
 
 	It("installs an addon declared as a component, tracks it, and heals its auxiliaries", func() {
