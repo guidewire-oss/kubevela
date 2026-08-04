@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +28,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/addon/service/api"
