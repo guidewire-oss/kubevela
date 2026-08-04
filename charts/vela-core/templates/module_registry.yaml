@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vela-module-registry
+  namespace: {{ .Release.Namespace }}
+data:
+  registries: '{
+  "catalog":{
+    "name": "catalog",
+    "git": {
+      "url": "https://github.com/Anaswara-Suresh/catalog",
+      "path": "module"
+    }
+  }
+}'
