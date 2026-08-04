@@ -151,7 +151,27 @@ func (p *Parser) ValidateComponentParams(ctxData velaprocess.ContextData, wl *Co
 		return errors.WithStack(err)
 	}
 
-	paramSnippet, err := cueParamBlock(wl.Params)
+	// Substitute source and context expressions before validating.
+	//
+	// These params are the authored ones, so an unresolved $(source...) reaches
+	// CUE as the literal string it is and collides with any non-string
+	// constraint - "conflicting values int and \"$(source.config.replicas)\"".
+	// The render path substitutes before it evaluates; this one has to as well,
+	// or the same Application is accepted at render and refused here.
+	//
+	// ValidateCUESchematicAppfile installs a read-through, write-discarding cache
+	// store for exactly this: the reads happen, and no entry is left behind by a
+	// validation.
+	params, err := definition.ResolveSourceExpressions(ctx, wl.Params, definition.SurfaceComponent)
+	if err != nil {
+		return errors.WithMessagef(err, "component %q: resolve source expressions", wl.Name)
+	}
+	resolvedParams, ok := params.(map[string]interface{})
+	if !ok {
+		resolvedParams = wl.Params
+	}
+
+	paramSnippet, err := cueParamBlock(resolvedParams)
 	if err != nil {
 		return errors.WithMessagef(err, "component %q: invalid params", wl.Name)
 	}
