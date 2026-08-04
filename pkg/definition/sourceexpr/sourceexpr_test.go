@@ -18,6 +18,7 @@ package sourceexpr
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -2102,4 +2103,58 @@ func TestPublishedContextNeedsAssertionAndDefault(t *testing.T) {
 			t.Fatalf("expected the default, got %#v (%v)", got, err)
 		}
 	})
+}
+
+// Mirrors a k8s-objects component: expressions buried inside a list of arbitrary
+// Kubernetes objects, several levels down, including in a label map.
+func TestNestedPropertiesResolve(t *testing.T) {
+	raw := `{
+	  "objects": [
+	    {
+	      "apiVersion": "v1",
+	      "kind": "ConfigMap",
+	      "metadata": {
+	        "name": "nested-out",
+	        "labels": {"tier": "$(*source.cfg.data.tier | \"none\")"}
+	      },
+	      "data": {
+	        "image": "$(*source.cfg.data.image | \"none\")",
+	        "deep":  "$(*source.cfg.data.tier | \"none\")-$(context.appName)"
+	      }
+	    }
+	  ]
+	}`
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	if !HasExpression(decoded) {
+		t.Fatal("an expression nested inside a list of objects was not detected")
+	}
+	if err := ValidateTree(decoded, SourceIdent, ContextIdent); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	resolved := map[string]map[string]interface{}{
+		"cfg": {"data": map[string]interface{}{"tier": "gold", "image": "ghcr.io/acme/web:1.4.0"}},
+	}
+	out, err := EvalTree(decoded, resolved, map[string]interface{}{"appName": "demo"},
+		ComponentContext, SourceIdent, ContextIdent)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+
+	got, _ := json.Marshal(out)
+	obj := out.(map[string]interface{})["objects"].([]interface{})[0].(map[string]interface{})
+	if v := obj["metadata"].(map[string]interface{})["labels"].(map[string]interface{})["tier"]; v != "gold" {
+		t.Errorf("label three levels down and inside a list: got %v\n%s", v, got)
+	}
+	if v := obj["data"].(map[string]interface{})["image"]; v != "ghcr.io/acme/web:1.4.0" {
+		t.Errorf("nested data value: got %v", v)
+	}
+	if v := obj["data"].(map[string]interface{})["deep"]; v != "gold-demo" {
+		t.Errorf("two expressions joined, nested: got %v", v)
+	}
+	t.Logf("resolved: %s", got)
 }

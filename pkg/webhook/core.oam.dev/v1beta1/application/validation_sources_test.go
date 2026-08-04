@@ -1265,3 +1265,69 @@ parameter: {who: string}
 		t.Errorf("the workflow-step read cannot resolve and must be faulted. Got:\n%s", joined)
 	}
 }
+
+// k8s-objects declares `objects: [...{}]` - an open list of open structs - so a
+// nested expression has no declared target type to be checked against.
+func TestNestedExpressionsInAnOpenParameter(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1beta1.AddToScheme(scheme)
+
+	src := &v1beta1.SourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfg-src", Namespace: "default"},
+		Spec: v1beta1.SourceDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+schema: {data: [string]: string}
+$internal: {key: "cfg-src", keyInputs: []}
+output: {data: {}}
+parameter: {}
+`}},
+		},
+	}
+	k8sObjects := &v1beta1.ComponentDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: "k8s-objects", Namespace: "default"},
+		Spec: v1beta1.ComponentDefinitionSpec{
+			Schematic: &common.Schematic{CUE: &common.CUE{Template: `
+output: parameter.objects[0]
+parameter: {objects: [...{}]}
+`}},
+		},
+	}
+
+	app := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+		Spec: v1beta1.ApplicationSpec{
+			Sources: []v1beta1.ApplicationSource{
+				{Name: "cfg", Type: "cfg-src", Properties: rawJSON(`{}`)},
+			},
+			Components: []common.ApplicationComponent{{
+				Name: "raw", Type: "k8s-objects",
+				Properties: rawJSON(`{"objects":[{"apiVersion":"v1","kind":"ConfigMap",` +
+					`"metadata":{"name":"n","labels":{"tier":"$(*source.cfg.data.tier | \"none\")"}},` +
+					`"data":{"image":"$(*source.cfg.data.image | \"none\")"}}]}`),
+			}},
+		},
+	}
+
+	h := &ValidatingHandler{Client: fake.NewClientBuilder().
+		WithScheme(scheme).WithObjects(src, k8sObjects).Build()}
+	var joined string
+	for _, e := range h.ValidateSources(context.Background(), app) {
+		joined += e.Error() + "\n"
+	}
+	if joined != "" {
+		t.Fatalf("expressions nested in an open parameter should be accepted, got:\n%s", joined)
+	}
+
+	// The schema check still applies: an undeclared field is caught however deep.
+	bad := app.DeepCopy()
+	bad.Spec.Components[0].Properties = rawJSON(
+		`{"objects":[{"metadata":{"labels":{"t":"$(source.cfg.nope)"}}}]}`)
+	joined = ""
+	for _, e := range h.ValidateSources(context.Background(), bad) {
+		joined += e.Error() + "\n"
+	}
+	if !strings.Contains(joined, "not declared in schema") {
+		t.Fatalf("an undeclared field nested in a list should still be caught, got:\n%s", joined)
+	}
+	t.Logf("nested undeclared field caught: %s", strings.TrimSpace(joined))
+}
