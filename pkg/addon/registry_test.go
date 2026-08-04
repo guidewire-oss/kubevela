@@ -493,7 +493,7 @@ func TestGetRegistries(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			ds := registryImpl{client: tc.client}
+			ds := registryImpl{client: tc.client, cmName: registryConfigMapName, secretNamePrefix: tokenSecretNamePrefix}
 			registries, _, err := ds.getRegistries(ctx)
 			if tc.expectErr {
 				assert.Error(t, err)
@@ -621,7 +621,7 @@ func TestCreateOrUpdateTokenSecret(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			err := createOrUpdateTokenSecret(ctx, tc.client, tc.registry)
+			err := createOrUpdateTokenSecret(ctx, tc.client, tc.registry, tokenSecretNamePrefix)
 			if tc.expectErr {
 				assert.Error(t, err)
 			} else {
@@ -640,4 +640,53 @@ func TestCreateOrUpdateTokenSecret(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRegistryDataStoreForCustomConfigMap(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	assert.NoError(t, v1.AddToScheme(scheme))
+	cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ds := NewRegistryDataStoreFor(cli, "vela-module-registry", "module-registry-")
+	assert.NoError(t, ds.AddRegistry(ctx, Registry{
+		Name: "catalog",
+		Git: &GitAddonSource{
+			URL:   "https://github.com/kubevela/catalog",
+			Path:  "module",
+			Token: "t0ken",
+		},
+	}))
+
+	// The entry lands in the module ConfigMap.
+	var cm v1.ConfigMap
+	assert.NoError(t, cli.Get(ctx, types.NamespacedName{
+		Name: "vela-module-registry", Namespace: velatypes.DefaultKubeVelaNS,
+	}, &cm))
+	registries := map[string]Registry{}
+	assert.NoError(t, json.Unmarshal([]byte(cm.Data[registriesKey]), &registries))
+	assert.Equal(t, 1, len(registries))
+	assert.Equal(t, "https://github.com/kubevela/catalog", registries["catalog"].Git.URL)
+	assert.Equal(t, "module", registries["catalog"].Git.Path)
+
+	// The token is not in the ConfigMap body; it is in a module-prefixed secret.
+	assert.Equal(t, "", registries["catalog"].Git.Token)
+	assert.Equal(t, "module-registry-catalog", registries["catalog"].Git.TokenSecretRef)
+	var secret v1.Secret
+	assert.NoError(t, cli.Get(ctx, types.NamespacedName{
+		Name: "module-registry-catalog", Namespace: velatypes.DefaultKubeVelaNS,
+	}, &secret))
+	assert.Equal(t, "t0ken", string(secret.Data["token"]))
+
+	// The addon ConfigMap was never created.
+	var addonCM v1.ConfigMap
+	err := cli.Get(ctx, types.NamespacedName{
+		Name: registryConfigMapName, Namespace: velatypes.DefaultKubeVelaNS,
+	}, &addonCM)
+	assert.True(t, apierrors.IsNotFound(err))
+
+	// GetRegistry loads the token back from the secret.
+	got, err := ds.GetRegistry(ctx, "catalog")
+	assert.NoError(t, err)
+	assert.Equal(t, "t0ken", got.Git.Token)
 }
