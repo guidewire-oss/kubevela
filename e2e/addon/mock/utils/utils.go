@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os/exec"
 	"strings"
 
@@ -51,21 +52,32 @@ metadata:
 
 // hostGatewayAddress returns an address reachable both from this process (the
 // CI runner host) and from pods running inside the "kind" Docker network, by
-// resolving that network's bridge gateway IP. Falls back to "127.0.0.1" if
-// the network can't be inspected (e.g. Docker/kind not present) -- that
-// fallback is only reachable from the host itself, matching today's behavior.
+// resolving that network's IPv4 bridge gateway IP. The "kind" network is
+// commonly dual-stack (IPv4 and IPv6 both enabled), and Docker does not
+// guarantee IPAM.Config ordering, so every configured gateway is inspected
+// and the first one that parses as IPv4 is used -- picking config[0]
+// unconditionally can select an IPv6 entry (sometimes left with no gateway at
+// all, e.g. under SLAAC), which is what silently produced an empty result
+// here before. Falls back to "127.0.0.1" if the network can't be inspected or
+// has no IPv4 gateway (e.g. Docker/kind not present) -- that fallback is only
+// reachable from the host itself, matching this function's original behavior.
 func hostGatewayAddress() string {
-	out, err := exec.Command("docker", "network", "inspect", "kind", "--format", "{{(index .IPAM.Config 0).Gateway}}").Output() // #nosec G204 -- fixed command and args, not user input
+	out, err := exec.Command("docker", "network", "inspect", "kind", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{\"\\n\"}}{{end}}").Output() // #nosec G204 -- fixed command and args, not user input
 	if err != nil {
 		log.Printf("could not resolve kind network gateway, falling back to 127.0.0.1 (unreachable from in-cluster pods): %v", err)
 		return "127.0.0.1"
 	}
-	gateway := strings.TrimSpace(string(out))
-	if gateway == "" {
-		log.Printf("kind network gateway inspect returned empty output, falling back to 127.0.0.1")
-		return "127.0.0.1"
+	for _, line := range strings.Split(string(out), "\n") {
+		gateway := strings.TrimSpace(line)
+		if gateway == "" {
+			continue
+		}
+		if ip := net.ParseIP(gateway); ip != nil && ip.To4() != nil {
+			return gateway
+		}
 	}
-	return gateway
+	log.Printf("kind network inspect returned no IPv4 gateway (raw config: %q), falling back to 127.0.0.1", strings.TrimSpace(string(out)))
+	return "127.0.0.1"
 }
 
 // ApplyMockServerConfig config mock server as addon registry
