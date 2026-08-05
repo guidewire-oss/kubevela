@@ -19,6 +19,8 @@ package utils
 import (
 	"context"
 	"fmt"
+	"log"
+	"os/exec"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,6 +49,25 @@ metadata:
 `
 )
 
+// hostGatewayAddress returns an address reachable both from this process (the
+// CI runner host) and from pods running inside the "kind" Docker network, by
+// resolving that network's bridge gateway IP. Falls back to "127.0.0.1" if
+// the network can't be inspected (e.g. Docker/kind not present) -- that
+// fallback is only reachable from the host itself, matching today's behavior.
+func hostGatewayAddress() string {
+	out, err := exec.Command("docker", "network", "inspect", "kind", "--format", "{{(index .IPAM.Config 0).Gateway}}").Output() // #nosec G204 -- fixed command and args, not user input
+	if err != nil {
+		log.Printf("could not resolve kind network gateway, falling back to 127.0.0.1 (unreachable from in-cluster pods): %v", err)
+		return "127.0.0.1"
+	}
+	gateway := strings.TrimSpace(string(out))
+	if gateway == "" {
+		log.Printf("kind network gateway inspect returned empty output, falling back to 127.0.0.1")
+		return "127.0.0.1"
+	}
+	return gateway
+}
+
 // ApplyMockServerConfig config mock server as addon registry
 func ApplyMockServerConfig() error {
 	args := common.Args{Schema: common.Scheme}
@@ -58,8 +79,9 @@ func ApplyMockServerConfig() error {
 	originCm := v1.ConfigMap{}
 	cm := v1.ConfigMap{}
 
-	registryCmStr := strings.ReplaceAll(velaRegistry, "REGISTRY_ADDR", fmt.Sprintf("127.0.0.1:%d", Port))
-	registryCmStr = strings.ReplaceAll(registryCmStr, "HELM_ADDR", fmt.Sprintf("127.0.0.1:%d/helm", Port))
+	hostAddr := hostGatewayAddress()
+	registryCmStr := strings.ReplaceAll(velaRegistry, "REGISTRY_ADDR", fmt.Sprintf("%s:%d", hostAddr, Port))
+	registryCmStr = strings.ReplaceAll(registryCmStr, "HELM_ADDR", fmt.Sprintf("%s:%d/helm", hostAddr, Port))
 
 	err = yaml.Unmarshal([]byte(registryCmStr), &cm)
 	if err != nil {
