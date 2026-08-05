@@ -806,6 +806,34 @@ function calls, and exactly one disjunction, the default. Anything whose type co
 depend on data that does not exist at admission is refused rather than typed by
 guess. That restriction is also what makes the sandbox enforceable.
 
+**Conditionals are out of scope by intent, not pending.** They could be made sound
+— require every branch to unify to one type and the result stays value-independent
+— but that is not the reason to leave them out. An expression's job is to surface a
+value and put it somewhere; deciding *what the platform does* belongs in the
+definitions, where CUE is unrestricted and the result is validated against a schema
+before anyone consumes it. Branching in an Application would move platform logic
+into the artefact least able to review it, and would do so one property at a time.
+
+A definition author writes this, and the consumer reads a typed field:
+
+```cue
+schema: {replicas: int}
+output: {
+	if _data.tier == "gold" { replicas: 10 }
+	if _data.tier != "gold" { replicas: 2 }
+}
+```
+
+Two mechanical notes for anyone revisiting this. CUE has no conditional
+*expression* — `if` is a comprehension, so `if c {a} else {b}` does not parse as a
+value; only the list-index idiom `[if c {a}, b][0]` does. And `TypeOf` materialises
+the schema into concrete sentinels and evaluates once, so a conditional would branch
+on fake data: `[if source.s.tier == "gold" {10}, "two"][0]` types as string at
+admission and produces an int at render. Supporting conditionals therefore means
+replacing evaluate-once with branch enumeration and unification, and collecting
+`References` from every branch so dependency ordering and `+sensitive` tracking do
+not under-approximate.
+
 **Defaults are target-aware.** A default is required exactly when a possibly-absent
 read feeds a *required* parameter:
 
