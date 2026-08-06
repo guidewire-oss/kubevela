@@ -155,7 +155,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 				continue
 			}
 
-			srcKind, err := expressionValueType(raw, schemasFor, ctxSchema, roots...)
+			srcKind, srcType, err := expressionValueType(raw, schemasFor, ctxSchema, roots...)
 			if err != nil {
 				errs = append(errs, field.Invalid(lf.fieldPath, raw, err.Error()))
 				continue
@@ -174,6 +174,15 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 					fmt.Sprintf("type mismatch: expression %s is %s but %s expects %s",
 						raw, kindName(srcKind), targetDesc, kindName(dstKind))))
 				continue
+			}
+			// The kinds agree, which for a collection means only "both lists".
+			if dv, ok := param.valueAt(lf.path); ok {
+				if agree, want, got := celexpr.ElementsCompatible(srcType, dv); !agree {
+					errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+						fmt.Sprintf("type mismatch: expression %s is %s but %s expects %s",
+							raw, got, targetDesc, want)))
+					continue
+				}
 			}
 
 			// The same rule the directive follows: a default is required only
@@ -289,7 +298,7 @@ func (h *ValidatingHandler) sourceSchemaTexts(ctx context.Context, appNamespace 
 
 // expressionKind types a property value that carries expressions.
 func (h *ValidatingHandler) expressionKind(ctx context.Context, appNamespace, raw string,
-	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) (cue.Kind, error) {
+	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) (cue.Kind, *cel.Type, error) {
 	return expressionValueType(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators),
 		sourceexpr.ComponentContext, sourceexpr.SourceIdent, sourceexpr.ContextIdent)
 }
@@ -357,15 +366,19 @@ func validateExpressionTree(v interface{}, roots ...string) error {
 // consumed sources' schemas. That is what makes the check real: the permissive
 // env types every source read as dyn, so a string feeding an int parameter would
 // pass unnoticed.
+// The CEL type is returned alongside the kind so the caller can compare element
+// types, which a CUE kind cannot express - see celexpr.ElementsCompatible. It is
+// nil whenever there is nothing precise to say: no expression, an interpolated
+// string, or a compile failure.
 func expressionValueType(raw string, schemas map[string]string,
-	ctxSchema sourceexpr.ContextSchema, roots ...string) (cue.Kind, error) {
+	ctxSchema sourceexpr.ContextSchema, roots ...string) (cue.Kind, *cel.Type, error) {
 	parsed, err := sourceexpr.Parse(raw)
 	if err != nil || !parsed.HasExpr() {
-		return cue.BottomKind, err
+		return cue.BottomKind, nil, err
 	}
 	env, err := celexpr.EnvForContext(schemas, ctxSchema)
 	if err != nil {
-		return cue.BottomKind, err
+		return cue.BottomKind, nil, err
 	}
 	expr, whole := parsed.SoleExpr()
 	if !whole {
@@ -383,22 +396,22 @@ func expressionValueType(raw string, schemas map[string]string,
 			}
 			ft, cerr := celexpr.OutputType(env, f.Expr)
 			if cerr != nil {
-				return cue.BottomKind, cerr
+				return cue.BottomKind, nil, cerr
 			}
 			switch celKind(ft) {
 			case cue.StructKind, cue.ListKind:
-				return cue.BottomKind, fmt.Errorf(
+				return cue.BottomKind, nil, fmt.Errorf(
 					"expression $(%s) is %s and cannot be combined with text; read a field out of it",
 					f.Expr, ft)
 			}
 		}
-		return cue.StringKind, nil
+		return cue.StringKind, nil, nil
 	}
 	t, err := celexpr.OutputType(env, expr)
 	if err != nil {
-		return cue.BottomKind, err
+		return cue.BottomKind, nil, err
 	}
-	return celKind(t), nil
+	return celKind(t), t, nil
 }
 
 // celKind maps a CEL type onto the CUE kind the target check compares against.

@@ -15,6 +15,7 @@ import (
 	"cuelang.org/go/cue/cuecontext"
 	cueformat "cuelang.org/go/cue/format"
 	cueparser "cuelang.org/go/cue/parser"
+	"github.com/google/cel-go/cel"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -363,23 +364,24 @@ func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourc
 	}
 	// Determine the incoming value's type.
 	var srcKind cue.Kind
+	var srcType *cel.Type
 	if raw, isString := lf.literal.(string); isString && hasSourceExpression(raw) {
 		// A source's own properties may be fed by an expression - that is how
 		// chaining is written without the directive. Typing it as the string it
 		// literally is would reject every non-string target.
-		k, terr := h.expressionKind(ctx, appNamespace, raw, sourceNameToType, schemaValidators)
+		k, kt, terr := h.expressionKind(ctx, appNamespace, raw, sourceNameToType, schemaValidators)
 		if terr != nil {
 			errs = append(errs, field.Invalid(lf.fieldPath, raw, terr.Error()))
 			return errs
 		}
-		srcKind = k
+		srcKind, srcType = k, kt
 
 		// The same optional-feeds-required rule the directive follows.
 		if undefended := h.undefendedExpressionReads(ctx, appNamespace, raw, sourceNameToType, schemaValidators); len(undefended) > 0 {
 			if required, _ := param.requiredAt(lf.path); required {
 				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
-					fmt.Sprintf("%s may be absent and feeds required parameter %q of SourceDefinition %q; supply a default with *%s | <fallback>",
-						undefended[0], lf.path, sourceType, undefended[0])))
+					fmt.Sprintf("%s may be absent and feeds required parameter %q of SourceDefinition %q; guard it with has(%s) ? %s : <fallback>",
+						undefended[0], lf.path, sourceType, undefended[0], undefended[0])))
 			}
 		}
 	} else {
@@ -389,6 +391,15 @@ func (h *ValidatingHandler) checkInputLeaf(lf inputLeaf, param *cueStruct, sourc
 		errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
 			fmt.Sprintf("type mismatch for parameter %q of SourceDefinition %q: expected %s, got %s",
 				lf.path, sourceType, kindName(dstKind), kindName(srcKind))))
+		return errs
+	}
+	// The kinds agree, which for a collection means only "both lists".
+	if dv, ok := param.valueAt(lf.path); ok {
+		if agree, want, got := celexpr.ElementsCompatible(srcType, dv); !agree {
+			errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
+				fmt.Sprintf("type mismatch for parameter %q of SourceDefinition %q: expected %s, got %s",
+					lf.path, sourceType, want, got)))
+		}
 	}
 	return errs
 }
@@ -579,6 +590,16 @@ func (c *cueStruct) lookup(path string) (cue.Value, bool) {
 		cur = next
 	}
 	return cur, true
+}
+
+// valueAt returns the declared CUE value at path, for checks that need more than
+// a kind - comparing a collection's element type, for one.
+func (c *cueStruct) valueAt(path string) (cue.Value, bool) {
+	v, ok := c.lookup(path)
+	if !ok || !v.Exists() {
+		return cue.Value{}, false
+	}
+	return v, true
 }
 
 // kindAt returns the declared CUE kind at path (e.g. StringKind, IntKind,

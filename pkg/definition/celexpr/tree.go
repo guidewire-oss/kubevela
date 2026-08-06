@@ -18,6 +18,7 @@ package celexpr
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -138,4 +139,56 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// normaliseNumbers turns an integral float64 into an int64 throughout a value.
+//
+// Resolved source values reach here having been through JSON, where every number
+// decodes as float64 and the int/float distinction is lost. CEL has no mixed
+// numeric overloads, so `source.cfg.port + 1000` on a JSON-decoded 8080 fails at
+// evaluation with "no such overload" - an error that names neither the field nor
+// the cause, on an expression that type-checked cleanly at admission because the
+// schema said `port: int`.
+//
+// Restoring the distinction from the value is the best available reading: a JSON
+// number with no fractional part was an integer in the schema that produced it.
+// The cost is a float-typed field holding exactly 2.0, which becomes an int and
+// then needs double() before it can be used in float arithmetic. That is the rarer
+// case by a wide margin, and unlike the alternative it is expressible.
+func normaliseNumbers(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(t))
+		for k, child := range t {
+			out[k] = normaliseNumbers(child)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(t))
+		for i, child := range t {
+			out[i] = normaliseNumbers(child)
+		}
+		return out
+	case float64:
+		if t == math.Trunc(t) && !math.IsInf(t, 0) {
+			return int64(t)
+		}
+		return t
+	case float32:
+		return normaliseNumbers(float64(t))
+	case int:
+		return int64(t)
+	default:
+		return v
+	}
+}
+
+// normaliseInput applies normaliseNumbers to an activation map, keeping the type
+// CEL's Eval expects.
+func normaliseInput(in map[string]interface{}) map[string]interface{} {
+	out, _ := normaliseNumbers(in).(map[string]interface{})
+	if out == nil {
+		return in
+	}
+	return out
 }

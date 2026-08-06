@@ -252,8 +252,9 @@ func TestNativeValues(t *testing.T) {
 		{`source.cfg.data`, `{"image":"nginx:1.25","tag":"v1"}`},
 		{`{"a": source.cfg.host, "b": source.cfg.port}`, `{"a":"db","b":5432}`},
 		{`[source.cfg.host, source.cfg.tier]`, `["db","gold"]`},
-		{`source.cfg.data.map(k, k + "=" + source.cfg.data[k])`, `["image=nginx:1.25","tag=v1"]`},
 		{`{"nested": {"deep": [source.cfg.port]}}`, `{"nested":{"deep":[5432]}}`},
+		// Iterating a map is covered by TestMapIterationOrderIsNotStable, which
+		// does not assert an order - this one did, and flaked on it.
 	} {
 		v, err := Eval(env, tc.expr, in)
 		if err != nil {

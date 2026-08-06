@@ -47,6 +47,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
+	"github.com/google/cel-go/ext"
 	apiservercel "k8s.io/apiserver/pkg/cel"
 
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
@@ -122,6 +123,35 @@ func Env(sources map[string]cue.Value, ctx map[string]*apiservercel.DeclType) (*
 	return env(sources, ctx)
 }
 
+// libraries is the function set every environment offers, declared once.
+//
+// The permissive environment and the typed one must agree. If they do not, an
+// expression is accepted by the grammar pass and refused by the type pass, or the
+// reverse - the same two-declarations-drift failure the context registry exists to
+// prevent, so this is the single declaration for both.
+//
+// Only pure, total libraries are enabled. Strings gives the text handling that
+// reshaping a value needs - split, join, replace, substring, trim, indexOf,
+// lowerAscii/upperAscii, reverse, format. Lists gives slice; sort, distinct and
+// flatten arrived in a later cel-go than the v0.20.1 Kubernetes pins here, so they
+// are not available and bumping a transitively pinned dependency is not worth it
+// for them.
+//
+// Neither library performs I/O, allocates unboundedly, nor reaches anything
+// outside its arguments, so the sandbox argument is unchanged: the environment
+// still declares exactly `source` and `context`, and an undeclared identifier
+// still cannot compile.
+//
+// Deliberately absent: Encoders and Sets have no established use here, and Bindings
+// introduces `cel.bind`, which would let an expression name intermediate values and
+// grow into a small program. That is the boundary this feature keeps.
+func libraries() []cel.EnvOption {
+	return []cel.EnvOption{
+		ext.Strings(),
+		ext.Lists(),
+	}
+}
+
 func env(sources map[string]cue.Value, ctx map[string]*apiservercel.DeclType, extra ...cel.EnvOption) (*cel.Env, error) {
 	srcFields := map[string]*apiservercel.DeclField{}
 	for name, schema := range sources {
@@ -151,6 +181,7 @@ func env(sources map[string]cue.Value, ctx map[string]*apiservercel.DeclType, ex
 		cel.Variable("source", sourceType.CelType()),
 		cel.Variable("context", contextType.CelType()),
 	)
+	opts = append(opts, libraries()...)
 	return cel.NewEnv(append(opts, extra...)...)
 }
 
@@ -226,7 +257,11 @@ func Eval(env *cel.Env, expr string, in map[string]interface{}) (interface{}, er
 	if err != nil {
 		return nil, fmt.Errorf("program: %w", err)
 	}
-	out, _, err := prg.Eval(in)
+	// Normalise here rather than in each caller. EvalTree and the render-side
+	// resolver in pkg/cue/definition both build their own input maps, and a fix
+	// applied to one of them silently missed the other - which is how arithmetic
+	// on an int kept failing at render after it had supposedly been fixed.
+	out, _, err := prg.Eval(normaliseInput(in))
 	if err != nil {
 		return nil, err
 	}
@@ -382,10 +417,10 @@ func native(v ref.Val) interface{} {
 // CEL selects a map key with `.`, so `source.cfg.host` reads the same here as
 // against a declared object - the expressions an author writes do not change.
 func DynEnv() (*cel.Env, error) {
-	return cel.NewEnv(
+	return cel.NewEnv(append([]cel.EnvOption{
 		cel.Variable("source", cel.MapType(cel.StringType, cel.DynType)),
 		cel.Variable("context", cel.MapType(cel.StringType, cel.DynType)),
-	)
+	}, libraries()...)...)
 }
 
 // EnvForContext builds a typed environment from source schemas given as CUE text
@@ -428,3 +463,70 @@ func EnvForContext(schemaText map[string]string, ctxSchema sourceexpr.ContextSch
 // ComponentCtx is a convenience for tests and callers that want the component
 // surface's context schema without importing the registry package directly.
 func ComponentCtx() sourceexpr.ContextSchema { return sourceexpr.ComponentContext }
+
+// ElementsCompatible reports whether a collection-valued expression can feed a
+// collection-valued parameter.
+//
+// The target check compares CUE kinds, and a kind says only "list" - so
+// list(string) feeding a `[...int]` parameter passed admission and failed at
+// render, which is precisely the failure this feature exists to prevent. CEL
+// carries the element type, so the comparison can be made honestly.
+//
+// It judges collections only, and only where both sides are concrete. A struct,
+// an untyped region and a `dyn` all fail open, because that is where a legitimate
+// widening is most likely and a false rejection is unfixable from the Application.
+// The outer kind check has already run; this only narrows within a matching kind.
+//
+// Returns the target and expression types when they cannot agree, for the message.
+func ElementsCompatible(src *cel.Type, dst cue.Value) (bool, string, string) {
+	if src == nil || !dst.Exists() {
+		return true, "", ""
+	}
+	want := declTypeNamed(dst, "vela.target").CelType()
+	if elementsAgree(src, want) {
+		return true, "", ""
+	}
+	return false, want.String(), src.String()
+}
+
+func elementsAgree(src, dst *cel.Type) bool {
+	if src == nil || dst == nil || failsOpen(src) || failsOpen(dst) {
+		return true
+	}
+	sp, dp := src.Parameters(), dst.Parameters()
+	switch {
+	case src.Kind() == types.ListKind && dst.Kind() == types.ListKind:
+		if len(sp) == 1 && len(dp) == 1 {
+			return elementsAgree(sp[0], dp[0]) && scalarsAgree(sp[0], dp[0])
+		}
+	case src.Kind() == types.MapKind && dst.Kind() == types.MapKind:
+		// The key is a string on both sides by construction; only the value can
+		// disagree.
+		if len(sp) == 2 && len(dp) == 2 {
+			return elementsAgree(sp[1], dp[1]) && scalarsAgree(sp[1], dp[1])
+		}
+	}
+	return true
+}
+
+// scalarsAgree compares two element types once collections have been unwrapped.
+func scalarsAgree(src, dst *cel.Type) bool {
+	if failsOpen(src) || failsOpen(dst) {
+		return true
+	}
+	if src.Kind() == dst.Kind() {
+		return true
+	}
+	// CUE's number covers both, and an int is a valid double.
+	num := map[types.Kind]bool{types.IntKind: true, types.UintKind: true, types.DoubleKind: true}
+	return num[src.Kind()] && num[dst.Kind()]
+}
+
+// failsOpen reports the types this check refuses to judge.
+func failsOpen(t *cel.Type) bool {
+	switch t.Kind() {
+	case types.DynKind, types.AnyKind, types.StructKind, types.OpaqueKind, types.TypeParamKind:
+		return true
+	}
+	return false
+}

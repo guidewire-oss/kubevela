@@ -113,6 +113,61 @@ output: {
 parameter: {host: string, port: int}
 `
 
+	// A source shaped for iteration. The other fixtures return scalars and a flat
+	// list, so nothing in this suite exercised a comprehension, which is most of
+	// what CEL brought that the previous engine could not express.
+	const fleetSource = `
+schema: {
+  members: [...{name: string, role: string, weight: int}]
+  zones:   [...string]
+  labels:  [string]: string
+  release: string
+}
+$internal: {key: "fleet-facts", keyInputs: []}
+storage: {storageTTL: "1h"}
+output: {
+  members: [
+    {name: "ana", role: "admin", weight: 3},
+    {name: "bo",  role: "user",  weight: 1},
+    {name: "cal", role: "admin", weight: 2},
+  ]
+  zones:   ["eu-west-1a", "eu-west-1b"]
+  labels:  {"platform.io/team": "checkout", tier: "gold"}
+  release: "Prod-EU.2026"
+}
+parameter: {}
+`
+
+	// Parameters typed precisely enough that a wrong element type is a mismatch
+	// rather than a silent coercion.
+	const fleetComponent = `
+import "strings"
+
+parameter: {
+  admins:   [...string]
+  weights:  [...int]
+  headline: string
+  team:     string
+  env:      string
+  size:     int
+  first:    string
+}
+output: {
+  apiVersion: "v1"
+  kind:       "ConfigMap"
+  metadata: name: "fleet-probe"
+  data: {
+    admins:   strings.Join(parameter.admins, ",")
+    weights:  strings.Join([for w in parameter.weights {"\(w)"}], ",")
+    headline: parameter.headline
+    team:     parameter.team
+    env:      parameter.env
+    size:     "\(parameter.size)"
+    first:    parameter.first
+  }
+}
+`
+
 	// A component whose parameter block names each type precisely, so a
 	// substitution that produced the wrong one would be refused at admission
 	// rather than quietly coerced.
@@ -169,6 +224,12 @@ patch: {
 			ObjectMeta: metav1.ObjectMeta{Name: "infra-facts", Namespace: namespaceName},
 			Spec: v1beta1.SourceDefinitionSpec{
 				Schematic: &oamcomm.Schematic{CUE: &oamcomm.CUE{Template: infraSource}},
+			},
+		})
+		applyDef(&v1beta1.SourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: "fleet-facts", Namespace: namespaceName},
+			Spec: v1beta1.SourceDefinitionSpec{
+				Schematic: &oamcomm.Schematic{CUE: &oamcomm.CUE{Template: fleetSource}},
 			},
 		})
 		applyDef(&v1beta1.SourceDefinition{
@@ -360,6 +421,94 @@ output: {
 		))
 	})
 
+	It("remaps a list of structs, filters it and joins it into text", func() {
+		applyDef(exprComponentDefinition(namespaceName, "fleet-comp", fleetComponent))
+
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "expr-remap", Namespace: namespaceName},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{
+					Name:       "fleet",
+					Type:       "fleet-facts",
+					Properties: &runtime.RawExtension{Raw: []byte(`{}`)},
+				}},
+				Components: []oamcomm.ApplicationComponent{{
+					Name: "fleet",
+					Type: "fleet-comp",
+					Properties: &runtime.RawExtension{Raw: []byte(`{
+  "admins":   "$(source.fleet.members.filter(m, m.role == \"admin\").map(m, m.name))",
+  "weights":  "$(source.fleet.members.map(m, m.weight))",
+  "headline": "$(source.fleet.members.filter(m, m.role == \"admin\").map(m, m.name.upperAscii()).join(\" & \"))",
+  "team":     "$(\"platform.io/team\" in source.fleet.labels ? source.fleet.labels[\"platform.io/team\"] : \"unowned\")",
+  "env":      "$(source.fleet.release.split(\".\")[0].lowerAscii())",
+  "size":     "$(source.fleet.members.size())",
+  "first":    "$(source.fleet.zones[0])"
+}`)},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
+		verifyApplicationPhase(ctx, namespaceName, app.Name, oamcomm.ApplicationRunning)
+
+		Eventually(func() (map[string]string, error) {
+			return configMapData("fleet-probe")
+		}, 90*time.Second, 2*time.Second).Should(Equal(map[string]string{
+			// filter + map, arriving as a real list and keeping its order
+			"admins": "ana,cal",
+			// map over a list of structs, producing ints
+			"weights": "3,1,2",
+			// the whole toolkit at once: filter, map, a string function, join
+			"headline": "ANA & CAL",
+			// a key with a dot in it, which has() cannot spell - `in` is the form
+			"team": "checkout",
+			// split and case conversion
+			"env": "prod-eu",
+			// a macro whose result is a scalar
+			"size": "3",
+			// list indexing
+			"first": "eu-west-1a",
+		}))
+	})
+
+	It("uses a conditional to choose a value, and keeps the arms' shared type", func() {
+		applyDef(exprComponentDefinition(namespaceName, "cond-comp", probeComponent))
+
+		app := &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "expr-cond", Namespace: namespaceName},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{
+					Name:       "infra",
+					Type:       "infra-facts",
+					Properties: &runtime.RawExtension{Raw: []byte(`{"host":"registry.example.com","port":8080}`)},
+				}},
+				Components: []oamcomm.ApplicationComponent{{
+					Name: "probe",
+					Type: "cond-comp",
+					Properties: &runtime.RawExtension{Raw: []byte(`{
+  "host":     "$(source.infra.secure ? \"https\" : \"http\")",
+  "port":     "$(source.infra.port > 1024 ? source.infra.port : 443)",
+  "ratio":    "$(source.infra.ratio)",
+  "secure":   "$(source.infra.secure)",
+  "tags":     "$(source.infra.tags)",
+  "meta":     "$(source.infra.meta)",
+  "fallback": "$(has(source.infra.note) ? source.infra.note : \"unset\")",
+  "halved":   "$(source.infra.port > 9000 ? 1 : source.infra.port / 2)"
+}`)},
+				}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).Should(Succeed())
+		verifyApplicationPhase(ctx, namespaceName, app.Name, oamcomm.ApplicationRunning)
+
+		Eventually(func() (map[string]string, error) {
+			return configMapData("expr-probe")
+		}, 90*time.Second, 2*time.Second).Should(HaveKeyWithValue("host", "https"))
+		data, err := configMapData("expr-probe")
+		Expect(err).ToNot(HaveOccurred())
+		Expect(data).To(HaveKeyWithValue("port", "8080"))
+		Expect(data).To(HaveKeyWithValue("halved", "4040"))
+		Expect(data).To(HaveKeyWithValue("fallback", "unset"))
+	})
 	It("substitutes expressions in workflow step properties", func() {
 		applyDef(exprComponentDefinition(namespaceName, "expr-wf-comp", `
 parameter: {}
@@ -765,6 +914,26 @@ output: labels: "policy-owner": parameter.owner
 
 		It("denies an identifier outside the sandbox", func() {
 			expectRejected(`{"host":"$(parameter.host)"}`, "undeclared reference to 'parameter'")
+		})
+
+		It("denies an identifier introduced inside a comprehension", func() {
+			// A macro body is the one place an author could plausibly bring a new
+			// name into scope, so the sandbox is asserted there too.
+			expectRejected(`{"tags":"$(source.infra.tags.map(t, parameter.x))"}`,
+				"undeclared reference to 'parameter'")
+		})
+
+		It("denies a list whose element type does not match the parameter", func() {
+			// Both sides are lists, so the kind check passes and only the element
+			// type catches it. Before this was checked the Application was admitted
+			// and failed at render.
+			expectRejected(`{"tags":"$(source.infra.tags.map(t, source.infra.port))"}`,
+				"type mismatch", "list(int)")
+		})
+
+		It("denies a conditional whose arms have no common type", func() {
+			expectRejected(`{"host":"$(source.infra.secure ? 1 : \"two\")"}`,
+				"found no matching overload for '_?_:_'")
 		})
 
 		// Whether a policy may read a source depends on which kind it is, so both
