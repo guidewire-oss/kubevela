@@ -86,7 +86,7 @@ func References(env *cel.Env, expr string) ([]Reference, error) {
 		if !ok || (root != "source" && root != "context") {
 			continue
 		}
-		r := Reference{Root: root, Path: path, Guarded: guarded(n)}
+		r := Reference{Root: root, Path: path, Guarded: guarded(n, root, path)}
 		if prev, dup := seen[r.String()]; !dup || (prev.Guarded && !r.Guarded) {
 			seen[r.String()] = r
 		}
@@ -101,10 +101,92 @@ func References(env *cel.Env, expr string) ([]Reference, error) {
 }
 
 // chain flattens a select/index chain into its root identifier and path.
-//
-// Returns ok=false for anything that is not a chain rooted at a plain
-// identifier - a function result, a literal, a constructed map.
 func chain(e celast.NavigableExpr) (string, []string, bool) {
+	return pathOf(e)
+}
+
+// guarded reports whether this specific read is defended against absence.
+//
+// Three things have to hold, and an earlier version of this checked only the
+// last, which made it wrong in the unsafe direction:
+//
+//  1. The guard must test *this* path. `has(source.cfg.other) ? source.cfg.note
+//     : "x"` defends nothing about note, and reading it still fails at render.
+//  2. The read must sit in an arm, not in a condition - a condition is always
+//     evaluated. Nesting matters: a read in the condition of an inner ternary is
+//     unguarded even though that inner ternary sits in an outer one's arm.
+//  3. Some enclosing construct must actually be a guard.
+//
+// Both `cond ? a : b` and `has(x) && ...` count, because CEL's logical operators
+// absorb an error from one side when the other side settles the result.
+func guarded(e celast.NavigableExpr, root string, path []string) bool {
+	// A presence test on the read itself never fails.
+	if e.Kind() == celast.SelectKind && e.AsSelect().IsTestOnly() {
+		return true
+	}
+	child := celast.Expr(e)
+	for p, ok := e.Parent(); ok; p, ok = p.Parent() {
+		if p.Kind() == celast.CallKind {
+			call := p.AsCall()
+			args := call.Args()
+			switch call.FunctionName() {
+			case "_?_:_":
+				if len(args) != 3 {
+					break
+				}
+				// In the condition: not guarded by this ternary, and not by any
+				// outer one either - the condition is evaluated regardless of
+				// what encloses it.
+				if args[0].ID() == child.ID() {
+					return false
+				}
+				if testsPath(args[0], root, path) {
+					return true
+				}
+			case "_&&_", "_||_":
+				for _, a := range args {
+					if a.ID() != child.ID() && testsPath(a, root, path) {
+						return true
+					}
+				}
+			}
+		}
+		child = p
+	}
+	return false
+}
+
+// testsPath reports whether an expression contains has(<root>.<path>) for this
+// exact path - the presence test that makes a read safe.
+func testsPath(e celast.Expr, root string, path []string) bool {
+	found := false
+	celast.PostOrderVisit(e, celast.NewExprVisitor(func(n celast.Expr) {
+		if found || n.Kind() != celast.SelectKind || !n.AsSelect().IsTestOnly() {
+			return
+		}
+		r, p, ok := pathOf(n)
+		if ok && r == root && samePath(p, path) {
+			found = true
+		}
+	}))
+	return found
+}
+
+func samePath(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// pathOf flattens a select/index chain into its root identifier and path, over a
+// plain Expr rather than a NavigableExpr, so it can be used inside a visitor.
+func pathOf(e celast.Expr) (string, []string, bool) {
 	var path []string
 	cur := e
 	for {
@@ -112,18 +194,15 @@ func chain(e celast.NavigableExpr) (string, []string, bool) {
 		case celast.SelectKind:
 			sel := cur.AsSelect()
 			path = append([]string{sel.FieldName()}, path...)
-			cur = sel.Operand().(celast.NavigableExpr)
+			cur = sel.Operand()
 		case celast.CallKind:
 			call := cur.AsCall()
-			// `a["b"]` is the _[_] operator, not a select.
 			if call.FunctionName() != "_[_]" || len(call.Args()) != 2 {
 				return "", nil, false
 			}
 			idx := call.Args()[1]
 			if idx.Kind() != celast.LiteralKind {
-				// A computed index cannot be named statically. Report the
-				// container instead of dropping the read entirely.
-				cur = call.Args()[0].(celast.NavigableExpr)
+				cur = call.Args()[0]
 				continue
 			}
 			lit, ok := idx.AsLiteral().Value().(string)
@@ -131,46 +210,13 @@ func chain(e celast.NavigableExpr) (string, []string, bool) {
 				return "", nil, false
 			}
 			path = append([]string{lit}, path...)
-			cur = call.Args()[0].(celast.NavigableExpr)
+			cur = call.Args()[0]
 		case celast.IdentKind:
 			return cur.AsIdent(), path, true
 		default:
 			return "", nil, false
 		}
 	}
-}
-
-// guarded reports whether a read sits behind has() or in a ternary *arm*, which
-// is how CEL expresses "this may be absent and I have handled it".
-//
-// The condition of a ternary is not guarded, and getting that wrong is not
-// cosmetic: it would let an optional field used as a condition -
-// `source.cfg.note == "x" ? a : b` - escape the undefended-read check, which is a
-// false negative in exactly the safety property that check exists to hold.
-func guarded(e celast.NavigableExpr) bool {
-	// has(x.y) is a macro: it expands to a select marked test-only rather than to
-	// a call named "has", so the read itself carries the guard.
-	if e.Kind() == celast.SelectKind && e.AsSelect().IsTestOnly() {
-		return true
-	}
-	child := e
-	for p, ok := e.Parent(); ok; p, ok = p.Parent() {
-		if p.Kind() == celast.SelectKind && p.AsSelect().IsTestOnly() {
-			return true
-		}
-		if p.Kind() == celast.CallKind {
-			call := p.AsCall()
-			// Args are [condition, then, else]. Only the arms are guarded; a read
-			// in the condition is always evaluated.
-			if call.FunctionName() == "_?_:_" {
-				if args := call.Args(); len(args) == 3 && args[0].ID() != child.ID() {
-					return true
-				}
-			}
-		}
-		child = p
-	}
-	return false
 }
 
 // dropPrefixes removes references that are a strict prefix of another.

@@ -272,3 +272,64 @@ func TestNativeValues(t *testing.T) {
 		t.Logf("%-52s %s", tc.expr, j)
 	}
 }
+
+// The guard detection, probed adversarially.
+//
+// It walks the AST, so formatting cannot fool it - but an earlier version checked
+// only "is this read inside a ternary arm", which was wrong in the unsafe
+// direction twice over. These are the cases that caught it.
+func TestGuardResilience(t *testing.T) {
+	cc := cuecontext.New()
+	v := cc.CompileString(`s: {host: string, note?: string, other?: string}`).
+		LookupPath(cue.ParsePath("s"))
+	env, err := EnvForSurface(map[string]cue.Value{"cfg": v}, "component")
+	if err != nil {
+		t.Fatal(err)
+	}
+	optional := func(r Reference) bool {
+		p := strings.Join(r.Path, ".")
+		return p == "cfg.note" || p == "cfg.other"
+	}
+
+	for _, tc := range []struct {
+		expr    string
+		flagged bool
+		why     string
+	}{
+		{`source.cfg.host`, false, "not optional"},
+		{`source.cfg.note`, true, "bare optional read"},
+		{`has(source.cfg.note) ? source.cfg.note : "x"`, false, "guarded"},
+
+		// Formatting is irrelevant - this is an AST walk, not string matching.
+		{`has( source.cfg.note )?source.cfg.note:"x"`, false, "whitespace"},
+		{"has(source.cfg.note)\n ? source.cfg.note\n : \"x\"", false, "newlines"},
+		{`(has(source.cfg.note)) ? (source.cfg.note) : ("x")`, false, "parens"},
+
+		// The guard has to test THIS path. Testing a sibling defends nothing, and
+		// treating it as a guard let a read through that fails at render.
+		{`has(source.cfg.other) ? source.cfg.note : "x"`, true, "guard tests another field"},
+
+		// A read in a condition is always evaluated. Nesting must not launder it:
+		// the inner condition sits inside the outer ternary's arm.
+		{`true ? (source.cfg.note == "a" ? "x" : "y") : "z"`, true, "nested condition"},
+
+		// Guarded once does not defend a second, bare read.
+		{`(has(source.cfg.note) ? source.cfg.note : "x") + source.cfg.note`, true, "second read bare"},
+
+		// CEL's logical operators absorb an error from one side when the other
+		// settles the result, so this is a real guard.
+		{`has(source.cfg.note) && source.cfg.note == "a"`, false, "&& short-circuit"},
+	} {
+		bad, err := UndefendedReads(env, tc.expr, optional)
+		if err != nil {
+			t.Errorf("%-58s ERROR %v", tc.expr, err)
+			continue
+		}
+		if got := len(bad) > 0; got != tc.flagged {
+			t.Errorf("%-58s flagged=%v, want %v (%s)",
+				strings.ReplaceAll(tc.expr, "\n", "\\n"), got, tc.flagged, tc.why)
+			continue
+		}
+		t.Logf("%-58s flagged=%-5v %s", strings.ReplaceAll(tc.expr, "\n", "\\n"), tc.flagged, tc.why)
+	}
+}
