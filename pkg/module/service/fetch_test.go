@@ -22,8 +22,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart/loader"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/oam-dev/kubevela/pkg/addon"
+	"github.com/oam-dev/kubevela/pkg/module"
 )
 
 // fakeItem implements addon.Item.
@@ -69,6 +72,9 @@ func indexSlash(s string) int {
 	return len(s)
 }
 
+// fakeStore is an addon.RegistryDataStore over an in-memory slice. Unknown names
+// return a k8s NotFound (as the real ConfigMap-backed store does), so
+// module.ResolveRegistry takes its not-found path.
 type fakeStore struct{ regs []addon.Registry }
 
 func (s fakeStore) GetRegistry(_ context.Context, name string) (addon.Registry, error) {
@@ -77,16 +83,22 @@ func (s fakeStore) GetRegistry(_ context.Context, name string) (addon.Registry, 
 			return s.regs[i], nil
 		}
 	}
-	return addon.Registry{}, addon.ErrRegistryNotExist
+	return addon.Registry{}, apierrors.NewNotFound(schema.GroupResource{Resource: "Registry"}, name)
 }
 
 func (s fakeStore) ListRegistries(_ context.Context) ([]addon.Registry, error) { return s.regs, nil }
+
+func (s fakeStore) AddRegistry(context.Context, addon.Registry) error { return nil }
+
+func (s fakeStore) UpdateRegistry(context.Context, addon.Registry) error { return nil }
+
+func (s fakeStore) DeleteRegistry(context.Context, string) error { return nil }
 
 func gitRegistry(name string) addon.Registry {
 	return addon.Registry{Name: name, Git: &addon.GitAddonSource{URL: "https://example.com/repo", Path: "module"}}
 }
 
-func newServiceWithFakes(store ModuleRegistryStore, files map[string]string) *Service {
+func newServiceWithFakes(store addon.RegistryDataStore, files map[string]string) *Service {
 	s := NewService(store)
 	s.newReader = func(_ *addon.Registry) (addon.AsyncReader, error) { return fakeReader{files: files}, nil }
 	return s
@@ -135,6 +147,34 @@ func TestFetchModule_UnknownRegistry(t *testing.T) {
 	_, err := s.FetchModule(context.Background(), "missing", "s3")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing")
+	require.Contains(t, err.Error(), "catalog") // lists configured registries (reused module.NotFoundError)
+	require.ErrorIs(t, err, module.ErrRegistryNotFound)
+}
+
+func TestFetchModule_RejectsUnsupportedSource(t *testing.T) {
+	// A helm entry can live in the shared ConfigMap; module.ResolveRegistry must
+	// reject it before any fetch. Verifies fetch honors the git/OCI-only scope.
+	helmReg := addon.Registry{Name: "legacy", Helm: &addon.HelmSource{URL: "https://charts.example.com"}}
+	s := newServiceWithFakes(fakeStore{regs: []addon.Registry{helmReg}}, nil)
+
+	_, err := s.FetchModule(context.Background(), "legacy", "s3")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "git and OCI")
+}
+
+func TestFetchModule_EmptyNameDefaultsToCatalog(t *testing.T) {
+	// With several registries and no name, the one named "catalog" wins (the
+	// reused module.ResolveRegistry default policy).
+	files := map[string]string{
+		"s3/_module.cue":                "module: \"s3\"\nversion: \"1.0.0\"",
+		"s3/v1/_version.cue":            "apiVersion: \"v1\"",
+		"s3/v1/definitions/bucket.yaml": "apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: atmos-s3-v1\n",
+	}
+	s := newServiceWithFakes(fakeStore{regs: []addon.Registry{gitRegistry("other"), gitRegistry("catalog")}}, files)
+
+	mod, err := s.FetchModule(context.Background(), "", "s3")
+	require.NoError(t, err)
+	require.Equal(t, "s3", mod.Name)
 }
 
 func TestFetchModule_ModuleNotFound(t *testing.T) {
@@ -147,6 +187,7 @@ func TestFetchModule_ModuleNotFound(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "s3")
 	require.Contains(t, err.Error(), "catalog")
+	require.ErrorIs(t, err, module.ErrModuleNotFound)
 }
 
 func ociRegistry(name string) addon.Registry {
