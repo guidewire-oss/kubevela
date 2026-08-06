@@ -771,6 +771,13 @@ The alternative was growing a bespoke grammar to cover ternaries, comparisons,
 string functions and iteration, each of which had to be specified, implemented and
 explained.
 
+The function set is CEL's standard library plus its Strings and Lists extensions:
+operators and macros (`has`, `all`, `exists`, `map`, `filter`), string handling
+(`split`, `join`, `replace`, `substring`, `trim`, `indexOf`, case conversion), list
+indexing and `slice`, and the `int`/`string`/`double`/`bool` conversions. Both
+extensions are pure and total, so the sandbox argument below is unchanged. `sort`
+and `distinct` need a newer cel-go than Kubernetes pins and are therefore absent.
+
 `$$(` escapes the delimiter.
 
 **A binding name must be a CEL identifier.** A binding is read as a field selection,
@@ -819,7 +826,15 @@ mechanical and invisible to both.
 
 The last row is the sandbox: an environment declares exactly `source` and `context`,
 so any other identifier fails to compile. It needs no grammar restriction to
-enforce.
+enforce, and it holds inside a macro body, which is the one place an author could
+plausibly introduce a name.
+
+**Element types are compared too.** A CUE kind says only "list", so `list(string)`
+feeding a `[...int]` parameter would pass and fail at render — the failure this
+feature exists to prevent. CEL carries the element type, so the check is made on
+it. It judges collections only, and only where both sides are concrete: a struct,
+an untyped region and a `dyn` fail open, because a false rejection there is
+unfixable from the Application.
 
 **Conditionals are supported.** An earlier revision of this KEP excluded them, and
 the move to CEL reversed that. The exclusion rested on two arguments and CEL
@@ -1488,6 +1503,7 @@ an appendix; the reasoning that is not obvious from the result is under
 | A13 | A resource-rendering policy resolves sources; "policy" was one name for three surfaces |
 | A14 | A source may key on its caller's identity, which restricts where it can be consumed |
 | A15 | Expressions are CEL; the purpose-built expression engine is removed, and conditionals — previously excluded by A6 — are supported |
+| A16 | The Strings and Lists extensions are offered, and a collection's element type is checked against the parameter it feeds |
 
 Nothing in this feature has shipped, so none of these carried compatibility debt.
 A15 changed authored syntax with nothing in the field to migrate.
@@ -1575,6 +1591,29 @@ and was queued to grow with every construct anyone asked for. The CEL engine
 replacing it is 1,451 lines including its tests, and the net change across the
 migration was +2,029 / −3,597. Interpolation needed no migration at all: `$( )`
 splitting is text handling, and was never part of the expression language.
+
+
+**A value that survived JSON stopped being an integer.** Resolved source values
+reach evaluation having been JSON-decoded, where every number is a float64 and the
+int/float distinction is gone. CEL has no mixed-numeric overloads, so
+`source.cfg.port + 1000` failed at render with "no such overload" — an error naming
+neither the field nor the cause — on an expression that type-checked cleanly at
+admission because the schema said `port: int`. The type system was right and the
+values had quietly stopped matching it.
+
+The fix belongs in `Eval`, not in its callers. It was first applied to `EvalTree`,
+which left the render-side resolver in `pkg/cue/definition` building its own input
+map and still failing; the symptom moved rather than went away, and only a second
+e2e run showed it. The same shape as the two-Go-tables drift the registry removed:
+when two paths construct the same thing, fixing one is indistinguishable from
+fixing both until something exercises the other.
+
+**Tests inherited from a replaced language test the replaced language.** The suite
+carried over from the CUE engine covered paths, defaults, concatenation and
+arithmetic, because that was the whole grammar. After the swap it passed 30/30
+while saying nothing about conditionals, comprehensions, string functions or
+element types — every one of which was now reachable. Three defects were sitting in
+that gap. A green suite is evidence about the code it was written for.
 
 ## Cross-KEP References
 
