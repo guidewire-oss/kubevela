@@ -42,6 +42,7 @@ import (
 	"strings"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
@@ -384,4 +385,41 @@ func DynEnv() (*cel.Env, error) {
 		cel.Variable("source", cel.MapType(cel.StringType, cel.DynType)),
 		cel.Variable("context", cel.MapType(cel.StringType, cel.DynType)),
 	)
+}
+
+// EnvForContext builds a typed environment from source schemas given as CUE text
+// and a surface's context schema.
+//
+// This is what makes the target check real. The permissive env types every source
+// read as dyn, so a string flowing into an int parameter passes unnoticed; here
+// each binding carries its declared shape, and the mismatch is a compile error.
+//
+// A schema that fails to compile is skipped rather than fatal: the binding then
+// types as absent, which surfaces as "undeclared" on the read rather than as an
+// error about the definition, and the definition's own validation reports the
+// real cause.
+func EnvForContext(schemaText map[string]string, ctxSchema sourceexpr.ContextSchema) (*cel.Env, error) {
+	cc := cuecontext.New()
+	sources := map[string]cue.Value{}
+	for name, text := range schemaText {
+		v := cc.CompileString("s: " + text)
+		if v.Err() != nil {
+			continue
+		}
+		s := v.LookupPath(cue.ParsePath("s"))
+		if !s.Exists() {
+			continue
+		}
+		sources[name] = s
+	}
+
+	ctx := map[string]*apiservercel.DeclType{}
+	for _, name := range ctxSchema.ReadableFields() {
+		fv, ok := ctxSchema.FieldValue(name)
+		if !ok {
+			continue
+		}
+		ctx[name] = DeclTypeFor(fv)
+	}
+	return env(sources, ctx)
 }

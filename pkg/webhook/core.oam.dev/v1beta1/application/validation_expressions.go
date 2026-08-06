@@ -187,8 +187,8 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 			}
 			if required, _ := param.requiredAt(lf.path); required {
 				errs = append(errs, field.Invalid(lf.fieldPath, lf.path,
-					fmt.Sprintf("%s may be absent and feeds required %s; supply a default with *%s | <fallback>",
-						undefended[0], targetDesc, undefended[0])))
+					fmt.Sprintf("%s may be absent and feeds required %s; %s",
+						undefended[0], targetDesc, defaultHint(undefended[0].String()))))
 			}
 		}
 	}
@@ -400,10 +400,10 @@ func celValidateNode(env *cel.Env, v interface{}, roots []string) error {
 // engine is selected.
 //
 // With CEL the type comes from Compile()/OutputType() rather than from evaluating
-// against sentinels. The permissive env is used here for the spike: it proves the
-// path end to end, but it types a source read as dyn, so this reports "unknown"
-// and the target check is skipped. A typed env - EnvForSurface with the consumed
-// schemas - is what would make this a real check, and is the piece still missing.
+// against sentinels, and it is derived against a *typed* env built from the
+// consumed sources' schemas. That is what makes the check real: the permissive
+// env types every source read as dyn, so a string feeding an int parameter would
+// pass unnoticed.
 func expressionValueType(raw string, schemas map[string]string,
 	ctxSchema sourceexpr.ContextSchema, roots ...string) (cue.Kind, error) {
 	if os.Getenv("VELA_EXPR_ENGINE") != "cel" {
@@ -413,13 +413,14 @@ func expressionValueType(raw string, schemas map[string]string,
 	if err != nil || !parsed.HasExpr() {
 		return cue.BottomKind, err
 	}
-	env, err := celexpr.DynEnv()
+	env, err := celexpr.EnvForContext(schemas, ctxSchema)
 	if err != nil {
 		return cue.BottomKind, err
 	}
 	expr, whole := parsed.SoleExpr()
 	if !whole {
-		// Embedded in text, so the result is a string either way.
+		// Embedded in text, so the result is a string - but each fragment still
+		// has to compile, or a mistake inside one would go unreported.
 		for _, f := range parsed.Fragments {
 			if f.IsExpr() {
 				if _, cerr := celexpr.OutputType(env, f.Expr); cerr != nil {
@@ -433,17 +434,41 @@ func expressionValueType(raw string, schemas map[string]string,
 	if err != nil {
 		return cue.BottomKind, err
 	}
+	return celKind(t), nil
+}
+
+// celKind maps a CEL type onto the CUE kind the target check compares against.
+//
+// dyn and any become TopKind, which the caller treats as "cannot be compared".
+// That is the honest answer for a read below an untyped region, and celexpr's
+// CheckTarget is what refuses it against a concrete parameter.
+func celKind(t *cel.Type) cue.Kind {
 	switch t.String() {
 	case "string":
-		return cue.StringKind, nil
-	case "int":
-		return cue.IntKind, nil
+		return cue.StringKind
+	case "int", "uint":
+		return cue.IntKind
 	case "double":
-		return cue.FloatKind, nil
+		return cue.FloatKind
 	case "bool":
-		return cue.BoolKind, nil
+		return cue.BoolKind
+	case "dyn", "any":
+		return cue.TopKind
 	default:
-		// dyn, list, map: not comparable to a target parameter here.
-		return cue.TopKind, nil
+		// A list, a map or a named object: a struct-ish result.
+		return cue.StructKind
 	}
+}
+
+// defaultHint tells the author how to defend a possibly-absent read, in the
+// syntax the selected engine actually accepts.
+//
+// Getting this wrong is worse than saying nothing: the CUE disjunction is a parse
+// error under CEL, so an author following the message would be told to write
+// something the very next admission refuses.
+func defaultHint(read string) string {
+	if os.Getenv("VELA_EXPR_ENGINE") == "cel" {
+		return fmt.Sprintf("guard it with has(%s) ? %s : <fallback>", read, read)
+	}
+	return fmt.Sprintf("supply a default with *%s | <fallback>", read)
 }
