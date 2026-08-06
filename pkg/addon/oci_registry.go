@@ -238,7 +238,10 @@ func listOCIRepositories(ctx context.Context, registryURL, username, password st
 
 // loadAddon pulls the addon's OCI chart and turns it into a WholeAddonPackage,
 // reusing the shared archive -> InstallPackage pipeline.
-func (i *ociRegistry) loadAddon(ctx context.Context, name, version string) (*WholeAddonPackage, error) {
+// loadFiles pulls the OCI chart for name[:version] and returns its files. It is
+// the first half of loadAddon, factored out so module fetch can reuse the exact
+// pull + version-resolution + archive-loading without the addon-specific parse.
+func (i *ociRegistry) loadFiles(ctx context.Context, name, version string) ([]*loader.BufferedFile, error) {
 	repoRef, host := ociRepoRef(i.url, name)
 	resolved, err := i.resolveVersion(ctx, repoRef, host, version)
 	if err != nil {
@@ -257,13 +260,33 @@ func (i *ociRegistry) loadAddon(ctx context.Context, name, version string) (*Who
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to load addon chart archive %s", ref)
 	}
+	return files, nil
+}
+
+func (i *ociRegistry) loadAddon(ctx context.Context, name, version string) (*WholeAddonPackage, error) {
+	files, err := i.loadFiles(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
 	pkg, err := loadAddonPackage(name, files)
 	if err != nil {
 		return nil, err
 	}
 	pkg.RegistryName = i.name
-	klog.V(5).Infof("Addon '%s' loaded from OCI registry '%s' (%s)", name, i.name, ref)
+	klog.V(5).Infof("Addon '%s' loaded from OCI registry '%s'", name, i.name)
 	return pkg, nil
+}
+
+// PullOCIChartFiles pulls the module's Helm-chart artifact for name[:version]
+// (empty version resolves the highest semver tag) and returns its files, paths
+// prefixed by the chart (module) name. It reuses ociRegistry construction and
+// loadFiles — the exact pull code vela addon uses — exposed for module fetch.
+func PullOCIChartFiles(ctx context.Context, reg Registry, name, version string) ([]*loader.BufferedFile, error) {
+	if reg.OCI == nil {
+		return nil, errors.Errorf("registry %q is not an OCI registry", reg.Name)
+	}
+	i := &ociRegistry{name: reg.Name, url: reg.OCI.URL, username: reg.OCI.Username, token: reg.OCI.Token}
+	return i.loadFiles(ctx, name, version)
 }
 
 // GetAddonInstallPackage returns the addon's install package from the OCI registry.
