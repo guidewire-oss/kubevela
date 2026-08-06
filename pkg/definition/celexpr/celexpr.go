@@ -116,6 +116,10 @@ func objectName(v cue.Value) string {
 // rather than a runtime surprise - the same guarantee sourceexpr gets from its
 // grammar walk, but from the type checker instead.
 func Env(sources map[string]cue.Value, ctx map[string]*apiservercel.DeclType) (*cel.Env, error) {
+	return env(sources, ctx)
+}
+
+func env(sources map[string]cue.Value, ctx map[string]*apiservercel.DeclType, extra ...cel.EnvOption) (*cel.Env, error) {
 	srcFields := map[string]*apiservercel.DeclField{}
 	for name, schema := range sources {
 		if err := ValidBindingName(name); err != nil {
@@ -143,7 +147,7 @@ func Env(sources map[string]cue.Value, ctx map[string]*apiservercel.DeclType) (*
 		cel.Variable("source", sourceType.CelType()),
 		cel.Variable("context", contextType.CelType()),
 	)
-	return cel.NewEnv(opts...)
+	return cel.NewEnv(append(opts, extra...)...)
 }
 
 // bindingName is the shape a spec.sources[] entry's name must have to be
@@ -263,4 +267,32 @@ func EvalProperty(env *cel.Env, raw string, in map[string]interface{}) (interfac
 		b.WriteString(fmt.Sprintf("%v", v))
 	}
 	return b.String(), nil
+}
+
+// EnvForSurface builds an environment from the shared context registry.
+//
+// The registry stays the single declaration of what each call site offers; this
+// reads it and translates into CEL, exactly as the CUE path reads it and
+// translates into a sentinel scope. Two type systems, one source of truth - which
+// is the property that made the registry worth building.
+//
+// A default is written with has(), not the `*read | fallback` disjunction:
+//
+//	has(source.cfg.note) ? source.cfg.note : "none"
+//
+// cel.OptionalTypes() would give the tidier `source.cfg.?note.orValue("none")`,
+// but it is incompatible with the DeclTypeProvider this env is built on -
+// "custom types not supported by provider" - so the has() form is what is
+// available without replacing the type provider wholesale.
+func EnvForSurface(sources map[string]cue.Value, surface string) (*cel.Env, error) {
+	schema := sourceexpr.ContextFor(surface)
+	ctx := map[string]*apiservercel.DeclType{}
+	for _, name := range schema.ReadableFields() {
+		v, ok := schema.FieldValue(name)
+		if !ok {
+			continue
+		}
+		ctx[name] = DeclTypeFor(v)
+	}
+	return env(sources, ctx)
 }
