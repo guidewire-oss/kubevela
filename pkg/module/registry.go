@@ -167,9 +167,9 @@ func notFoundError(ctx context.Context, store addon.RegistryDataStore, name stri
 	}
 	if len(names) == 0 {
 		return fmt.Errorf(
-			"module registry %q not found; no module registry is configured, add one with \"vela module registry add\"", name)
+			"module registry %q not found; no module registry is configured, add one with \"vela module registry add\": %w", name, ErrRegistryNotFound)
 	}
-	return fmt.Errorf("module registry %q not found; configured registries: %s", name, strings.Join(names, ", "))
+	return fmt.Errorf("module registry %q not found; configured registries: %s (%w)", name, strings.Join(names, ", "), ErrRegistryNotFound)
 }
 
 // sortedRegistryNames returns the registry names in sorted order.
