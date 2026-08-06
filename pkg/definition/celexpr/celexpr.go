@@ -44,6 +44,8 @@ import (
 	"cuelang.org/go/cue"
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/common/types/traits"
 	apiservercel "k8s.io/apiserver/pkg/cel"
 
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
@@ -226,7 +228,7 @@ func Eval(env *cel.Env, expr string, in map[string]interface{}) (interface{}, er
 	if err != nil {
 		return nil, err
 	}
-	return out.Value(), nil
+	return native(out), nil
 }
 
 // EvalProperty evaluates a whole property value, interpolation included.
@@ -330,4 +332,39 @@ func CheckTarget(env *cel.Env, expr string, target *cel.Type) error {
 			expr, out, target)
 	}
 	return nil
+}
+
+// native converts a CEL value into ordinary Go data.
+//
+// ref.Val.Value() is only shallow. A field selection returns whatever was put in,
+// so `source.cfg.meta` comes back as a plain map - but anything CEL *constructs*
+// is built from its own types, so `{"a": x}` yields map[ref.Val]ref.Val and
+// `[x, y]` yields []ref.Val. Those cannot be marshalled into an Application's
+// properties, which is where a substituted value has to end up.
+//
+// Map keys are rendered as strings because that is what a properties document
+// requires; a non-string key would not survive JSON anyway.
+func native(v ref.Val) interface{} {
+	switch t := v.(type) {
+	case traits.Lister:
+		n, ok := t.Size().Value().(int64)
+		if !ok {
+			return v.Value()
+		}
+		out := make([]interface{}, 0, n)
+		for i := int64(0); i < n; i++ {
+			out = append(out, native(t.Get(types.Int(i))))
+		}
+		return out
+	case traits.Mapper:
+		out := map[string]interface{}{}
+		for it := t.Iterator(); it.HasNext() == types.True; {
+			k := it.Next()
+			val := t.Get(k)
+			out[fmt.Sprintf("%v", native(k))] = native(val)
+		}
+		return out
+	default:
+		return v.Value()
+	}
 }

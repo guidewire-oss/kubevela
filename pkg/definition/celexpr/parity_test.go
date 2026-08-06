@@ -17,6 +17,7 @@ limitations under the License.
 package celexpr
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -226,5 +227,48 @@ func TestTargetGuards(t *testing.T) {
 		default:
 			t.Logf("%-34s -> %-6v ok", tc.expr, tc.target)
 		}
+	}
+}
+
+// A substituted value has to end up in an Application's properties, so whatever
+// an expression returns must be ordinary Go data that marshals.
+//
+// ref.Val.Value() is only shallow: a field selection returns what was put in, but
+// anything CEL *constructs* is built from its own types, so `{"a": x}` yields
+// map[ref.Val]ref.Val and `[x, y]` yields []ref.Val. Neither survives JSON.
+func TestNativeValues(t *testing.T) {
+	env := testEnv(t)
+	in := map[string]interface{}{
+		"source": map[string]interface{}{"cfg": map[string]interface{}{
+			"host": "db", "port": 5432, "replicas": 6, "secure": true, "tier": "gold",
+			"meta": map[string]interface{}{"region": "eu-west", "zone": "z"},
+			"data": map[string]interface{}{"image": "nginx:1.25", "tag": "v1"},
+		}},
+		"context": map[string]interface{}{"appName": "a", "namespace": "n", "cluster": "c"},
+	}
+
+	for _, tc := range []struct{ expr, want string }{
+		{`source.cfg.meta`, `{"region":"eu-west","zone":"z"}`},
+		{`source.cfg.data`, `{"image":"nginx:1.25","tag":"v1"}`},
+		{`{"a": source.cfg.host, "b": source.cfg.port}`, `{"a":"db","b":5432}`},
+		{`[source.cfg.host, source.cfg.tier]`, `["db","gold"]`},
+		{`source.cfg.data.map(k, k + "=" + source.cfg.data[k])`, `["image=nginx:1.25","tag=v1"]`},
+		{`{"nested": {"deep": [source.cfg.port]}}`, `{"nested":{"deep":[5432]}}`},
+	} {
+		v, err := Eval(env, tc.expr, in)
+		if err != nil {
+			t.Errorf("%-52s ERROR %v", tc.expr, err)
+			continue
+		}
+		j, err := json.Marshal(v)
+		if err != nil {
+			t.Errorf("%-52s %T does not marshal: %v", tc.expr, v, err)
+			continue
+		}
+		if string(j) != tc.want {
+			t.Errorf("%-52s got %s, want %s", tc.expr, j, tc.want)
+			continue
+		}
+		t.Logf("%-52s %s", tc.expr, j)
 	}
 }
