@@ -196,3 +196,49 @@ func TestEnvRejectsBadBinding(t *testing.T) {
 		t.Logf("%v", err)
 	}
 }
+
+// Interpolation survives the swap to CEL, because the `$( )` splitting was never
+// part of the expression language.
+//
+// sourceexpr.Parse breaks a value into text and expression fragments and contains
+// no CUE; only the contents of each fragment change. A lone expression keeps its
+// type, one embedded in text yields a string - the same rule as today.
+func TestInterpolation(t *testing.T) {
+	env := testEnv(t)
+	in := map[string]interface{}{
+		"source": map[string]interface{}{"cfg": map[string]interface{}{
+			"host": "db.internal", "port": 5432, "replicas": 6, "secure": true,
+			"tier": "gold",
+			"meta": map[string]interface{}{"region": "eu-west", "zone": "z"},
+			"data": map[string]interface{}{"image": "nginx:1.25"},
+		}},
+		"context": map[string]interface{}{
+			"appName": "checkout", "namespace": "team-a", "cluster": "local"},
+	}
+
+	for _, tc := range []struct {
+		raw  string
+		want interface{}
+	}{
+		{`https://$(source.cfg.host)/health`, "https://db.internal/health"},
+		{`$(source.cfg.host):$(source.cfg.port)`, "db.internal:5432"},
+		{`tier-$(source.cfg.tier)-$(context.appName)`, "tier-gold-checkout"},
+		// A lone expression is not stringified.
+		{`$(source.cfg.replicas)`, int64(6)},
+		{`$(source.cfg.secure)`, true},
+		{`$(source.cfg.tier == "gold" ? 10 : 2)`, int64(10)},
+		// No expression at all: returned exactly as it came in.
+		{`plain literal, no expression`, "plain literal, no expression"},
+	} {
+		got, err := EvalProperty(env, tc.raw, in)
+		if err != nil {
+			t.Errorf("%-46s ERROR %v", tc.raw, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%-46s got %#v, want %#v", tc.raw, got, tc.want)
+			continue
+		}
+		t.Logf("%-46s -> %#v", tc.raw, got)
+	}
+}

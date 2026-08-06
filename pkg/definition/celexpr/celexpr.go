@@ -45,6 +45,8 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	apiservercel "k8s.io/apiserver/pkg/cel"
+
+	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
 
 // DeclTypeFor converts a source's `schema:` block into a CEL type.
@@ -221,4 +223,44 @@ func Eval(env *cel.Env, expr string, in map[string]interface{}) (interface{}, er
 		return nil, err
 	}
 	return out.Value(), nil
+}
+
+// EvalProperty evaluates a whole property value, interpolation included.
+//
+// The `$( )` splitting is not part of the expression language - sourceexpr.Parse
+// already separates a value into text and expression fragments, and knows nothing
+// about CUE. Only the contents of each fragment change, so interpolation survives
+// a swap to CEL unchanged:
+//
+//	'https://$(source.registry.host)/health'  ->  "https://" + host + "/health"
+//
+// A value that is a single expression keeps its type - an int stays an int - and
+// one embedded in text yields a string, because concatenating with text is what
+// that means. Same rule as today.
+func EvalProperty(env *cel.Env, raw string, in map[string]interface{}) (interface{}, error) {
+	parsed, err := sourceexpr.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !parsed.HasExpr() {
+		return raw, nil
+	}
+	// A lone expression substitutes as its own type.
+	if expr, ok := parsed.SoleExpr(); ok {
+		return Eval(env, expr, in)
+	}
+	// Otherwise every fragment is rendered and joined, so the result is a string.
+	var b strings.Builder
+	for _, f := range parsed.Fragments {
+		if !f.IsExpr() {
+			b.WriteString(f.Text)
+			continue
+		}
+		v, err := Eval(env, f.Expr, in)
+		if err != nil {
+			return nil, fmt.Errorf("evaluating %q: %w", f.Expr, err)
+		}
+		b.WriteString(fmt.Sprintf("%v", v))
+	}
+	return b.String(), nil
 }
