@@ -19,7 +19,7 @@ limitations under the License.
 //
 //	properties:
 //	  cluster: '$(source.clusterInfo.region + "-cluster")'
-//	  owner:   '$(has(context.appLabels["owner"]) ? context.appLabels["owner"] : "unassigned")'
+//	  owner:   '$("owner" in context.appLabels ? context.appLabels["owner"] : "unassigned")'
 //
 // The binding name is written with a dot, as above. A name that is not a legal
 // CUE identifier - one containing a hyphen - needs bracket syntax instead,

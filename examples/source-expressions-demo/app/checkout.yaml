@@ -57,7 +57,7 @@ spec:
           # Context, with a default: a label may be rewritten by a policy before
           # this renders, so admission requires the fallback.
           - name: OWNER
-            value: '$(has(context.appLabels["owner"]) ? context.appLabels["owner"] : "unassigned")'
+            value: '$("owner" in context.appLabels ? context.appLabels["owner"] : "unassigned")'
           - name: WHERE
             value: '$(context.appName + "." + context.namespace)'
           # An optional schema field the platform has not published for this
@@ -78,7 +78,7 @@ spec:
     - name: cost-tagging
       type: cost-tag
       properties:
-        owner: '$(has(context.appLabels["owner"]) ? context.appLabels["owner"] : "unassigned")'
+        owner: '$("owner" in context.appLabels ? context.appLabels["owner"] : "unassigned")'
         app:   '$(context.appName + "--" + context.namespace)'
 
   workflow:
