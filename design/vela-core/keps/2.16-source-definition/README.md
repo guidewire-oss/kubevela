@@ -197,7 +197,7 @@ Whether a field is optional or required in `schema:` has downstream consequences
 |---|---|---|
 | `field: string` | Required (must be concrete after execution) | `$(source.src.field)` always resolves; no `default:` needed |
 | `field!: string` | Explicitly required (same as above, more explicit) | Same |
-| `field?: string` | Optional (may be absent from the resolved output) | `$(source.src.field)` may yield nothing; consumer must supply `default:` if the target parameter is required |
+| `field?: string` | Optional (may be absent from the resolved output) | `$(source.src.field)` may be absent; the consumer must guard it with `has(...) ? ... : <fallback>` if the target parameter is required |
 
 ```cue
 schema: {
@@ -241,7 +241,7 @@ The rule is strict: **a source may only reference sources declared earlier in `s
 
 Resolution is lazy and per-component: a source is only processed when a component or trait being rendered references it (directly or through a chain). Sources declared in `spec.sources[]` but not referenced in the current render are never evaluated; their `storage:` key is not computed and their `template:` is not executed.
 
-Chaining makes laziness transitive. If component `api` has `$(source["app-config"].dbEndpoint)`, and `app-config`'s `properties` contain `$(source["cluster-info"].region)`, then rendering `api` will process `cluster-info` first, then `app-config`, then substitute into `api` (even though `api` has no direct reference to `cluster-info`). The controller follows the dependency chain to whatever depth is needed, always in declaration order.
+Chaining makes laziness transitive. If component `api` has `$(source.appConfig.dbEndpoint)`, and `appConfig`'s `properties` contain `$(source.clusterInfo.region)`, then rendering `api` will process `clusterInfo` first, then `appConfig`, then substitute into `api` (even though `api` has no direct reference to `clusterInfo`). The controller follows the dependency chain to whatever depth is needed, always in declaration order.
 
 A source that is not referenced directly or transitively by any component in the current reconcile is never evaluated and will not appear in `status.services[].sources`.
 
@@ -252,9 +252,9 @@ A later source can use an expression in its `spec.sources[].properties` to recei
 ```mermaid
 flowchart LR
     App["<b>Application</b><br/>────────────<br/>sources[0].properties:<br/>cluster: us-east-1"]
-    S1["cluster-info<br/>────────────<br/><b>in:</b> parameter.cluster<br/>────────────<br/><b>out:</b> region<br/><b>out:</b> env"]
-    S2["app-config<br/>────────────<br/><b>in:</b> region<br/><b>from:</b> cluster-info.region<br/><br/><b>in:</b> env<br/><b>from:</b> cluster-info.env<br/>────────────<br/><b>out:</b> db"]
-    Props["api properties<br/>────────────<br/><b>in:</b> region<br/><b>from:</b> cluster-info.region<br/><br/><b>in:</b> db<br/><b>from:</b> app-config.db"]
+    S1["clusterInfo<br/>────────────<br/><b>in:</b> parameter.cluster<br/>────────────<br/><b>out:</b> region<br/><b>out:</b> env"]
+    S2["appConfig<br/>────────────<br/><b>in:</b> region<br/><b>from:</b> clusterInfo.region<br/><br/><b>in:</b> env<br/><b>from:</b> clusterInfo.env<br/>────────────<br/><b>out:</b> db"]
+    Props["api properties<br/>────────────<br/><b>in:</b> region<br/><b>from:</b> clusterInfo.region<br/><br/><b>in:</b> db<br/><b>from:</b> appConfig.db"]
     C[["<b>Component</b><br/>api<br/>(rendered)"]]
 
     App -->|"cluster"| S1
@@ -268,24 +268,24 @@ flowchart LR
 spec:
   sources:
     # Resolved first - fetches cluster metadata
-    - name: cluster-info
+    - name: clusterInfo
       type: cluster-config-reader
 
-    # Resolved second - uses cluster-info output as input
-    - name: app-config
+    # Resolved second - uses clusterInfo output as input
+    - name: appConfig
       type: app-config-reader
       properties:
-        region: '$(source["cluster-info"].region)'      # resolved before app-config's storage:/template: run
-        environment: '$(source["cluster-info"].environment)'
+        region: '$(source.clusterInfo.region)'      # resolved before appConfig's storage:/template: run
+        environment: '$(source.clusterInfo.environment)'
 
   components:
     - name: api
       type: webservice
       properties:
-        dbEndpoint: '$(source["app-config"].dbEndpoint)'
+        dbEndpoint: '$(source.appConfig.dbEndpoint)'
 ```
 
-By the time `app-config-reader`'s `storage:` key is interpolated, `parameter.region` and `parameter.environment` already hold concrete values from the `cluster-info` resolution:
+By the time `app-config-reader`'s `storage:` key is interpolated, `parameter.region` and `parameter.environment` already hold concrete values from the `clusterInfo` resolution:
 
 ```cue
 storage: {
@@ -572,7 +572,7 @@ apiVersion: core.oam.dev/v1beta1
 kind: Application
 spec:
   sources:
-    - name: cluster-info
+    - name: clusterInfo
       type: cluster-config-reader
       properties:
         cacheDuration: "1h"
@@ -581,15 +581,15 @@ spec:
     - name: api
       type: webservice
       properties:
-        region: '$(source["cluster-info"].region)'       # shorthand: <source>.<path>
-        accountId: '$(source["cluster-info"].accountId)'
+        region: '$(source.clusterInfo.region)'       # shorthand: <source>.<path>
+        accountId: '$(source.clusterInfo.accountId)'
         image: myapp:v1
 ```
 
 Supply a default when the field is optional and the target parameter is required:
 
 ```yaml
-        region: '$(*source["cluster-info"].region | "us-east-1")'
+        region: '$(has(source.clusterInfo.region) ? source.clusterInfo.region : "us-east-1")'
 ```
 
 The resulting Config (a labelled Secret in `vela-system`, keyed by `cluster-config-reader-us-east-1`). The YAML below shows the abstract Config model; the KEP-2.18 CRD will formalise this shape:
@@ -749,23 +749,36 @@ If the required label is absent, the `storage:` key interpolation produces an er
 
 ## Consuming a Source
 
-A property may be a CUE expression, delimited by `$( )`. That is the only
-consumption mechanism; the `fromSource` directive it replaced is gone, along with
-its `FromSource` and `SourceSelector` API types.
+A property may be a [CEL](https://github.com/google/cel-spec) expression, delimited
+by `$( )`. That is the only consumption mechanism; the `fromSource` directive it
+replaced is gone, along with its `FromSource` and `SourceSelector` API types.
 
 ```yaml
 image:      '$(source.catalog.image + ":1.25.0")'   # concatenation
-replicas:   '$(source.tenant.maxReplicas div 2)'    # integer arithmetic
+replicas:   '$(source.tenant.maxReplicas / 2)'      # integer arithmetic
 port:       '$(source.catalog.httpPort)'            # stays an int
 labels:     '$(source.catalog.standardLabels)'      # a struct, whole
-value:      '$(*source.registry.mirror | "none")'   # default
+value:      '$(has(source.registry.mirror) ? source.registry.mirror : "none")'
 value:      '$(context.appName + "." + context.namespace)'
 value:      'https://$(source.registry.host)/health'  # embedded in text
 ```
 
-`$$(` escapes the delimiter. A hyphenated binding needs the bracket form —
-`$(source["cluster-info"].region)` — because `source.cluster-info` would parse as
-subtraction.
+CEL was chosen over a purpose-built language because it is already the expression
+language of Kubernetes — CRD validation rules, admission policies, authorisation —
+so consumers largely know it, `k8s.io/apiserver/pkg/cel` was already a transitive
+dependency, and its checker gives a static result type without evaluating anything.
+The alternative was growing a bespoke grammar to cover ternaries, comparisons,
+string functions and iteration, each of which had to be specified, implemented and
+explained.
+
+`$$(` escapes the delimiter.
+
+**A binding name must be a CEL identifier.** A binding is read as a field selection,
+so `source.cluster-info` parses as subtraction, and there is no bracket escape:
+`source` is an object type rather than a map, so `source.clusterInfo` does not
+compile either. Hyphenated names are therefore refused when the binding is declared
+— which reports the problem once, at the declaration, instead of as a compile
+failure inside every expression that reads it. Write `clusterInfo`.
 
 Substitution happens before the consuming template runs. Resolution — the cache
 lookup and, on miss or expiry, `template:` execution — always completes first, so an
@@ -785,36 +798,45 @@ substituted it.
 ### Type checking
 
 The expression is type-checked at admission against the parameter it feeds. The
-source's `schema:` is materialised into concrete sentinel values of the declared
-kinds, the expression is evaluated against those, and the resulting kind is compared
-with the consuming parameter's declared type. The schema supplies the types; the
-sentinel only makes the evaluator willing to run, because CUE will not compute on a
-non-concrete operand.
+source's `schema:` — a `cue.Value` — is translated into an
+`apiservercel.DeclType`, the expression is compiled against an environment holding
+one such type per binding, and CEL's `OutputType()` reports the result type. Nothing
+is evaluated: the type is a property of the expression and the declared schema, so
+no data has to exist at admission.
+
+The CUE schema remains the single contract. It is the definition author's
+declaration and the consumer's type check; the translation into CEL's type system is
+mechanical and invisible to both.
 
 | Written | Rejected at admission with |
 |---|---|
 | `port: '$(source.catalog.image)'` | *is string but component "webservice" parameter expects int* |
 | `image: '$(source.catalog.standardLabels)'` | *is object but … expects string* |
 | `image: '$(source.catalog.standardLabels)-x'` | *cannot be combined with text* |
-| `image: '$(source.registry.mirror)'` | *may be absent and feeds required … supply a default with `*… \| <fallback>`* |
-| `image: '$(source.registry.nope)'` | *not declared in the source's schema* |
-| `image: '$(parameter.image)'` | *unknown identifier "parameter"* |
+| `image: '$(source.registry.mirror)'` | *may be absent and feeds required … guard it with `has(…) ? … : <fallback>`* |
+| `image: '$(source.registry.nope)'` | *undefined field 'nope'* |
+| `image: '$(parameter.image)'` | *undeclared reference to 'parameter'* |
 
-Soundness requires that a result type be a function of its operands' types and never
-of their values, so the grammar is restricted — no conditionals, no comparisons, no
-function calls, and exactly one disjunction, the default. Anything whose type could
-depend on data that does not exist at admission is refused rather than typed by
-guess. That restriction is also what makes the sandbox enforceable.
+The last row is the sandbox: an environment declares exactly `source` and `context`,
+so any other identifier fails to compile. It needs no grammar restriction to
+enforce.
 
-**Conditionals are out of scope by intent, not pending.** They could be made sound
-— require every branch to unify to one type and the result stays value-independent
-— but that is not the reason to leave them out. An expression's job is to surface a
-value and put it somewhere; deciding *what the platform does* belongs in the
-definitions, where CUE is unrestricted and the result is validated against a schema
-before anyone consumes it. Branching in an Application would move platform logic
-into the artefact least able to review it, and would do so one property at a time.
+**Conditionals are supported.** An earlier revision of this KEP excluded them, and
+the move to CEL reversed that. The exclusion rested on two arguments and CEL
+dissolved both.
 
-A definition author writes this, and the consumer reads a typed field:
+The soundness argument was mechanical: CUE has no conditional *expression* — `if` is
+a comprehension, so only the list-index idiom `[if c {a}, b][0]` parses as a value —
+and the checker materialised the schema into sentinels and evaluated once, so a
+conditional would branch on fake data and mistype. CEL's checker types a ternary
+statically and requires both arms to unify, so the result is value-independent by
+construction.
+
+The design argument was that an expression should surface a value, not decide what
+the platform does, and that branching in an Application moves platform logic into
+the artefact least able to review it. That remains sound as *guidance*, and
+definition authors should still put real decisions in the definition, where CUE is
+unrestricted and the output is validated against a schema:
 
 ```cue
 schema: {replicas: int}
@@ -824,15 +846,10 @@ output: {
 }
 ```
 
-Two mechanical notes for anyone revisiting this. CUE has no conditional
-*expression* — `if` is a comprehension, so `if c {a} else {b}` does not parse as a
-value; only the list-index idiom `[if c {a}, b][0]` does. And `TypeOf` materialises
-the schema into concrete sentinels and evaluates once, so a conditional would branch
-on fake data: `[if source.s.tier == "gold" {10}, "two"][0]` types as string at
-admission and produces an int at render. Supporting conditionals therefore means
-replacing evaluate-once with branch enumeration and unification, and collecting
-`References` from every branch so dependency ordering and `+sensitive` tracking do
-not under-approximate.
+But it was never worth a checker to enforce, and enforcing it is no longer possible
+anyway: the ternary is how CEL spells a guarded read of a possibly-absent value
+(`has(x) ? x : fallback`), so the construct has to be available. What was a
+restriction is now a convention.
 
 **Defaults are target-aware.** A default is required exactly when a possibly-absent
 read feeds a *required* parameter:
@@ -1088,7 +1105,7 @@ status:
       cluster: us-east-prod
       healthy: true
       sources:
-        - name: cluster-info              # matches spec.sources[].name
+        - name: clusterInfo               # matches spec.sources[].name
           type: cluster-config-reader     # the SourceDefinition (spec.sources[].type)
           phase: Resolved                 # Resolved | Pending | Failed | Stale
           config: cluster-config-reader-us-east-prod   # backing cache entry - inspect with: vela config list
@@ -1215,17 +1232,25 @@ escape the schema"*. What holds it is structural rather than advisory:
 
 | Property | Enforced by |
 |---|---|
-| Only `source` and `context` are reachable; no `parameter`, no imports | Grammar walk over the parsed expression |
-| Only the surface's permitted roots and declared context fields | Per-surface context schema |
-| Only fields the source's `schema:` declares | Type check against the schema's sentinel |
-| No I/O, no provider calls, no function calls of any kind | Grammar walk |
-| The scope is built from Go data, never concatenated as CUE text | `buildScope` encodes via JSON |
+| Only `source` and `context` are reachable; no `parameter`, no imports | The CEL environment declares those two variables and nothing else |
+| Only the surface's permitted roots and declared context fields | Per-surface context schema, compiled into the environment |
+| Only fields the source's `schema:` declares | The schema's `DeclType`; an undeclared field fails to compile |
+| No I/O, no provider calls | CEL has no I/O, and no extension functions are registered |
+| The environment is built from Go data, never concatenated as CUE text | Types are constructed, and values encode via JSON |
 
-That last row is correctness, not style. Binding names and label keys come from the
+CEL narrowed this rather than widening it. The sandbox used to depend on a grammar
+walk refusing constructs — a check that has to enumerate everything unsafe and stays
+correct only while nothing is added. It now depends on what the environment
+*declares*, which is a closed list: an identifier that was not declared cannot
+compile, whatever it is. Function calls are the one deliberate relaxation, and only
+CEL's own built-ins, which are total, pure and have no access to anything outside
+their arguments.
+
+The last row is correctness, not style. Binding names and label keys come from the
 Application spec, so they are attacker-controlled if the author is hostile; a name
-like `a": {pwned: "yes"}, "b` concatenated into CUE source would inject fields into
-the scope, silently. Encoding the data means a name can only ever be a key. It has
-its own regression test.
+like `a": {pwned: "yes"}, "b` concatenated into CUE source would inject fields,
+silently. Constructing types and encoding values means a name can only ever be a
+key. It has its own regression test.
 
 An author can now construct a value the platform did not anticipate —
 `source.a.host + source.b.path` — from fields the platform did publish. The platform
@@ -1453,7 +1478,7 @@ an appendix; the reasoning that is not obvious from the result is under
 | A3 | Cache identity is a readable prefix plus a hash of every resolution input |
 | A4 | A source reads only the context that is part of its key |
 | A5 | Cache entries carry their identity as labels and annotations |
-| A6 | A property may be a CUE expression, type-checked against the parameter it feeds |
+| A6 | A property may be a CEL expression, type-checked against the parameter it feeds |
 | A7 | Expressions resolve on workflow steps, not just components and traits |
 | A8 | The author/platform boundary widened; a sandbox holds it rather than the absence of a language |
 | A9 | `// +sensitive` covers every field beneath the one it marks |
@@ -1462,8 +1487,10 @@ an appendix; the reasoning that is not obvious from the result is under
 | A12 | Context is declared once in CUE, per surface, and read by Go rather than restated |
 | A13 | A resource-rendering policy resolves sources; "policy" was one name for three surfaces |
 | A14 | A source may key on its caller's identity, which restricts where it can be consumed |
+| A15 | Expressions are CEL; the purpose-built expression engine is removed, and conditionals — previously excluded by A6 — are supported |
 
 Nothing in this feature has shipped, so none of these carried compatibility debt.
+A15 changed authored syntax with nothing in the field to migrate.
 
 ## Implementation notes
 
@@ -1521,6 +1548,33 @@ manifest carried a key that omitted a discriminating input, precisely because th
 field sat beside `storageTTL` and looked equally authorable. That is why generated
 fields moved to `$internal:` and why the key is inferred.
 
+
+
+**A registry written for one type system served another unchanged.** The context
+registry (A12) was built to stop two Go tables drifting. When the expression engine
+was replaced with CEL, it was the reason the swap was affordable: every context
+field and surface was already declared once, in CUE, so both type systems could be
+driven from it without an edit. The engine changed; the declaration did not. Making
+a fact readable rather than restated paid out in a way that was not foreseen when it
+was written.
+
+**CEL's checker does not model absence, so optionality is an AST property.**
+`source.cfg.note` on an optional field compiles cleanly as a string and fails at
+evaluation with "no such key". The rule that a possibly-absent read feeding a
+required parameter must be defended is therefore enforced by walking the checked AST
+for `has()` and `in` tests. Two rounds of adversarial questioning were needed to get
+it right: the first version accepted `has(other) ? note : x`, which defends nothing
+about `note`, and the second treated a read in a nested ternary's *condition* as
+guarded, though a condition is always evaluated. Both were found by being asked how
+resilient the analysis was — neither was reachable from the tests that existed,
+because those tests were written by the same reasoning that wrote the guard.
+
+**Replacing a language removes more than it adds.** The purpose-built engine — its
+own grammar, scope resolver, type checker and evaluator — came to about 1,490 lines
+and was queued to grow with every construct anyone asked for. The CEL engine
+replacing it is 1,451 lines including its tests, and the net change across the
+migration was +2,029 / −3,597. Interpolation needed no migration at all: `$( )`
+splitting is text handling, and was never part of the expression language.
 
 ## Cross-KEP References
 
