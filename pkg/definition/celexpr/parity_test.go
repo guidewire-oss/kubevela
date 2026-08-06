@@ -17,10 +17,12 @@ limitations under the License.
 package celexpr
 
 import (
+	"strings"
 	"testing"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
+	"github.com/google/cel-go/cel"
 
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 )
@@ -138,5 +140,91 @@ func TestOptionalDefaults(t *testing.T) {
 			continue
 		}
 		t.Logf("%-42s -> %#v", tc.expr, got)
+	}
+}
+
+// The undefended-read rule, which CEL's checker does not give us.
+//
+// An unguarded read of an optional field compiles cleanly as its declared type
+// and then fails at render with "no such key", so the rule the CUE path enforces
+// has to be enforced here too - from the AST rather than from the type.
+func TestUndefendedReads(t *testing.T) {
+	cc := cuecontext.New()
+	v := cc.CompileString(`s: {host: string, note?: string, data: [string]: string}`).
+		LookupPath(cue.ParsePath("s"))
+	env, err := EnvForSurface(map[string]cue.Value{"cfg": v}, "component")
+	if err != nil {
+		t.Fatal(err)
+	}
+	optional := func(r Reference) bool {
+		p := strings.Join(r.Path, ".")
+		return p == "cfg.note" || strings.HasPrefix(p, "cfg.data.")
+	}
+
+	for _, tc := range []struct {
+		expr string
+		want bool // true = must be flagged
+	}{
+		{`source.cfg.host`, false},
+		{`source.cfg.note`, true},
+		{`source.cfg.data["image"]`, true},
+		{`source.cfg.host + source.cfg.note`, true},
+		{`has(source.cfg.note) ? source.cfg.note : "none"`, false},
+		{`has(source.cfg.data.image) ? source.cfg.data.image : "nginx"`, false},
+		// has() is a macro expanding to a test-only select, so the guard is on the
+		// read itself rather than on an enclosing call.
+		{`has(source.cfg.note)`, false},
+		// A ternary *condition* is always evaluated, so a read there is not
+		// guarded. Getting this wrong is a false negative in the safety check.
+		{`source.cfg.note == "x" ? "a" : "b"`, true},
+	} {
+		bad, err := UndefendedReads(env, tc.expr, optional)
+		if err != nil {
+			t.Errorf("%-52s ERROR %v", tc.expr, err)
+			continue
+		}
+		if got := len(bad) > 0; got != tc.want {
+			t.Errorf("%-52s flagged=%v, want %v (%v)", tc.expr, got, tc.want, bad)
+			continue
+		}
+		t.Logf("%-52s flagged=%v", tc.expr, len(bad) > 0)
+	}
+}
+
+// A value with no statically known type must not silently satisfy a concrete
+// parameter. Reading below an untyped region yields dyn, and dyn is assignable to
+// anything - weaker than the CUE path, where an assertion is mandatory.
+func TestTargetGuards(t *testing.T) {
+	cc := cuecontext.New()
+	v := cc.CompileString(`s: {host: string, port: int, blob: _}`).LookupPath(cue.ParsePath("s"))
+	env, err := EnvForSurface(map[string]cue.Value{"cfg": v}, "component")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		expr    string
+		target  *cel.Type
+		wantErr string
+	}{
+		{`source.cfg.port`, cel.IntType, ""},
+		{`source.cfg.host`, cel.IntType, "type mismatch"},
+		{`source.cfg.blob.deep`, cel.IntType, "no statically known type"},
+		// An explicit conversion is the way through, as `& int` is today.
+		{`int(source.cfg.blob.deep)`, cel.IntType, ""},
+		// Nothing to contradict when the target is itself open.
+		{`source.cfg.blob.deep`, cel.DynType, ""},
+	} {
+		err := CheckTarget(env, tc.expr, tc.target)
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("%-34s -> %-6v unexpected: %v", tc.expr, tc.target, err)
+		case tc.wantErr != "" && err == nil:
+			t.Errorf("%-34s -> %-6v expected %q, got nil", tc.expr, tc.target, tc.wantErr)
+		case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+			t.Errorf("%-34s -> %-6v want %q, got %v", tc.expr, tc.target, tc.wantErr, err)
+		default:
+			t.Logf("%-34s -> %-6v ok", tc.expr, tc.target)
+		}
 	}
 }

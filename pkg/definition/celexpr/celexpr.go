@@ -296,3 +296,38 @@ func EnvForSurface(sources map[string]cue.Value, surface string) (*cel.Env, erro
 	}
 	return env(sources, ctx)
 }
+
+// CheckTarget reports whether an expression's result can feed a parameter of the
+// given type.
+//
+// Two things it refuses that a naive type comparison would let through.
+//
+// A `dyn` result is rejected against a concrete target. Reading below an untyped
+// region - a schema's `blob: _` - yields dyn, and dyn is assignable to anything,
+// so an unknown value would silently satisfy an int parameter. The CUE path makes
+// the author assert (`& int`); this makes them convert (`int(...)`), which is the
+// same obligation spelled differently. Against a dyn target it is allowed, since
+// there is nothing to contradict.
+//
+// A type error in the expression itself is returned as-is rather than being
+// reported as a mismatch, so the author sees the real cause.
+func CheckTarget(env *cel.Env, expr string, target *cel.Type) error {
+	out, err := OutputType(env, expr)
+	if err != nil {
+		return err
+	}
+	if target == nil || target == cel.DynType {
+		return nil
+	}
+	if out == cel.DynType || out == cel.AnyType {
+		return fmt.Errorf(
+			"expression %q has no statically known type (it reads below an untyped "+
+				"field) but the target expects %s; convert it explicitly, for example %s(...)",
+			expr, target, target)
+	}
+	if out.String() != target.String() {
+		return fmt.Errorf("type mismatch: expression %q is %s but the target expects %s",
+			expr, out, target)
+	}
+	return nil
+}

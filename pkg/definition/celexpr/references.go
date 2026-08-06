@@ -140,17 +140,35 @@ func chain(e celast.NavigableExpr) (string, []string, bool) {
 	}
 }
 
-// guarded reports whether a read sits behind has() or inside a ternary arm, which
+// guarded reports whether a read sits behind has() or in a ternary *arm*, which
 // is how CEL expresses "this may be absent and I have handled it".
+//
+// The condition of a ternary is not guarded, and getting that wrong is not
+// cosmetic: it would let an optional field used as a condition -
+// `source.cfg.note == "x" ? a : b` - escape the undefended-read check, which is a
+// false negative in exactly the safety property that check exists to hold.
 func guarded(e celast.NavigableExpr) bool {
+	// has(x.y) is a macro: it expands to a select marked test-only rather than to
+	// a call named "has", so the read itself carries the guard.
+	if e.Kind() == celast.SelectKind && e.AsSelect().IsTestOnly() {
+		return true
+	}
+	child := e
 	for p, ok := e.Parent(); ok; p, ok = p.Parent() {
-		if p.Kind() != celast.CallKind {
-			continue
-		}
-		switch p.AsCall().FunctionName() {
-		case "has", "_?_:_":
+		if p.Kind() == celast.SelectKind && p.AsSelect().IsTestOnly() {
 			return true
 		}
+		if p.Kind() == celast.CallKind {
+			call := p.AsCall()
+			// Args are [condition, then, else]. Only the arms are guarded; a read
+			// in the condition is always evaluated.
+			if call.FunctionName() == "_?_:_" {
+				if args := call.Args(); len(args) == 3 && args[0].ID() != child.ID() {
+					return true
+				}
+			}
+		}
+		child = p
 	}
 	return false
 }
@@ -178,4 +196,31 @@ func dropPrefixes(in []Reference) []Reference {
 		}
 	}
 	return out
+}
+
+// UndefendedReads returns reads that may be absent at render and carry no guard.
+//
+// CEL's checker does not help here: `source.cfg.note` on an optional field
+// compiles cleanly as a string and then fails at evaluation with "no such key".
+// The same is true of any key of an open map. So the rule the CUE path enforces -
+// a possibly-absent read feeding a *required* parameter must carry a default -
+// has to be enforced the same way, from the AST rather than from the type.
+//
+// A read counts as defended when it sits under has() or in a ternary arm, which
+// is how CEL spells "I have handled the absence".
+//
+// optional reports whether a path may be absent: an optional schema field, or any
+// key of an open map. The caller supplies it because only the schema knows.
+func UndefendedReads(env *cel.Env, expr string, optional func(Reference) bool) ([]Reference, error) {
+	refs, err := References(env, expr)
+	if err != nil {
+		return nil, err
+	}
+	var out []Reference
+	for _, r := range refs {
+		if r.IsSource() && !r.Guarded && optional(r) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
