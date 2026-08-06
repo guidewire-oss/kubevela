@@ -72,7 +72,7 @@ spec:
             #
             # When the platform raises the quota to 10, this stays 3. Nothing
             # detects the drift - not admission, not the controller, nothing.
-            # In the new version: '$(source.tenant.maxReplicas div 2)'.
+            # In the new version: '$(source.tenant.maxReplicas / 2)'.
             replicas: 3
 
   policies:

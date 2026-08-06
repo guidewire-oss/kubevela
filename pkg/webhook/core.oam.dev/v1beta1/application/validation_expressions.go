@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"cuelang.org/go/cue"
 	"github.com/google/cel-go/cel"
@@ -369,12 +370,26 @@ func expressionValueType(raw string, schemas map[string]string,
 	expr, whole := parsed.SoleExpr()
 	if !whole {
 		// Embedded in text, so the result is a string - but each fragment still
-		// has to compile, or a mistake inside one would go unreported.
+		// has to compile, and has to have a string form.
+		//
+		// CEL will not object to joining a struct to text the way CUE does,
+		// because the join happens in the interpolation code rather than in the
+		// expression: a map would simply be formatted, yielding something like
+		// map[region:eu-west] in a property. Refusing it keeps the rule the CUE
+		// engine enforced.
 		for _, f := range parsed.Fragments {
-			if f.IsExpr() {
-				if _, cerr := celexpr.OutputType(env, f.Expr); cerr != nil {
-					return cue.BottomKind, cerr
-				}
+			if !f.IsExpr() {
+				continue
+			}
+			ft, cerr := celexpr.OutputType(env, f.Expr)
+			if cerr != nil {
+				return cue.BottomKind, cerr
+			}
+			switch celKind(ft) {
+			case cue.StructKind, cue.ListKind:
+				return cue.BottomKind, fmt.Errorf(
+					"expression $(%s) is %s and cannot be combined with text; read a field out of it",
+					f.Expr, ft)
 			}
 		}
 		return cue.StringKind, nil
@@ -403,10 +418,14 @@ func celKind(t *cel.Type) cue.Kind {
 		return cue.BoolKind
 	case "dyn", "any":
 		return cue.TopKind
-	default:
-		// A list, a map or a named object: a struct-ish result.
-		return cue.StructKind
 	}
+	// A list is a list. Collapsing it into StructKind made every list-valued
+	// expression mismatch a list parameter, reported as "is object but expects
+	// list", which is the sort of error that reads like a bug in the source.
+	if strings.HasPrefix(t.String(), "list(") {
+		return cue.ListKind
+	}
+	return cue.StructKind
 }
 
 // defaultHint tells the author how to defend a possibly-absent read, in the

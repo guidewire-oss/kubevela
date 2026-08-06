@@ -225,7 +225,7 @@ patch: {
   "tags":     "$(source.infra.tags)",
   "meta":     "$(source.infra.meta)",
   "fallback": "$(has(source.infra.note) ? source.infra.note : \"unset\")",
-  "halved":   "$(source.infra.port div 2)"
+  "halved":   "$(source.infra.port / 2)"
 }`)},
 				}},
 			},
@@ -393,7 +393,7 @@ output: {
     "kind": "ConfigMap",
     "metadata": {"name": "expr-wf-result", "namespace": "` + namespaceName + `"},
     "data": {
-      "endpoint": "$(source.infra.host + \":\" + \"\\(source.infra.port)\")",
+      "endpoint": "$(source.infra.host + \":\" + string(source.infra.port))",
       "app":      "$(context.appName)"
     }
   }
@@ -764,7 +764,7 @@ output: labels: "policy-owner": parameter.owner
 		})
 
 		It("denies an identifier outside the sandbox", func() {
-			expectRejected(`{"host":"$(parameter.host)"}`, "unknown identifier")
+			expectRejected(`{"host":"$(parameter.host)"}`, "undeclared reference to 'parameter'")
 		})
 
 		// Whether a policy may read a source depends on which kind it is, so both

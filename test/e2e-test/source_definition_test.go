@@ -808,7 +808,7 @@ parameter: {
 			})
 			err := k8sClient.Create(ctx, app)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("supply a default with"))
+			Expect(err.Error()).To(ContainSubstring("guard it with"))
 		})
 
 		It("denies a forward source dependency", func() {

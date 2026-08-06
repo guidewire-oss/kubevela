@@ -84,7 +84,7 @@ MIRROR=none                          # platform publishes no mirror on this clus
 ```yaml
 - type: scaler
   properties:
-    replicas: '$(source.tenant.maxReplicas div 2)'      # 6 div 2 -> 3
+    replicas: '$(source.tenant.maxReplicas / 2)'      # 6 div 2 -> 3
 ```
 
 **Workflow step** — the same sources, in a step that runs after the deploy:

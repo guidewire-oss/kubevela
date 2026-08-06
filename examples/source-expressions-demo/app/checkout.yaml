@@ -69,7 +69,7 @@ spec:
         - type: scaler
           properties:
             # Integer arithmetic: half the tenant's granted quota.
-            replicas: '$(source.tenant.maxReplicas div 2)'
+            replicas: '$(source.tenant.maxReplicas / 2)'
 
   policies:
     # Application-scoped policies render before the appfile exists, so they can
