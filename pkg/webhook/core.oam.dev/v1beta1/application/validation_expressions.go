@@ -18,6 +18,11 @@ package application
 
 import (
 	"context"
+	"github.com/google/cel-go/cel"
+	"github.com/oam-dev/kubevela/pkg/definition/celexpr"
+	"os"
+	"slices"
+	"strings"
 
 	"cuelang.org/go/cue"
 	"encoding/json"
@@ -63,7 +68,7 @@ func validateExpressions(app *v1beta1.Application, appScoped func(string) bool) 
 		if !sourceexpr.HasExpression(decoded) {
 			return
 		}
-		if err := sourceexpr.ValidateTree(decoded, roots...); err != nil {
+		if err := validateExpressionTree(decoded, roots...); err != nil {
 			errs = append(errs, field.Invalid(path, string(raw.Raw), err.Error()))
 		}
 	}
@@ -153,7 +158,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 				continue
 			}
 
-			srcKind, err := sourceexpr.ValueTypeIn(raw, schemasFor, ctxSchema, roots...)
+			srcKind, err := expressionValueType(raw, schemasFor, ctxSchema, roots...)
 			if err != nil {
 				errs = append(errs, field.Invalid(lf.fieldPath, raw, err.Error()))
 				continue
@@ -331,5 +336,114 @@ func (h *ValidatingHandler) policyScopeLookup(ctx context.Context, app *v1beta1.
 		v := h.policyIsAppScoped(ctx, app, policyType)
 		seen[policyType] = v
 		return v
+	}
+}
+
+// validateExpressionTree runs the grammar check through whichever engine is
+// selected.
+//
+// A spike switch. With CEL the grammar walk has no equivalent - the language is
+// sandboxed by construction, and an undeclared identifier is a compile error - so
+// the check narrows to "does every expression compile, and does it only read the
+// roots this surface permits". The permissive env is enough for that: admission
+// types the result separately.
+func validateExpressionTree(v interface{}, roots ...string) error {
+	if os.Getenv("VELA_EXPR_ENGINE") != "cel" {
+		return sourceexpr.ValidateTree(v, roots...)
+	}
+	env, err := celexpr.DynEnv()
+	if err != nil {
+		return err
+	}
+	return celValidateNode(env, v, roots)
+}
+
+func celValidateNode(env *cel.Env, v interface{}, roots []string) error {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for _, child := range t {
+			if err := celValidateNode(env, child, roots); err != nil {
+				return err
+			}
+		}
+	case []interface{}:
+		for _, child := range t {
+			if err := celValidateNode(env, child, roots); err != nil {
+				return err
+			}
+		}
+	case string:
+		parsed, err := sourceexpr.Parse(t)
+		if err != nil || !parsed.HasExpr() {
+			return err
+		}
+		for _, f := range parsed.Fragments {
+			if !f.IsExpr() {
+				continue
+			}
+			refs, rerr := celexpr.References(env, f.Expr)
+			if rerr != nil {
+				return rerr
+			}
+			for _, r := range refs {
+				if !slices.Contains(roots, r.Root) {
+					return fmt.Errorf("%q cannot be read here; this surface permits %q",
+						r.Root, strings.Join(roots, `", "`))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// expressionValueType derives an expression's result kind through whichever
+// engine is selected.
+//
+// With CEL the type comes from Compile()/OutputType() rather than from evaluating
+// against sentinels. The permissive env is used here for the spike: it proves the
+// path end to end, but it types a source read as dyn, so this reports "unknown"
+// and the target check is skipped. A typed env - EnvForSurface with the consumed
+// schemas - is what would make this a real check, and is the piece still missing.
+func expressionValueType(raw string, schemas map[string]string,
+	ctxSchema sourceexpr.ContextSchema, roots ...string) (cue.Kind, error) {
+	if os.Getenv("VELA_EXPR_ENGINE") != "cel" {
+		return sourceexpr.ValueTypeIn(raw, schemas, ctxSchema, roots...)
+	}
+	parsed, err := sourceexpr.Parse(raw)
+	if err != nil || !parsed.HasExpr() {
+		return cue.BottomKind, err
+	}
+	env, err := celexpr.DynEnv()
+	if err != nil {
+		return cue.BottomKind, err
+	}
+	expr, whole := parsed.SoleExpr()
+	if !whole {
+		// Embedded in text, so the result is a string either way.
+		for _, f := range parsed.Fragments {
+			if f.IsExpr() {
+				if _, cerr := celexpr.OutputType(env, f.Expr); cerr != nil {
+					return cue.BottomKind, cerr
+				}
+			}
+		}
+		return cue.StringKind, nil
+	}
+	t, err := celexpr.OutputType(env, expr)
+	if err != nil {
+		return cue.BottomKind, err
+	}
+	switch t.String() {
+	case "string":
+		return cue.StringKind, nil
+	case "int":
+		return cue.IntKind, nil
+	case "double":
+		return cue.FloatKind, nil
+	case "bool":
+		return cue.BoolKind, nil
+	default:
+		// dyn, list, map: not comparable to a target parameter here.
+		return cue.TopKind, nil
 	}
 }

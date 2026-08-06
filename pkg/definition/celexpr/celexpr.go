@@ -368,3 +368,20 @@ func native(v ref.Val) interface{} {
 		return v.Value()
 	}
 }
+
+// DynEnv is an environment for evaluation, where `source` and `context` are open
+// maps rather than typed objects.
+//
+// Static typing is an admission-time concern: by the time a render happens the
+// values exist, so nothing is gained by declaring their shapes again, and a typed
+// env would need every consumed source's schema threaded through the resolver.
+// Admission has already refused anything that would not type.
+//
+// CEL selects a map key with `.`, so `source.cfg.host` reads the same here as
+// against a declared object - the expressions an author writes do not change.
+func DynEnv() (*cel.Env, error) {
+	return cel.NewEnv(
+		cel.Variable("source", cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable("context", cel.MapType(cel.StringType, cel.DynType)),
+	)
+}

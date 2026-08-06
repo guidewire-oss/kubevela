@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/oam-dev/kubevela/pkg/cue/definition/health"
 	"github.com/oam-dev/kubevela/pkg/definition/cachekey"
+	"github.com/oam-dev/kubevela/pkg/definition/celexpr"
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/features"
 
@@ -779,7 +781,7 @@ func evaluateSourceExpression(raw string, resolver *sourceResolver) (interface{}
 		if !fragment.IsExpr() {
 			continue
 		}
-		refs, rerr := sourceexpr.References(fragment.Expr)
+		refs, rerr := expressionReferences(fragment.Expr)
 		if rerr != nil {
 			return nil, rerr
 		}
@@ -804,8 +806,62 @@ func evaluateSourceExpression(raw string, resolver *sourceResolver) (interface{}
 		}
 	}
 
+	if celEngineEnabled() {
+		return celEvalProperty(raw, resolved, resolver.expressionContext())
+	}
 	return sourceexpr.EvalIn(raw, resolved, resolver.expressionContext(),
 		sourceexpr.ContextFor(resolver.surface), sourceexpr.SourceIdent, sourceexpr.ContextIdent)
+}
+
+// celEngineEnabled selects the CEL expression engine.
+//
+// A spike switch, not a feature gate: it exists so both engines can be run
+// against the same Application on a cluster and the results compared. The syntax
+// an author writes is largely identical - source.cfg.host reads the same either
+// way - so the same manifest exercises both.
+func celEngineEnabled() bool {
+	return os.Getenv("VELA_EXPR_ENGINE") == "cel"
+}
+
+// expressionReferences extracts the reads an expression makes, through whichever
+// engine is selected. Both must agree, or dependency ordering and +sensitive
+// redaction would differ between them.
+func expressionReferences(expr string) ([]sourceexpr.Reference, error) {
+	if !celEngineEnabled() {
+		return sourceexpr.References(expr)
+	}
+	env, err := celexpr.DynEnv()
+	if err != nil {
+		return nil, err
+	}
+	celRefs, err := celexpr.References(env, expr)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sourceexpr.Reference, 0, len(celRefs))
+	for _, r := range celRefs {
+		out = append(out, sourceexpr.Reference{
+			Root: r.Root, Path: r.Path, Defaulted: r.Guarded,
+		})
+	}
+	return out, nil
+}
+
+// celEvalProperty evaluates a whole property value with CEL, interpolation
+// included. The $( ) splitting is shared, so only the contents differ.
+func celEvalProperty(raw string, resolved map[string]map[string]interface{},
+	ctx map[string]interface{}) (interface{}, error) {
+	env, err := celexpr.DynEnv()
+	if err != nil {
+		return nil, err
+	}
+	in := map[string]interface{}{"context": ctx}
+	sources := map[string]interface{}{}
+	for name, values := range resolved {
+		sources[name] = values
+	}
+	in["source"] = sources
+	return celexpr.EvalProperty(env, raw, in)
 }
 
 // expressionContext pulls the fields this surface declares readable out of

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/oam-dev/kubevela/pkg/definition/celexpr"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -423,7 +425,7 @@ func collectSourceRefs(raw *runtime.RawExtension, basePath *field.Path, sourceIn
 			if !fragment.IsExpr() {
 				continue
 			}
-			reads, rerr := sourceexpr.References(fragment.Expr)
+			reads, rerr := expressionRefs(fragment.Expr)
 			if rerr != nil {
 				// Syntax errors are reported by validateExpressions with a
 				// better message; do not report them twice.
@@ -1126,7 +1128,7 @@ func validateSourceContextReads(app *v1beta1.Application, effective map[string][
 				if !fragment.IsExpr() {
 					continue
 				}
-				reads, rerr := sourceexpr.References(fragment.Expr)
+				reads, rerr := expressionRefs(fragment.Expr)
 				if rerr != nil {
 					continue // reported by validateExpressions
 				}
@@ -1161,4 +1163,25 @@ func contextUnavailableMessage(field, surface, binding string) string {
 		msg += "; it is available in " + strings.Join(available, ", ")
 	}
 	return msg
+}
+
+// expressionRefs extracts reads through whichever engine is selected, so the
+// reference pass and the render agree about what an expression touches.
+func expressionRefs(expr string) ([]sourceexpr.Reference, error) {
+	if os.Getenv("VELA_EXPR_ENGINE") != "cel" {
+		return sourceexpr.References(expr)
+	}
+	env, err := celexpr.DynEnv()
+	if err != nil {
+		return nil, err
+	}
+	celRefs, err := celexpr.References(env, expr)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sourceexpr.Reference, 0, len(celRefs))
+	for _, r := range celRefs {
+		out = append(out, sourceexpr.Reference{Root: r.Root, Path: r.Path, Defaulted: r.Guarded})
+	}
+	return out, nil
 }
