@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/oam-dev/kubevela/pkg/definition/celexpr"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -1168,9 +1167,6 @@ func contextUnavailableMessage(field, surface, binding string) string {
 // expressionRefs extracts reads through whichever engine is selected, so the
 // reference pass and the render agree about what an expression touches.
 func expressionRefs(expr string) ([]sourceexpr.Reference, error) {
-	if os.Getenv("VELA_EXPR_ENGINE") != "cel" {
-		return sourceexpr.References(expr)
-	}
 	env, err := celexpr.DynEnv()
 	if err != nil {
 		return nil, err

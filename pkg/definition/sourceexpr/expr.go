@@ -199,3 +199,26 @@ func closingParen(raw string, start int) (int, error) {
 	}
 	return 0, fmt.Errorf("unterminated expression: no closing ')' for the %q at offset %d", open, start-len(open))
 }
+
+// HasExpression reports whether a decoded properties tree contains anything to
+// substitute, so a caller can skip the work entirely when it does not.
+func HasExpression(v interface{}) bool {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for _, nested := range t {
+			if HasExpression(nested) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, nested := range t {
+			if HasExpression(nested) {
+				return true
+			}
+		}
+	case string:
+		parsed, err := Parse(t)
+		return err == nil && parsed.HasExpr()
+	}
+	return false
+}

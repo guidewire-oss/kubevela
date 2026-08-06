@@ -161,60 +161,6 @@ func (c ContextSchema) isIndexed(name string) bool {
 	return v.LookupPath(cue.MakePath(cue.AnyString)).Exists()
 }
 
-// sentinelContext builds the context sentinels for exactly the fields an
-// expression references.
-//
-// Only the referenced fields, because an open map cannot be typed wholesale: a
-// CUE pattern constraint - appLabels: [string]: "x" - does not make
-// context.appLabels["anything"] resolve, it still reports an undefined field. So
-// the keys actually read are materialised individually, which References()
-// already knows.
-func sentinelContext(refs []Reference, schema ContextSchema) (map[string]interface{}, error) {
-	out := map[string]interface{}{}
-
-	for _, ref := range refs {
-		if ref.IsSource() {
-			continue
-		}
-		field := ref.Path[0]
-		declared, ok := schema.field(field)
-		if !ok {
-			return nil, fmt.Errorf("context.%s is not readable in %s properties%s; readable fields are %s",
-				field, schema.Surface, schema.why(field), strings.Join(schema.readable(), ", "))
-		}
-
-		// An open map has no concrete field at any key, so the key actually read
-		// is materialised from the pattern's type.
-		if schema.isIndexed(field) {
-			if len(ref.Path) < 2 {
-				return nil, fmt.Errorf("context.%s must be read with a key, e.g. context.%s[\"my-label\"]",
-					field, field)
-			}
-			value, err := sentinelFor(declared.LookupPath(cue.MakePath(cue.AnyString)))
-			if err != nil {
-				return nil, fmt.Errorf("context.%s: %w", field, err)
-			}
-			nested, _ := out[field].(map[string]interface{})
-			if nested == nil {
-				nested = map[string]interface{}{}
-				out[field] = nested
-			}
-			nested[ref.Path[1]] = value
-			continue
-		}
-
-		// Everything else comes from the declared type, through the same builder
-		// the source schemas use - so clusterVersion.minor is an int here because
-		// the registry says it is, not because a Go switch remembered to say so.
-		value, err := sentinelFor(declared)
-		if err != nil {
-			return nil, fmt.Errorf("context.%s: %w", field, err)
-		}
-		out[field] = value
-	}
-	return out, nil
-}
-
 // contextValues selects the real values for the referenced fields, for render.
 //
 // A referenced key that is absent is left absent rather than defaulted. CUE then

@@ -423,3 +423,7 @@ func EnvForContext(schemaText map[string]string, ctxSchema sourceexpr.ContextSch
 	}
 	return env(sources, ctx)
 }
+
+// ComponentCtx is a convenience for tests and callers that want the component
+// surface's context schema without importing the registry package directly.
+func ComponentCtx() sourceexpr.ContextSchema { return sourceexpr.ComponentContext }

@@ -49,6 +49,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/config"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/cue/upgrade"
+	"github.com/oam-dev/kubevela/pkg/definition/celexpr"
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -1316,14 +1317,13 @@ func substituteScopedPolicyExpressions(pCtx wfprocess.Context, params map[string
 	}
 
 	ctxValues := map[string]interface{}{}
-	for _, field := range sourceexpr.ScopedPolicyContext.Fields() {
+	for _, field := range sourceexpr.ScopedPolicyContext.ReadableFields() {
 		if v := pCtx.GetData(field); v != nil {
 			ctxValues[field] = v
 		}
 	}
 
-	resolved, err := sourceexpr.EvalTree(params, nil, ctxValues,
-		sourceexpr.ScopedPolicyContext, sourceexpr.ContextIdent)
+	resolved, err := celexpr.EvalTree(params, nil, ctxValues)
 	if err != nil {
 		return nil, err
 	}

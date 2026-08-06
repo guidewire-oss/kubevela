@@ -18,22 +18,18 @@ package application
 
 import (
 	"context"
-	"github.com/google/cel-go/cel"
-	"github.com/oam-dev/kubevela/pkg/definition/celexpr"
-	"os"
-	"slices"
-	"strings"
-
-	"cuelang.org/go/cue"
 	"encoding/json"
 	"fmt"
 
+	"cuelang.org/go/cue"
+	"github.com/google/cel-go/cel"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	veladefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/definition/celexpr"
 	"github.com/oam-dev/kubevela/pkg/definition/sourceexpr"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 )
@@ -181,7 +177,7 @@ func (h *ValidatingHandler) validateExpressionTargetTypes(ctx context.Context, a
 
 			// The same rule the directive follows: a default is required only
 			// when a value that may be absent feeds a required parameter.
-			undefended, uerr := sourceexpr.UndefendedReads(raw, schemasFor)
+			undefended, uerr := undefendedReads(raw, schemasFor)
 			if uerr != nil || len(undefended) == 0 {
 				continue
 			}
@@ -293,14 +289,14 @@ func (h *ValidatingHandler) sourceSchemaTexts(ctx context.Context, appNamespace 
 // expressionKind types a property value that carries expressions.
 func (h *ValidatingHandler) expressionKind(ctx context.Context, appNamespace, raw string,
 	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) (cue.Kind, error) {
-	return sourceexpr.ValueType(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators))
+	return expressionValueType(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators), sourceexpr.ComponentContext, sourceexpr.SourceIdent, sourceexpr.ContextIdent)
 }
 
 // undefendedExpressionReads returns the reads in a property value that could be
 // absent at render and carry no default.
 func (h *ValidatingHandler) undefendedExpressionReads(ctx context.Context, appNamespace, raw string,
 	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) []sourceexpr.Reference {
-	refs, err := sourceexpr.UndefendedReads(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators))
+	refs, err := undefendedReads(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators))
 	if err != nil {
 		return nil
 	}
@@ -348,52 +344,7 @@ func (h *ValidatingHandler) policyScopeLookup(ctx context.Context, app *v1beta1.
 // roots this surface permits". The permissive env is enough for that: admission
 // types the result separately.
 func validateExpressionTree(v interface{}, roots ...string) error {
-	if os.Getenv("VELA_EXPR_ENGINE") != "cel" {
-		return sourceexpr.ValidateTree(v, roots...)
-	}
-	env, err := celexpr.DynEnv()
-	if err != nil {
-		return err
-	}
-	return celValidateNode(env, v, roots)
-}
-
-func celValidateNode(env *cel.Env, v interface{}, roots []string) error {
-	switch t := v.(type) {
-	case map[string]interface{}:
-		for _, child := range t {
-			if err := celValidateNode(env, child, roots); err != nil {
-				return err
-			}
-		}
-	case []interface{}:
-		for _, child := range t {
-			if err := celValidateNode(env, child, roots); err != nil {
-				return err
-			}
-		}
-	case string:
-		parsed, err := sourceexpr.Parse(t)
-		if err != nil || !parsed.HasExpr() {
-			return err
-		}
-		for _, f := range parsed.Fragments {
-			if !f.IsExpr() {
-				continue
-			}
-			refs, rerr := celexpr.References(env, f.Expr)
-			if rerr != nil {
-				return rerr
-			}
-			for _, r := range refs {
-				if !slices.Contains(roots, r.Root) {
-					return fmt.Errorf("%q cannot be read here; this surface permits %q",
-						r.Root, strings.Join(roots, `", "`))
-				}
-			}
-		}
-	}
-	return nil
+	return celexpr.ValidateTree(v, roots...)
 }
 
 // expressionValueType derives an expression's result kind through whichever
@@ -406,9 +357,6 @@ func celValidateNode(env *cel.Env, v interface{}, roots []string) error {
 // pass unnoticed.
 func expressionValueType(raw string, schemas map[string]string,
 	ctxSchema sourceexpr.ContextSchema, roots ...string) (cue.Kind, error) {
-	if os.Getenv("VELA_EXPR_ENGINE") != "cel" {
-		return sourceexpr.ValueTypeIn(raw, schemas, ctxSchema, roots...)
-	}
 	parsed, err := sourceexpr.Parse(raw)
 	if err != nil || !parsed.HasExpr() {
 		return cue.BottomKind, err
@@ -467,8 +415,36 @@ func celKind(t *cel.Type) cue.Kind {
 // error under CEL, so an author following the message would be told to write
 // something the very next admission refuses.
 func defaultHint(read string) string {
-	if os.Getenv("VELA_EXPR_ENGINE") == "cel" {
-		return fmt.Sprintf("guard it with has(%s) ? %s : <fallback>", read, read)
+	return fmt.Sprintf("guard it with has(%s) ? %s : <fallback>", read, read)
+}
+
+// undefendedReads finds reads that may be absent and carry no guard.
+//
+// Two packages meet here and the split is deliberate: which paths an expression
+// reads is a question for the expression language, while whether a path may be
+// absent is schema analysis - and a source's schema is CUE regardless of what
+// expressions are written in.
+func undefendedReads(raw string, schemas map[string]string) ([]sourceexpr.Reference, error) {
+	env, err := celexpr.DynEnv()
+	if err != nil {
+		return nil, err
 	}
-	return fmt.Sprintf("supply a default with *%s | <fallback>", read)
+	parsed, err := sourceexpr.Parse(raw)
+	if err != nil || !parsed.HasExpr() {
+		return nil, err
+	}
+	var refs []sourceexpr.Reference
+	for _, f := range parsed.Fragments {
+		if !f.IsExpr() {
+			continue
+		}
+		celRefs, rerr := celexpr.References(env, f.Expr)
+		if rerr != nil {
+			return nil, rerr
+		}
+		for _, r := range celRefs {
+			refs = append(refs, sourceexpr.Reference{Root: r.Root, Path: r.Path, Defaulted: r.Guarded})
+		}
+	}
+	return sourceexpr.UndefendedIn(refs, schemas)
 }

@@ -17,68 +17,49 @@ limitations under the License.
 package sourceexpr
 
 import (
-	"fmt"
 	"strconv"
 
 	"cuelang.org/go/cue"
 )
 
-// UndefendedReads returns the reads that could be absent at render and carry no
-// default.
+// UndefendedIn returns the reads that could be absent at render and carry no
+// guard, given the reads an expression makes.
 //
-// A default is not needed for most reads. A source's `schema:` is a contract the
-// resolver enforces - output is validated against it before anything is cached -
-// so a *required* schema field is guaranteed present, and demanding a fallback
-// for it would be noise. Only an *optional* field, or a context value that has no
-// schema at all, can go missing.
+// It takes references rather than raw text so this package stays free of the
+// expression language: a source's `schema:` is CUE and always will be, so
+// deciding whether a path may be absent is schema analysis - but *which* paths an
+// expression reads is a question for whichever language the expression is in.
 //
-// This mirrors what fromSource already does, where a default is mandatory exactly
-// when an optional source field feeds a required parameter. The decision is
-// target-aware and the target is not this package's business, so the undefended
-// reads are returned rather than judged: admission pairs them with the parameter
-// it is filling and errors only when that parameter is required.
-func UndefendedReads(raw string, schemas map[string]string) ([]Reference, error) {
-	parsed, err := Parse(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx := newContext()
+// A default is not needed for most reads. A schema is a contract, so a declared
+// non-optional field is always present and demanding a fallback for it would be
+// noise. It is needed exactly where the schema does not promise the value:
+// an optional field, or a key of an open map.
+func UndefendedIn(refs []Reference, schemas map[string]string) ([]Reference, error) {
 	compiled := map[string]cue.Value{}
-	for name, schema := range schemas {
-		v := ctx.CompileString(schema)
+	for name, text := range schemas {
+		v := newContext().CompileString(text)
 		if v.Err() != nil {
-			return nil, fmt.Errorf("source %q has an unreadable schema: %w", name, v.Err())
+			continue
 		}
 		compiled[name] = v
 	}
 
 	var out []Reference
-	for _, f := range parsed.Fragments {
-		if !f.IsExpr() {
+	for _, ref := range refs {
+		if !ref.IsSource() || ref.Defaulted {
 			continue
 		}
-		refs, err := References(f.Expr)
+		absent, err := canBeAbsent(ref, compiled)
 		if err != nil {
 			return nil, err
 		}
-		for _, ref := range refs {
-			if ref.Defaulted {
-				continue
-			}
-			mayBeAbsent, err := canBeAbsent(ref, compiled)
-			if err != nil {
-				return nil, err
-			}
-			if mayBeAbsent {
-				out = append(out, ref)
-			}
+		if absent {
+			out = append(out, ref)
 		}
 	}
 	return out, nil
 }
 
-// canBeAbsent reports whether a read might find nothing at render.
 func canBeAbsent(ref Reference, schemas map[string]cue.Value) (bool, error) {
 	if !ref.IsSource() {
 		// Context has no schema. An indexed read - a label or annotation - is a

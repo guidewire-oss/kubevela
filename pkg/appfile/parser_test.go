@@ -1323,7 +1323,7 @@ func TestPolicyExpressionValuesMatchPolicyContext(t *testing.T) {
 	}
 
 	// And the reverse: nothing declared may be missing from the supply.
-	for _, field := range sourceexpr.PolicyContext.Fields() {
+	for _, field := range sourceexpr.PolicyContext.ReadableFields() {
 		probe := &Appfile{
 			Name: "checkout", Namespace: "prod", AppRevisionName: "checkout-v3",
 			app:      af.app,

@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -806,30 +805,13 @@ func evaluateSourceExpression(raw string, resolver *sourceResolver) (interface{}
 		}
 	}
 
-	if celEngineEnabled() {
-		return celEvalProperty(raw, resolved, resolver.expressionContext())
-	}
-	return sourceexpr.EvalIn(raw, resolved, resolver.expressionContext(),
-		sourceexpr.ContextFor(resolver.surface), sourceexpr.SourceIdent, sourceexpr.ContextIdent)
-}
-
-// celEngineEnabled selects the CEL expression engine.
-//
-// A spike switch, not a feature gate: it exists so both engines can be run
-// against the same Application on a cluster and the results compared. The syntax
-// an author writes is largely identical - source.cfg.host reads the same either
-// way - so the same manifest exercises both.
-func celEngineEnabled() bool {
-	return os.Getenv("VELA_EXPR_ENGINE") == "cel"
+	return celEvalProperty(raw, resolved, resolver.expressionContext())
 }
 
 // expressionReferences extracts the reads an expression makes, through whichever
 // engine is selected. Both must agree, or dependency ordering and +sensitive
 // redaction would differ between them.
 func expressionReferences(expr string) ([]sourceexpr.Reference, error) {
-	if !celEngineEnabled() {
-		return sourceexpr.References(expr)
-	}
 	env, err := celexpr.DynEnv()
 	if err != nil {
 		return nil, err
@@ -868,7 +850,7 @@ func celEvalProperty(raw string, resolved map[string]map[string]interface{},
 // the render's process context.
 func (r *sourceResolver) expressionContext() map[string]interface{} {
 	out := map[string]interface{}{}
-	for _, field := range sourceexpr.ContextFor(r.surface).Fields() {
+	for _, field := range sourceexpr.ContextFor(r.surface).ReadableFields() {
 		if v := r.ctx.GetData(field); v != nil {
 			out[field] = v
 		}
