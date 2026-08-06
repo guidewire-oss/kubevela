@@ -21,8 +21,8 @@ spec:
         port: 80
         env:
           - name: DEFAULT_REF
-            value: '$(source.dflt.content.version & string)'
+            value: '$(string(source.dflt.content.version))'
           - name: MASTER
-            value: '$(source.onMaster.content.version & string)'
+            value: '$(string(source.onMaster.content.version))'
           - name: BRANCH
-            value: '$(source.onBranch.content.version & string)'
+            value: '$(string(source.onBranch.content.version))'

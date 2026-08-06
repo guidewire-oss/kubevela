@@ -27,7 +27,7 @@ import "vela/velaconfig"
 //	  - name: API_TOKEN
 //	    valueFrom:
 //	      secretKeyRef:
-//	        name: '$(*source.cfg.outputs.creds.name | "missing-creds")'
+//	        name: '$(has(source.cfg.outputs.creds.name) ? source.cfg.outputs.creds.name : "missing-creds")'
 //	        key: token
 //
 // Anything needing the value itself should reach it by a mechanism built for

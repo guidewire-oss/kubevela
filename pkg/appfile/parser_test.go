@@ -1204,7 +1204,7 @@ func TestResolvePolicyExpressions(t *testing.T) {
 				Name: "tagger",
 				Type: "override",
 				Properties: &runtime.RawExtension{Raw: []byte(
-					`{"owner":"$(*context.appLabels[\"owner\"] | \"none\")","who":"$(context.policyName)"}`)},
+					`{"owner":"$(\"owner\" in context.appLabels ? context.appLabels[\"owner\"] : \"none\")","who":"$(context.policyName)"}`)},
 			}},
 		}
 		if err := (&Parser{}).resolvePolicyExpressions(context.Background(), af); err != nil {
@@ -1303,8 +1303,8 @@ func TestPolicyExpressionValuesMatchPolicyContext(t *testing.T) {
 			// interpolation syntax, which is not a legal JSON escape.
 			Properties: &runtime.RawExtension{Raw: []byte(`{"probe":"` +
 				`$(context.appName)|$(context.namespace)|$(context.appRevision)|` +
-				`$(context.appRevisionNum)|$(*context.appLabels[\"owner\"] | \"none\")|` +
-				`$(*context.appAnnotations[\"note\"] | \"none\")|` +
+				`$(context.appRevisionNum)|$(\"owner\" in context.appLabels ? context.appLabels[\"owner\"] : \"none\")|` +
+				`$(\"note\" in context.appAnnotations ? context.appAnnotations[\"note\"] : \"none\")|` +
 				`$(context.policyName)|$(context.policyType)"}`)},
 		}},
 	}
@@ -1331,7 +1331,7 @@ func TestPolicyExpressionValuesMatchPolicyContext(t *testing.T) {
 		}
 		read := "$(context." + field + ")"
 		if field == "appLabels" || field == "appAnnotations" {
-			read = `$(*context.` + field + `["k"] | "none")`
+			read = `$("k" in context.` + field + ` ? context.` + field + `["k"] : "none")`
 		}
 		probe.Policies[0].Properties = &runtime.RawExtension{
 			Raw: []byte(`{"x":"` + strings.ReplaceAll(read, `"`, `\"`) + `"}`),

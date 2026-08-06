@@ -53,17 +53,17 @@ spec:
           # An optional schema field this tenant has not opted into. Without
           # the default, admission refuses it.
           - name: MESH_DOMAIN
-            value: '$(*source.tenant.meshDomain | "no-mesh")'
+            value: '$(has(source.tenant.meshDomain) ? source.tenant.meshDomain : "no-mesh")'
           # Context, with a default: a label may be rewritten by a policy before
           # this renders, so admission requires the fallback.
           - name: OWNER
-            value: '$(*context.appLabels["owner"] | "unassigned")'
+            value: '$(has(context.appLabels["owner"]) ? context.appLabels["owner"] : "unassigned")'
           - name: WHERE
             value: '$(context.appName + "." + context.namespace)'
           # An optional schema field the platform has not published for this
           # cluster. Without the default, admission refuses it.
           - name: MIRROR
-            value: '$(*source.registry.mirror | "none")'
+            value: '$(has(source.registry.mirror) ? source.registry.mirror : "none")'
 
       traits:
         - type: scaler
@@ -78,7 +78,7 @@ spec:
     - name: cost-tagging
       type: cost-tag
       properties:
-        owner: '$(*context.appLabels["owner"] | "unassigned")'
+        owner: '$(has(context.appLabels["owner"]) ? context.appLabels["owner"] : "unassigned")'
         app:   '$(context.appName + "--" + context.namespace)'
 
   workflow:
@@ -102,4 +102,4 @@ spec:
               service:     '$(source.catalog.serviceName)'
               tier:        '$(source.catalog.tier)'
               costCentre:  '$(source.tenant.costCentre)'
-              replicas:    '$("\(source.tenant.maxReplicas div 2)")'
+              replicas:    '$(string(source.tenant.maxReplicas / 2))'

@@ -20,12 +20,12 @@ spec:
         env:
           # An open map, so each read carries a default.
           - name: TIER
-            value: '$(*source.app.data["tier"] | "unset")'
+            value: '$(has(source.app.data["tier"]) ? source.app.data["tier"] : "unset")'
           - name: REGION
-            value: '$(*source.platform.data["region"] | "unknown")'
+            value: '$(has(source.platform.data["region"]) ? source.platform.data["region"] : "unknown")'
           # A key that is not there falls back rather than failing.
           - name: MISSING
-            value: '$(*source.app.data["nope"] | "absent")'
+            value: '$(has(source.app.data["nope"]) ? source.app.data["nope"] : "absent")'
           # ConfigMap values are strings - so this concatenates, not adds.
           - name: REPLICAS_STR
-            value: '$(*source.app.data["replicas"] | "0")'
+            value: '$(has(source.app.data["replicas"]) ? source.app.data["replicas"] : "0")'

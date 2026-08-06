@@ -22,6 +22,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/operators"
 )
 
 // Reference is one read an expression makes, mirroring sourceexpr.Reference so
@@ -156,17 +157,45 @@ func guarded(e celast.NavigableExpr, root string, path []string) bool {
 	return false
 }
 
-// testsPath reports whether an expression contains has(<root>.<path>) for this
-// exact path - the presence test that makes a read safe.
+// testsPath reports whether an expression contains a presence test for this exact
+// path - the thing that makes a read safe.
+//
+// CEL spells that two ways, and both are needed. has(x.y) covers a declared field,
+// but its macro rejects an index: has(m["k"]) does not compile. A map key is
+// therefore tested with `"k" in m`, and that is the only form available when the
+// key is not an identifier - which is every domain-prefixed label,
+// context.appLabels["platform.io/team"] among them.
 func testsPath(e celast.Expr, root string, path []string) bool {
 	found := false
 	celast.PostOrderVisit(e, celast.NewExprVisitor(func(n celast.Expr) {
-		if found || n.Kind() != celast.SelectKind || !n.AsSelect().IsTestOnly() {
+		if found {
 			return
 		}
-		r, p, ok := pathOf(n)
-		if ok && r == root && samePath(p, path) {
-			found = true
+		// has(x.y)
+		if n.Kind() == celast.SelectKind && n.AsSelect().IsTestOnly() {
+			if r, p, ok := pathOf(n); ok && r == root && samePath(p, path) {
+				found = true
+			}
+			return
+		}
+		// "k" in m - the container plus the key is the path being tested.
+		if n.Kind() == celast.CallKind {
+			call := n.AsCall()
+			if call.FunctionName() != operators.In && call.FunctionName() != operators.OldIn {
+				return
+			}
+			args := call.Args()
+			if len(args) != 2 || args[0].Kind() != celast.LiteralKind {
+				return
+			}
+			key, ok := args[0].AsLiteral().Value().(string)
+			if !ok {
+				return
+			}
+			r, p, ok := pathOf(args[1])
+			if ok && r == root && samePath(append(append([]string{}, p...), key), path) {
+				found = true
+			}
 		}
 	}))
 	return found

@@ -20,10 +20,10 @@ spec:
         port: 80
         env:
           - name: TIER
-            value: '$(source.cfg.content.tier & string)'
+            value: '$(string(source.cfg.content.tier))'
           - name: REPLICAS
-            value: '$("\(source.cfg.content.replicas & int)")'
+            value: '$(string(source.cfg.content.replicas))'
           - name: NOTE
-            value: '$(source.note.content & string)'
+            value: '$(string(source.note.content))'
           - name: STATUS
-            value: '$("\(source.cfg.statusCode)")'
+            value: '$(string(source.cfg.statusCode))'

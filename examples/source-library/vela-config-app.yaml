@@ -15,8 +15,8 @@ spec:
         env:
           # properties is open, so each read asserts its type
           - name: TIER
-            value: '$(source.settings.properties.tier & string)'
+            value: '$(string(source.settings.properties.tier))'
           - name: REPLICAS
-            value: '$("\(source.settings.properties.replicas & int)")'
+            value: '$(string(source.settings.properties.replicas))'
           - name: ENDPOINT
-            value: '$(source.settings.properties.endpoint & string)'
+            value: '$(string(source.settings.properties.endpoint))'

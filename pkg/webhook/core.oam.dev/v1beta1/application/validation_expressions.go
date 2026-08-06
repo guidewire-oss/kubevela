@@ -289,7 +289,8 @@ func (h *ValidatingHandler) sourceSchemaTexts(ctx context.Context, appNamespace 
 // expressionKind types a property value that carries expressions.
 func (h *ValidatingHandler) expressionKind(ctx context.Context, appNamespace, raw string,
 	sourceNameToType map[string]string, schemaValidators map[string]*sourceSchemaValidator) (cue.Kind, error) {
-	return expressionValueType(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators), sourceexpr.ComponentContext, sourceexpr.SourceIdent, sourceexpr.ContextIdent)
+	return expressionValueType(raw, h.sourceSchemaTexts(ctx, appNamespace, sourceNameToType, schemaValidators),
+		sourceexpr.ComponentContext, sourceexpr.SourceIdent, sourceexpr.ContextIdent)
 }
 
 // undefendedExpressionReads returns the reads in a property value that could be

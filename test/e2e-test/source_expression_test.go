@@ -224,7 +224,7 @@ patch: {
   "secure":   "$(source.infra.secure)",
   "tags":     "$(source.infra.tags)",
   "meta":     "$(source.infra.meta)",
-  "fallback": "$(*source.infra.note | \"unset\")",
+  "fallback": "$(has(source.infra.note) ? source.infra.note : \"unset\")",
   "halved":   "$(source.infra.port div 2)"
 }`)},
 				}},
@@ -336,7 +336,7 @@ output: {
 						Type: "expr-tag-trait",
 						// One from a source, one from context, in the same block.
 						Properties: &runtime.RawExtension{Raw: []byte(`{
-  "owner": "$(*context.appLabels[\"team\"] | \"unowned\")",
+  "owner": "$(\"team\" in context.appLabels ? context.appLabels[\"team\"] : \"unowned\")",
   "where": "$(source.infra.meta.zone + \"--\" + context.namespace)"
 }`)},
 					}},
@@ -682,7 +682,7 @@ output: {
 				Policies: []v1beta1.AppPolicy{{
 					Name: "tagger", Type: "expr-scope-policy",
 					Properties: &runtime.RawExtension{Raw: []byte(`{
-  "owner": "$(*context.appLabels[\"team\"] | \"unowned\")",
+  "owner": "$(\"team\" in context.appLabels ? context.appLabels[\"team\"] : \"unowned\")",
   "where": "$(context.appName + \"--\" + context.namespace)"
 }`)},
 				}},

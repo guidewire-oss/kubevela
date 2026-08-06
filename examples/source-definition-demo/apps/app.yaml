@@ -37,7 +37,7 @@ spec:
               # good practice: without it, an absent costCenter would omit the
               # key entirely. (Admission only *requires* a default when an
               # optional source field feeds a required target parameter.)
-              costCenter: '$(*source.tenant.costCenter | "unassigned")'
+              costCenter: '$(has(source.tenant.costCenter) ? source.tenant.costCenter : "unassigned")'
               region:
                 '$(source.cluster.region)'
               zone:

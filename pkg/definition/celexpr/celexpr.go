@@ -63,6 +63,17 @@ import (
 // know this shape" that CEL will still evaluate, at the cost of static checking
 // for that subtree. That mirrors how sourceexpr treats an open region.
 func DeclTypeFor(v cue.Value) *apiservercel.DeclType {
+	return declTypeNamed(v, "vela.schema")
+}
+
+// declTypeNamed is DeclTypeFor with an explicit type name.
+//
+// The name has to be unique per binding. Every source schema is compiled the same
+// way, so deriving it from the CUE path gave every one of them the same name and
+// they collided in the type provider: whichever registered first won, and a read
+// against any other reported its fields as undefined. Only a test with two
+// sources catches that - with one binding there is nothing to collide with.
+func declTypeNamed(v cue.Value, name string) *apiservercel.DeclType {
 	switch v.IncompleteKind() {
 	case cue.StringKind:
 		return apiservercel.StringType
@@ -74,7 +85,7 @@ func DeclTypeFor(v cue.Value) *apiservercel.DeclType {
 		return apiservercel.BoolType
 	case cue.ListKind:
 		if elem := v.LookupPath(cue.MakePath(cue.AnyIndex)); elem.Exists() {
-			return apiservercel.NewListType(DeclTypeFor(elem), -1)
+			return apiservercel.NewListType(declTypeNamed(elem, name+".item"), -1)
 		}
 		return apiservercel.NewListType(apiservercel.AnyType, -1)
 	case cue.StructKind:
@@ -82,7 +93,7 @@ func DeclTypeFor(v cue.Value) *apiservercel.DeclType {
 		// named fields is a CEL object. The distinction matters: a map read may
 		// be absent (has() applies), an object field is declared.
 		if elem := v.LookupPath(cue.MakePath(cue.AnyString)); elem.Exists() {
-			return apiservercel.NewMapType(apiservercel.StringType, DeclTypeFor(elem), -1)
+			return apiservercel.NewMapType(apiservercel.StringType, declTypeNamed(elem, name+".value"), -1)
 		}
 		fields := map[string]*apiservercel.DeclField{}
 		iter, err := v.Fields(cue.Optional(true))
@@ -90,25 +101,14 @@ func DeclTypeFor(v cue.Value) *apiservercel.DeclType {
 			return apiservercel.AnyType
 		}
 		for iter.Next() {
-			name := iter.Selector().Unquoted()
-			fields[name] = apiservercel.NewDeclField(
-				name, DeclTypeFor(iter.Value()), !iter.IsOptional(), nil, nil)
+			f := iter.Selector().Unquoted()
+			fields[f] = apiservercel.NewDeclField(
+				f, declTypeNamed(iter.Value(), name+"."+f), !iter.IsOptional(), nil, nil)
 		}
-		return apiservercel.NewObjectType("source."+objectName(v), fields)
+		return apiservercel.NewObjectType(name, fields)
 	default:
 		return apiservercel.AnyType
 	}
-}
-
-// objectName gives each schema object a distinct CEL type name. CEL requires
-// object types to be named and registered, so two sources with different shapes
-// cannot share one.
-func objectName(v cue.Value) string {
-	p := v.Path().String()
-	if p == "" {
-		return "root"
-	}
-	return p
 }
 
 // Env builds a CEL environment where `source` and `context` are typed from the
@@ -128,7 +128,8 @@ func env(sources map[string]cue.Value, ctx map[string]*apiservercel.DeclType, ex
 		if err := ValidBindingName(name); err != nil {
 			return nil, err
 		}
-		srcFields[name] = apiservercel.NewDeclField(name, DeclTypeFor(schema), true, nil, nil)
+		srcFields[name] = apiservercel.NewDeclField(
+			name, declTypeNamed(schema, "vela.source."+name), true, nil, nil)
 	}
 	sourceType := apiservercel.NewObjectType("vela.source", srcFields)
 
@@ -295,7 +296,7 @@ func EnvForSurface(sources map[string]cue.Value, surface string) (*cel.Env, erro
 		if !ok {
 			continue
 		}
-		ctx[name] = DeclTypeFor(v)
+		ctx[name] = declTypeNamed(v, "vela.context."+name)
 	}
 	return env(sources, ctx)
 }
@@ -419,7 +420,7 @@ func EnvForContext(schemaText map[string]string, ctxSchema sourceexpr.ContextSch
 		if !ok {
 			continue
 		}
-		ctx[name] = DeclTypeFor(fv)
+		ctx[name] = declTypeNamed(fv, "vela.context."+name)
 	}
 	return env(sources, ctx)
 }

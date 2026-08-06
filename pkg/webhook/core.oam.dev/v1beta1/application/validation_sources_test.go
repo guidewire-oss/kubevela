@@ -491,7 +491,7 @@ parameter: {
 					Sources: []v1beta1.ApplicationSource{{Name: "s", Type: "str-source", Properties: rawJSON(`{}`)}},
 					Components: []common.ApplicationComponent{{
 						Name: "web", Type: "webservice",
-						Properties: rawJSON(`{"image":"$(*source.s.vpcId | \"none\")"}`),
+						Properties: rawJSON(`{"image":"$(has(source.s.vpcId) ? source.s.vpcId : \"none\")"}`),
 					}},
 				},
 			},
@@ -1302,8 +1302,8 @@ parameter: {objects: [...{}]}
 			Components: []common.ApplicationComponent{{
 				Name: "raw", Type: "k8s-objects",
 				Properties: rawJSON(`{"objects":[{"apiVersion":"v1","kind":"ConfigMap",` +
-					`"metadata":{"name":"n","labels":{"tier":"$(*source.cfg.data.tier | \"none\")"}},` +
-					`"data":{"image":"$(*source.cfg.data.image | \"none\")"}}]}`),
+					`"metadata":{"name":"n","labels":{"tier":"$(has(source.cfg.data.tier) ? source.cfg.data.tier : \"none\")"}},` +
+					`"data":{"image":"$(has(source.cfg.data.image) ? source.cfg.data.image : \"none\")"}}]}`),
 			}},
 		},
 	}
