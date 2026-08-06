@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,7 +42,7 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestParseModule_WellFormedModule(t *testing.T) {
-	mod, err := ParseModule("testdata/modules/s3")
+	mod, err := ParseModuleDir("testdata/modules/s3")
 	require.NoError(t, err)
 	require.NotNil(t, mod)
 
@@ -166,7 +167,7 @@ func TestParseModule_StructuralAndIdentityFailures(t *testing.T) {
 			dir := copyMinimalModule(t)
 			c.mutate(t, dir)
 
-			mod, err := ParseModule(dir)
+			mod, err := ParseModuleDir(dir)
 			require.Error(t, err)
 			require.Nil(t, mod)
 			assert.Contains(t, err.Error(), c.wantErrSubstr)
@@ -183,7 +184,7 @@ func TestParseModule_OptionalAuxiliaryResources(t *testing.T) {
 		dir := copyMinimalModule(t)
 		require.NoError(t, os.Remove(filepath.Join(dir, "auxiliary", "xrd.yaml")))
 
-		mod, err := ParseModule(dir)
+		mod, err := ParseModuleDir(dir)
 		require.NoError(t, err)
 		require.NotNil(t, mod)
 
@@ -198,7 +199,7 @@ func TestParseModule_OptionalAuxiliaryResources(t *testing.T) {
 		dir := copyMinimalModule(t)
 		require.NoError(t, os.Remove(filepath.Join(dir, "v1", "auxiliary", "composition.yaml")))
 
-		mod, err := ParseModule(dir)
+		mod, err := ParseModuleDir(dir)
 		require.NoError(t, err)
 		require.NotNil(t, mod)
 
@@ -208,4 +209,22 @@ func TestParseModule_OptionalAuxiliaryResources(t *testing.T) {
 		assert.Nil(t, line.Composition)
 		require.Len(t, line.Definitions, 1)
 	})
+}
+
+func TestParseModule_FS(t *testing.T) {
+	fsys := fstest.MapFS{
+		"_module.cue":                    {Data: []byte(`module: "s3"` + "\n" + `version: "1.0.0"`)},
+		"auxiliary/xrd.yaml":             {Data: []byte("apiVersion: apiextensions.crossplane.io/v1\nkind: CompositeResourceDefinition\nmetadata:\n  name: xs3\n")},
+		"v1/_version.cue":                {Data: []byte(`apiVersion: "v1"`)},
+		"v1/auxiliary/composition.yaml":  {Data: []byte("apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: s3\n")},
+		"v1/definitions/bucket.yaml":     {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: atmos-s3-v1\n")},
+	}
+	mod, err := ParseModule(fsys)
+	require.NoError(t, err)
+	require.Equal(t, "s3", mod.Name)
+	require.Equal(t, "1.0.0", mod.Version)
+	require.NotNil(t, mod.XRD)
+	require.Contains(t, mod.Lines, "v1")
+	require.NotNil(t, mod.Lines["v1"].Composition)
+	require.Len(t, mod.Lines["v1"].Definitions, 1)
 }
