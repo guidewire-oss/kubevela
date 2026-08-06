@@ -24,7 +24,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"sort"
 	"strings"
 
 	"helm.sh/helm/v3/pkg/chart/loader"
@@ -33,26 +32,20 @@ import (
 	"github.com/oam-dev/kubevela/pkg/module"
 )
 
-// ModuleRegistryStore resolves module registries by name. Its two methods match
-// addon.RegistryDataStore exactly (value Registry, not pointer), so GWCP-106679's
-// store — an addon.RegistryDataStore over the separate vela-module-registry
-// ConfigMap — satisfies this directly with no adapter. GetRegistry already loads
-// the token from its secret (loadTokenFromSecret), so fetch does no auth itself.
-type ModuleRegistryStore interface {
-	GetRegistry(ctx context.Context, name string) (addon.Registry, error)
-	ListRegistries(ctx context.Context) ([]addon.Registry, error)
-}
-
-// Service fetches modules. Its reader/puller seams are wired to the real addon
-// transport by NewService and overridden by tests.
+// Service fetches modules. It resolves registries through module.ResolveRegistry
+// (GWCP-106679) over an addon.RegistryDataStore — reusing that story's default
+// policy, source rejection, token loading, and not-found reporting. Its
+// reader/puller seams are wired to the real addon transport by NewService and
+// overridden by tests.
 type Service struct {
-	store     ModuleRegistryStore
+	store     addon.RegistryDataStore
 	newReader func(reg *addon.Registry) (addon.AsyncReader, error)
 	pullChart ociChartPuller
 }
 
-// NewService wires the real addon transport.
-func NewService(store ModuleRegistryStore) *Service {
+// NewService wires the real addon transport. In production the store is
+// module.NewStore(cli) (the vela-module-registry ConfigMap).
+func NewService(store addon.RegistryDataStore) *Service {
 	return &Service{
 		store:     store,
 		newReader: buildModuleReader,
@@ -69,13 +62,15 @@ func buildModuleReader(reg *addon.Registry) (addon.AsyncReader, error) {
 }
 
 // FetchModule resolves the registry, fetches the module's files into an fs.FS,
-// and parses them. An empty registry name resolves the sole registry.
+// and parses them. Resolution is module.ResolveRegistry: an empty name selects
+// the sole registry or the "catalog" default, non-git/OCI sources are rejected,
+// and unknown names report the configured registries (wrapping ErrRegistryNotFound).
 func (s *Service) FetchModule(ctx context.Context, registry, moduleName string) (*module.Module, error) {
-	reg, err := s.resolve(ctx, registry)
+	reg, err := module.ResolveRegistry(ctx, s.store, registry)
 	if err != nil {
 		return nil, err
 	}
-	fsys, err := s.sourceFS(ctx, reg, moduleName)
+	fsys, err := s.sourceFS(ctx, &reg, moduleName)
 	if err != nil {
 		return nil, err
 	}
@@ -86,45 +81,17 @@ func (s *Service) FetchModule(ctx context.Context, registry, moduleName string) 
 	return mod, nil
 }
 
-// resolve returns the named registry, or the sole registry when name is empty.
-// This default policy (empty -> sole) is the one bit of resolution addon has no
-// equivalent for; GetRegistry/ListRegistries and token loading are all reused.
-func (s *Service) resolve(ctx context.Context, name string) (*addon.Registry, error) {
-	if name != "" {
-		reg, err := s.store.GetRegistry(ctx, name)
-		if err != nil {
-			return nil, fmt.Errorf("resolve module registry %q: %w", name, err)
-		}
-		return &reg, nil
-	}
-	regs, err := s.store.ListRegistries(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("resolve default module registry: %w", err)
-	}
-	switch len(regs) {
-	case 1:
-		return &regs[0], nil
-	case 0:
-		return nil, fmt.Errorf("no module registry configured; specify one with --registry")
-	default:
-		names := make([]string, 0, len(regs))
-		for _, r := range regs {
-			names = append(names, r.Name)
-		}
-		sort.Strings(names)
-		return nil, fmt.Errorf("multiple module registries (%s); specify one with --registry", strings.Join(names, ", "))
-	}
-}
-
-// sourceFS dispatches on the registry source type and returns the module tree
-// as an fs.FS. Both branches converge on readerFS: git supplies the live reader,
-// OCI (Task 4) supplies a MemoryReader over the pulled chart. readerFS errors are
-// wrapped with the registry name so a failing Application status is actionable.
+// sourceFS dispatches on the registry source and returns the module tree as an
+// fs.FS. module.ResolveRegistry already guarantees reg is a git or OCI source
+// (it rejects helm/OSS/gitee/gitlab), so only those two branches exist. Both
+// converge on readerFS: git supplies the live reader, OCI a MemoryReader over the
+// pulled chart. readerFS errors are wrapped with the registry name so a failing
+// Application status is actionable.
 func (s *Service) sourceFS(ctx context.Context, reg *addon.Registry, moduleName string) (fs.FS, error) {
 	switch {
 	case reg.OCI != nil:
 		return s.ociChartFS(ctx, reg, moduleName)
-	case reg.Git != nil || reg.Gitee != nil || reg.Gitlab != nil || reg.OSS != nil:
+	case reg.Git != nil:
 		reader, err := s.newReader(reg)
 		if err != nil {
 			return nil, fmt.Errorf("registry %q: build reader: %w", reg.Name, err)
@@ -152,7 +119,7 @@ func readerFS(r addon.AsyncReader, moduleName string) (fs.FS, error) {
 	}
 	meta, ok := metas[moduleName]
 	if !ok {
-		return nil, fmt.Errorf("module %q not found in registry", moduleName)
+		return nil, fmt.Errorf("module %q not found in registry: %w", moduleName, module.ErrModuleNotFound)
 	}
 	prefix := moduleName + "/"
 	files := mapFS{}
