@@ -824,6 +824,28 @@ mechanical and invisible to both.
 | `image: '$(source.registry.nope)'` | *undefined field 'nope'* |
 | `image: '$(parameter.image)'` | *undeclared reference to 'parameter'* |
 
+**Validation is two-phase, and the second is gated on the first.** Soundness comes
+first — expressions compile, their types fit the parameters they feed, sources are
+declared and ordered, names are unique, permissions hold — and rendering is
+attempted only when all of it passes.
+
+| Phase | Answers | Cost |
+|---|---|---|
+| Soundness | is the Application well-formed? | static; no evaluation, no side effects |
+| Rendering | does it actually render? | generates the appfile, evaluates every template and trait, **resolves every source for real** |
+
+The gate exists because rendering was restating soundness failures in the
+evaluator's words and from a coarser field path: a type error reported precisely
+against `spec.components[0].properties.tags` reappeared as an opaque failure
+against `"schematic"`, so the same mistake was reported twice and the second
+telling was the worse one. It also stops an Application already known to be
+invalid from issuing whatever HTTP, git or Kubernetes reads its sources perform —
+admission-time resolution is real resolution.
+
+The cost is that a soundness failure hides a rendering failure until it is fixed.
+That is the usual compiler trade, and it is why the two phases are named: they
+answer different questions and only one of them can be answered cheaply.
+
 The last row is the sandbox: an environment declares exactly `source` and `context`,
 so any other identifier fails to compile. It needs no grammar restriction to
 enforce, and it holds inside a macro body, which is the one place an author could
@@ -1504,6 +1526,7 @@ an appendix; the reasoning that is not obvious from the result is under
 | A14 | A source may key on its caller's identity, which restricts where it can be consumed |
 | A15 | Expressions are CEL; the purpose-built expression engine is removed, and conditionals — previously excluded by A6 — are supported |
 | A16 | The Strings and Lists extensions are offered, and a collection's element type is checked against the parameter it feeds |
+| A17 | Validation is two-phase: rendering is attempted only when soundness passes |
 
 Nothing in this feature has shipped, so none of these carried compatibility debt.
 A15 changed authored syntax with nothing in the field to migrate.
@@ -1614,6 +1637,15 @@ arithmetic, because that was the whole grammar. After the swap it passed 30/30
 while saying nothing about conditionals, comprehensions, string functions or
 element types — every one of which was now reachable. Three defects were sitting in
 that gap. A green suite is evidence about the code it was written for.
+
+
+**Accumulating every check's errors made the precise ones worth less.** Validation
+ran soundness and rendering and reported both, so a type error arrived alongside
+the render's restatement of it — the same mistake twice, and the second telling
+against `"schematic"` rather than the property that caused it. The fix was not a
+better message but an ordering: answer the cheap question first, and only ask the
+expensive one when the answer is yes. Admission-time source resolution is real
+resolution, so the expensive question also has consequences outside the cluster.
 
 ## Cross-KEP References
 
