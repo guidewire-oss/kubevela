@@ -912,6 +912,33 @@ output: labels: "policy-owner": parameter.owner
 			expectRejected(`{"host":"$(source.infra.missing)"}`, "not declared")
 		})
 
+		It("reports the type error alone, without also attempting the render", func() {
+			// Validation is two-phase: soundness gates rendering. Before the gate
+			// a type error was reported twice - once precisely, once as an opaque
+			// evaluator failure against "schematic" - and the render resolved
+			// every source for real on an Application already known to be bad.
+			app := &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{Name: "expr-gated", Namespace: namespaceName},
+				Spec: v1beta1.ApplicationSpec{
+					Sources: []v1beta1.ApplicationSource{{
+						Name:       "infra",
+						Type:       "infra-facts",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"host":"h","port":1}`)},
+					}},
+					Components: []oamcomm.ApplicationComponent{{
+						Name: "probe", Type: "expr-probe-comp",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"port":"$(source.infra.host)"}`)},
+					}},
+				},
+			}
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("type mismatch"))
+			// The render phase never ran, so neither of its error shapes appears.
+			Expect(err.Error()).ToNot(ContainSubstring("schematic"))
+			Expect(err.Error()).ToNot(ContainSubstring("validation process context"))
+		})
+
 		It("denies an identifier outside the sandbox", func() {
 			expectRejected(`{"host":"$(parameter.host)"}`, "undeclared reference to 'parameter'")
 		})

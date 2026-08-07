@@ -90,7 +90,28 @@ func (in *appRevBypassCacheClient) Get(ctx context.Context, key client.ObjectKey
 	return in.Client.Get(ctx, key, obj)
 }
 
-// ValidateComponents validates the Application components
+// ValidateComponentNames reports duplicated component names.
+//
+// It reads only the Application, so it belongs to the soundness phase rather than
+// behind appfile generation, where a name clash used to be reported only once
+// every expression in the Application already type-checked.
+func (h *ValidatingHandler) ValidateComponentNames(_ context.Context, app *v1beta1.Application) field.ErrorList {
+	appParser := appfile.NewApplicationParser(&appRevBypassCacheClient{Client: h.Client})
+	if i, err := appParser.ValidateComponentNames(app); err != nil {
+		return field.ErrorList{field.Invalid(
+			field.NewPath(fmt.Sprintf("components[%d].name", i)), app, err.Error())}
+	}
+	return nil
+}
+
+// ValidateComponents generates the appfile and renders it, which is the only way
+// to learn what no static check can tell: that the templates evaluate, the traits
+// apply, and the sources actually resolve.
+//
+// It is the expensive half of validation and the destructive-adjacent one - source
+// resolution here issues whatever HTTP, git or Kubernetes reads the definitions
+// perform - so ValidateCreate does not call it until everything cheaper has
+// passed.
 func (h *ValidatingHandler) ValidateComponents(ctx context.Context, app *v1beta1.Application) field.ErrorList {
 	if sharding.EnableSharding && !utilfeature.DefaultMutableFeatureGate.Enabled(features.ValidateComponentWhenSharding) {
 		return nil
@@ -105,9 +126,6 @@ func (h *ValidatingHandler) ValidateComponents(ctx context.Context, app *v1beta1
 		componentErrs = append(componentErrs, field.Invalid(field.NewPath("spec"), app, err.Error()))
 		// cannot generate appfile, no need to validate further
 		return componentErrs
-	}
-	if i, err := appParser.ValidateComponentNames(app); err != nil {
-		componentErrs = append(componentErrs, field.Invalid(field.NewPath(fmt.Sprintf("components[%d].name", i)), app, err.Error()))
 	}
 	if err := appParser.ValidateCUESchematicAppfile(af); err != nil {
 		componentErrs = append(componentErrs, field.Invalid(field.NewPath("schematic"), app, err.Error()))
@@ -476,21 +494,64 @@ func (h *ValidatingHandler) ValidateAnnotations(_ context.Context, app *v1beta1.
 	return annotationsErrs
 }
 
-// ValidateCreate validates the Application on creation
+// ValidateCreate validates the Application on creation.
+//
+// Validation runs in two phases, and the second is not attempted when the first
+// finds anything.
+//
+//	soundness   is the Application well-formed?  expressions compile, their types
+//	            fit the parameters they feed, sources are declared and ordered,
+//	            names are unique, permissions hold
+//	rendering   does it actually render?  generate the appfile, evaluate every
+//	            template and trait, resolve every source for real
+//
+// The gate earns its place twice over. Rendering restates soundness failures in
+// the evaluator's words and from a coarser field path: a type error reported
+// precisely against spec.components[0].properties.tags reappeared as an opaque
+// failure against "schematic", so the same mistake was reported twice and the
+// second telling was the worse one.
+//
+// And rendering is not free of consequence. Resolving a source at admission
+// issues whatever HTTP, git or Kubernetes reads its definition performs, so an
+// Application already known to be invalid would still reach out to the world
+// before being refused.
+//
+// The cost is that a soundness failure hides any rendering failure until it is
+// fixed. That is the usual compiler trade - fewer and more precise errors per
+// round - and it is the reason the phases are named in the errors they produce.
 func (h *ValidatingHandler) ValidateCreate(ctx context.Context, app *v1beta1.Application, req admission.Request) field.ErrorList {
+	if errs := h.validateSoundness(ctx, app, req); len(errs) > 0 {
+		return errs
+	}
+	return h.ValidateComponents(ctx, app)
+}
+
+// validateSoundness runs every check that can be made without rendering: whether
+// the Application is well-formed, its expressions compile, their types fit the
+// parameters they feed, its sources are declared and ordered, its names unique.
+//
+// Nothing here evaluates a template or resolves a source, so it is cheap and has
+// no side effects.
+func (h *ValidatingHandler) validateSoundness(ctx context.Context, app *v1beta1.Application, req admission.Request) field.ErrorList {
 	var errs field.ErrorList
 
 	errs = append(errs, h.ValidateAnnotations(ctx, app)...)
 	errs = append(errs, h.ValidateDefinitionPermissions(ctx, app, req)...)
 	errs = append(errs, h.ValidateSources(ctx, app)...)
 	errs = append(errs, h.ValidateWorkflow(ctx, app)...)
-	errs = append(errs, h.ValidateComponents(ctx, app)...)
+	errs = append(errs, h.ValidateComponentNames(ctx, app)...)
 	return errs
 }
 
 // ValidateUpdate validates the Application on update
+//
+// The immutable-field check is soundness, not rendering, so it gates the render
+// alongside the rest rather than being reported after it.
 func (h *ValidatingHandler) ValidateUpdate(ctx context.Context, newApp, oldApp *v1beta1.Application, req admission.Request) field.ErrorList {
-	errs := h.ValidateCreate(ctx, newApp, req)
+	errs := h.validateSoundness(ctx, newApp, req)
 	errs = append(errs, h.ValidateImmutableFields(ctx, newApp, oldApp)...)
-	return errs
+	if len(errs) > 0 {
+		return errs
+	}
+	return h.ValidateComponents(ctx, newApp)
 }
