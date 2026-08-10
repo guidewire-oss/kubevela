@@ -34,6 +34,7 @@ import (
 	"github.com/kubevela/workflow/pkg/providers/util"
 
 	addonprovider "github.com/oam-dev/kubevela/pkg/cue/cuex/providers/addon"
+	moduleprovider "github.com/oam-dev/kubevela/pkg/cue/cuex/providers/module"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers/config"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers/helm"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers/legacy"
@@ -78,6 +79,9 @@ var compiler = singleton.NewSingletonE[*cuex.Compiler](func() (*cuex.Compiler, e
 		// component/addon provider package so definitions importing "vela/addon"
 		// can be compiled for OpenAPI schema generation and definition validation.
 		addonprovider.Package,
+		// component/module provider package so definitions importing "vela/module"
+		// can be compiled for OpenAPI schema generation and definition validation.
+		moduleprovider.Package,
 	), nil
 })
 

@@ -652,6 +652,15 @@ func fixSchemaWithOneOf(schema *openapi3.SchemaRef) error {
 
 func completeSchema(key string, schema *openapi3.SchemaRef) error {
 	schema.Value.Title = key
+	// Apply the free-form workaround at every level, not just the top-level
+	// parameter: a nested free-form object (e.g. `properties: {...}`) must also
+	// get additionalProperties set, otherwise openapi-generator emits a broken
+	// model for it. Guarded to object type so plain string fields are untouched
+	// (completeFreeFormSchema's string branch is only meant for a top-level
+	// free-form string parameter).
+	if schema.Value.Type.Is(openapi3.TypeObject) {
+		completeFreeFormSchema(schema)
+	}
 	if schema.Value.OneOf != nil {
 		err := fixSchemaWithOneOf(schema)
 		return err
