@@ -60,6 +60,14 @@ const (
 	LabelDefinition = "definition.oam.dev"
 	// LabelDefinitionName is the label for definition name
 	LabelDefinitionName = "definition.oam.dev/name"
+	// LabelDefinitionModule is the KEP-2.20 module a definition came from.
+	LabelDefinitionModule = "definition.oam.dev/module"
+	// LabelDefinitionAPIVersion is the module API line a definition belongs to.
+	LabelDefinitionAPIVersion = "definition.oam.dev/api-version"
+	// AnnoDefinitionFullName carries the untruncated {module}-{apiVersion}-{name}
+	// identity, for definitions whose full name exceeds the 253-char object-name
+	// limit and therefore had to be truncated and hashed.
+	AnnoDefinitionFullName = "definition.oam.dev/full-name"
 	// LabelDefinitionDeprecated is the label which describe whether the capability is deprecated
 	LabelDefinitionDeprecated = "custom.definition.oam.dev/deprecated"
 	// LabelDefinitionHidden is the label which describe whether the capability is hidden by UI
