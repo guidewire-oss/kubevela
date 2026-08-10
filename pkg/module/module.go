@@ -24,6 +24,11 @@ package module
 type Line struct {
 	// APIVersion is the API line identifier, e.g. "v1", "v1beta1".
 	APIVersion string
+	// Enabled is the module author's install switch for this line, read from
+	// v<N>/_version.cue's top-level enabled field. Absent means true: a line
+	// ships installable unless its author opts out. The render service
+	// (GWCP-106941) installs every enabled line and skips the rest.
+	Enabled bool
 	// Composition is the per-line Crossplane Composition, read from
 	// v<N>/auxiliary/composition.yaml when present; nil for a KRO-style or
 	// infra-less line that ships no auxiliary/.
