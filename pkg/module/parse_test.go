@@ -228,3 +228,30 @@ func TestParseModule_FS(t *testing.T) {
 	require.NotNil(t, mod.Lines["v1"].Composition)
 	require.Len(t, mod.Lines["v1"].Definitions, 1)
 }
+
+func TestParseModule_EnabledDefaultsTrue(t *testing.T) {
+	fsys := fstest.MapFS{
+		"_module.cue":                {Data: []byte("module: \"s3\"\nversion: \"1.0.0\"")},
+		"v1/_version.cue":            {Data: []byte("apiVersion: \"v1\"")},
+		"v1/definitions/bucket.yaml": {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n")},
+	}
+
+	mod, err := ParseModule(fsys)
+	require.NoError(t, err)
+	require.True(t, mod.Lines["v1"].Enabled, "a line with no enabled field defaults to enabled")
+}
+
+func TestParseModule_EnabledFalseIsCaptured(t *testing.T) {
+	fsys := fstest.MapFS{
+		"_module.cue":                {Data: []byte("module: \"s3\"\nversion: \"1.0.0\"")},
+		"v1/_version.cue":            {Data: []byte("apiVersion: \"v1\"\nenabled: false")},
+		"v1/definitions/bucket.yaml": {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n")},
+		"v2/_version.cue":            {Data: []byte("apiVersion: \"v2\"\nenabled: true")},
+		"v2/definitions/bucket.yaml": {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n")},
+	}
+
+	mod, err := ParseModule(fsys)
+	require.NoError(t, err)
+	require.False(t, mod.Lines["v1"].Enabled)
+	require.True(t, mod.Lines["v2"].Enabled)
+}
