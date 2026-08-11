@@ -5,7 +5,7 @@ import (
 "module": {
 	annotations: {}
 	attributes: workload: type: "autodetects.core.oam.dev"
-	description: "Install a KEP-2.20 module: fetch it and render its owned Application (XRD, Compositions, definitions) with health-gated tier ordering."
+	description: "Install a module: fetch it and render its owned Application (XRD, Compositions, definitions) with health-gated tier ordering."
 	labels: {}
 	type: "component"
 }

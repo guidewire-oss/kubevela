@@ -60,7 +60,7 @@ const (
 	LabelDefinition = "definition.oam.dev"
 	// LabelDefinitionName is the label for definition name
 	LabelDefinitionName = "definition.oam.dev/name"
-	// LabelDefinitionModule is the KEP-2.20 module a definition came from.
+	// LabelDefinitionModule is the module a definition came from.
 	LabelDefinitionModule = "definition.oam.dev/module"
 	// LabelDefinitionAPIVersion is the module API line a definition belongs to.
 	LabelDefinitionAPIVersion = "definition.oam.dev/api-version"

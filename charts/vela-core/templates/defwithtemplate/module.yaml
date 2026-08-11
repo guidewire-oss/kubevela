@@ -4,7 +4,7 @@ apiVersion: core.oam.dev/v1beta1
 kind: ComponentDefinition
 metadata:
   annotations:
-    definition.oam.dev/description: 'Install a KEP-2.20 module: fetch it and render its owned Application (XRD, Compositions, definitions) with health-gated tier ordering.'
+    definition.oam.dev/description: 'Install a module: fetch it and render its owned Application (XRD, Compositions, definitions) with health-gated tier ordering.'
   name: module
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:

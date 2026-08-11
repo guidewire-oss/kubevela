@@ -172,7 +172,7 @@ func objectsTier(name string, objects []interface{}, dependsOn string) map[strin
 // maxObjectNameLen is the Kubernetes limit for a metadata.name.
 const maxObjectNameLen = 253
 
-// stampIdentity returns a copy of def carrying its KEP-2.20 identity: the
+// stampIdentity returns a copy of def carrying its module identity: the
 // {module}-{apiVersion}-{name} object name, the definition identity labels, the
 // full-name annotation, and the spec identity fields. It copies rather than
 // mutates because the parsed Module is shared and may be cached.
