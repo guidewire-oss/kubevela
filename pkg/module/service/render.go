@@ -137,12 +137,13 @@ func enabledLines(mod *module.Module) []string {
 	return out
 }
 
-// readyTier wraps objects in the readiness-carrier component so the next tier
-// waits on a real status condition rather than on mere application.
+// readyTier wraps objects in k8s-objects with a readyConditionType, so the next
+// tier waits on a real status condition rather than on mere application. An empty
+// readyConditionType means "healthy once applied" (plain k8s-objects behavior).
 func readyTier(name string, objects []interface{}, readyConditionType, dependsOn string) map[string]interface{} {
 	c := map[string]interface{}{
 		"name": name,
-		"type": "k8s-objects-ready",
+		"type": "k8s-objects",
 		"properties": map[string]interface{}{
 			"objects":            objects,
 			"readyConditionType": readyConditionType,
@@ -154,8 +155,8 @@ func readyTier(name string, objects []interface{}, readyConditionType, dependsOn
 	return c
 }
 
-// objectsTier wraps objects in a plain k8s-objects component. Nothing gates on
-// the definitions tier, so it needs no health policy of its own.
+// objectsTier wraps objects in a plain k8s-objects component (no readyConditionType,
+// so healthy once applied). Nothing gates on the definitions tier.
 func objectsTier(name string, objects []interface{}, dependsOn string) map[string]interface{} {
 	c := map[string]interface{}{
 		"name":       name,
