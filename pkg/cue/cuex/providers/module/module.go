@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package module provides the CueX `module.#Render` provider, which fetches a
-// KEP-2.20 module and renders its owned Application via the injected render
+// module and renders its owned Application via the injected render
 // service.
 package module
 
