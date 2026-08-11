@@ -1,6 +1,6 @@
 # SpokeCluster examples
 
-Generated 2026-07-31 against `feat/cluster-kep-infrastructure` @ `6a266aba1`.
+Generated 2026-08-11 against `feat/cluster-kep-infrastructure` @ `e4f581f34`.
 
 ## The thing to understand first: there are two Secrets
 
@@ -15,7 +15,7 @@ They are easy to conflate and they have opposite ownership.
 | Applies to | `credential.type: kubeconfig` only | Every credential type |
 | Example file | `00-credential-secret-kubeconfig.yaml` | `99-gateway-secret-reference.yaml` (reference only, do not apply) |
 
-We manually create the kubeconfig and a Secret for it is **but only for the kubeconfig credential type**, and the Secret you create is the input, not the cluster-gateway registration. The controller reads your Secret, materializes the credential, and writes a second Secret in `vela-system` that cluster-gateway actually consumes. That output Secret is deliberately bit-compatible with what `vela cluster join` writes, so existing consumers cannot tell the two apart.
+You create the kubeconfig Secret yourself, and only for `credential.type: kubeconfig`. That Secret is the input, not the cluster-gateway registration. The controller reads your Secret, materializes the credential, and writes a second Secret in `vela-system` that cluster-gateway actually consumes. That output Secret is deliberately bit-compatible with what `vela cluster join` writes, so existing consumers cannot tell the two apart.
 
 For `credential.type: aws` you create **no Secret at all**. The hub uses its ambient Pod Identity or IRSA identity, assumes the per-cluster role, calls `eks:DescribeCluster`, and mints a short-lived EKS bearer token (`k8s-aws-v1.`). The real token lifetime is **15 minutes** (STS GetCallerIdentity presign window); the controller schedules remint at **+13 minutes** (`Materialized.NextRefresh`, a 2-minute lead) and `nextRequeue` is `min(probeIntervalSeconds, time until NextRefresh)`. Cached credentials are reused until that deadline. Keep the probe interval under about 13 minutes if you want continuous Connected probes between remints.
 

@@ -108,8 +108,8 @@ var _ = It("SpokeCluster RegisteredInScheme", func() {
 })
 
 // TestSpokeCluster_KubeconfigCredential proves the kubeconfig arm round-trips
-// with an optional Secret namespace (webhook rejects cross-namespace refs by
-// default policy; the same-namespace case needs no explicit namespace).
+// with an optional Secret namespace (webhook rejects a namespace that does
+// not match the SpokeCluster; omit namespace to use the SpokeCluster's).
 var _ = It("SpokeCluster KubeconfigCredential", func() {
 	t := GinkgoT()
 	r := require.New(t)
