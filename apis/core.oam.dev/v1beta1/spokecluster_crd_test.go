@@ -141,8 +141,8 @@ var _ = It("SpokeClusterCRD Enums", func() {
 })
 
 // TestSpokeClusterCRD_OptionalSecretNamespace asserts the kubeconfig Secret
-// reference only requires a name; namespace is optional and cross-namespace
-// references are rejected by the webhook's default policy later
+// reference only requires a name; namespace is optional and a different
+// namespace is rejected by the admission webhook
 // (Requirement 2, criterion 2).
 var _ = It("SpokeClusterCRD OptionalSecretNamespace", func() {
 	t := GinkgoT()

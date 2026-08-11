@@ -251,10 +251,11 @@ type AWSCredential struct {
 
 // AzureCredential connects to an AKS cluster via Azure cloud-native identity.
 //
-// Phase 1 placeholder: the credential union accepts this arm and the webhook may
-// structurally validate it, but no provider materializes it yet. The fields
-// mirror what an AKS provider needs to locate the cluster and name the workload
-// identity the hub federates to. See the aws arm for the working reference.
+// Phase 1 placeholder: the CRD enum keeps this arm so the schema is
+// forward-compatible. The Phase 1 admission webhook rejects type azure.
+// No provider materializes it. The fields mirror what an AKS provider
+// needs to locate the cluster and name the workload identity the hub
+// federates to. See the aws arm for the working reference.
 type AzureCredential struct {
 	// AuthMode is the Azure authentication mode.
 	// +kubebuilder:validation:Enum=workloadIdentity;managedIdentity
@@ -280,10 +281,11 @@ type AzureCredential struct {
 
 // GCPCredential connects to a GKE cluster via GCP cloud-native identity.
 //
-// Phase 1 placeholder: the credential union accepts this arm and the webhook may
-// structurally validate it, but no provider materializes it yet. The fields
-// mirror what a GKE provider needs to locate the cluster and name the service
-// account the hub impersonates. See the aws arm for the working reference.
+// Phase 1 placeholder: the CRD enum keeps this arm so the schema is
+// forward-compatible. The Phase 1 admission webhook rejects type gcp.
+// No provider materializes it. The fields mirror what a GKE provider
+// needs to locate the cluster and name the service account the hub
+// impersonates. See the aws arm for the working reference.
 type GCPCredential struct {
 	// AuthMode is the GCP authentication mode.
 	// +kubebuilder:validation:Enum=workloadIdentityFederation;serviceAccount
@@ -308,8 +310,9 @@ type SecretKeyRef struct {
 	// Name is the Secret name.
 	Name string `json:"name"`
 
-	// Namespace is the Secret namespace. Cross-namespace references are
-	// rejected by the webhook's default policy.
+	// Namespace is the Secret namespace. If set, it must match the
+	// SpokeCluster namespace. The admission webhook rejects any other
+	// value. Omit it to use the SpokeCluster's namespace.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 

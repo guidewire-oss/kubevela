@@ -227,8 +227,9 @@ spec:
                             type: string
                           namespace:
                             description: |-
-                              Namespace is the Secret namespace. Cross-namespace references are
-                              rejected by the webhook's default policy.
+                              Namespace is the Secret namespace. If set, it must match the
+                              SpokeCluster namespace. The admission webhook rejects any other
+                              value. Omit it to use the SpokeCluster's namespace.
                             type: string
                         required:
                         - name
