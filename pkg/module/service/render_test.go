@@ -250,19 +250,21 @@ func TestRenderApplication_TierCarriesReadyCondition(t *testing.T) {
 	}
 
 	xrd := byName["s3-xrd"]
-	require.Equal(t, "k8s-objects-ready", xrd["type"])
+	require.Equal(t, "k8s-objects", xrd["type"])
 	xrdProps := xrd["properties"].(map[string]interface{})
 	require.Equal(t, "Established", xrdProps["readyConditionType"])
 	require.Len(t, xrdProps["objects"], 1)
 
 	// Crossplane's Composition has no status.conditions, so this hop cannot
-	// gate on a real condition; empty means healthy once applied.
+	// gate on a real condition; empty readyConditionType means healthy once applied.
 	comp := byName["s3-v1-comp"]
-	require.Equal(t, "k8s-objects-ready", comp["type"])
+	require.Equal(t, "k8s-objects", comp["type"])
 	require.Equal(t, "", comp["properties"].(map[string]interface{})["readyConditionType"])
 
-	// The definitions tier needs no health policy: nothing gates on it.
+	// The definitions tier sets no readyConditionType: nothing gates on it.
 	require.Equal(t, "k8s-objects", byName["s3-v1-defs"]["type"])
+	_, hasReady := byName["s3-v1-defs"]["properties"].(map[string]interface{})["readyConditionType"]
+	require.False(t, hasReady)
 }
 
 func TestRenderApplication_StampsDefinitionIdentity(t *testing.T) {
