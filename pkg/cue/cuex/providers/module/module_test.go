@@ -51,12 +51,13 @@ func TestRender_PassesParamsThroughAndReturnsApplication(t *testing.T) {
 	api.SetDefaultRenderer(fake)
 
 	out, err := Render(context.Background(), &RenderParams{
-		Params: RenderVars{Module: "s3", Registry: "catalog"},
+		Params: RenderVars{Module: "s3", Registry: "catalog", Namespace: "team-a"},
 	})
 	require.NoError(t, err)
 
 	assert.Equal(t, "s3", fake.req.Module)
 	assert.Equal(t, "catalog", fake.req.Registry)
+	assert.Equal(t, "team-a", fake.req.Namespace)
 	assert.Equal(t, app, out.Returns.Application)
 }
 

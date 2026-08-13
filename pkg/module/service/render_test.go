@@ -358,8 +358,14 @@ func TestRenderApplication_TruncatesLongNamesWithAStableHash(t *testing.T) {
 	for _, c := range components(t, app) {
 		if c["name"] == "s3-v1-defs" {
 			objs := c["properties"].(map[string]interface{})["objects"].([]interface{})
-			annos := objs[0].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})
+			meta := objs[0].(map[string]interface{})["metadata"].(map[string]interface{})
+			annos := meta["annotations"].(map[string]interface{})
 			require.Equal(t, "s3-v1-"+long, annos[types.AnnoDefinitionFullName])
+
+			// The name label value stays within the Kubernetes 63-char label limit,
+			// so the definitions tier can apply even for an over-long definition name.
+			nameLabel := meta["labels"].(map[string]interface{})[types.LabelDefinitionName].(string)
+			require.LessOrEqual(t, len(nameLabel), 63)
 		}
 	}
 }
