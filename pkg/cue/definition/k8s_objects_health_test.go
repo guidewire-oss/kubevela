@@ -33,7 +33,7 @@ const readyHealthPolicy = `
 ready: {
 	conditions: *[] | [...]
 } & {
-	if context.output.status != _|_ {
+	if _wantType != "" && context.output.status != _|_ {
 		if context.output.status.conditions != _|_ {
 			conditions: context.output.status.conditions
 		}
@@ -106,4 +106,23 @@ func TestK8sObjects_OmittedConditionTypeIsBackwardCompatible(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, healthy, "omitted readyConditionType must fall back to healthy-once-applied")
+}
+
+// TestK8sObjects_NullConditionsWithOmittedTypeStaysHealthy covers an object whose
+// status.conditions is null (or another non-list shape) and which sets no
+// readyConditionType. The policy must not constrain that status to a list on the
+// backward-compatible path, so it stays healthy-on-apply instead of erroring.
+func TestK8sObjects_NullConditionsWithOmittedTypeStaysHealthy(t *testing.T) {
+	tmplCtx := map[string]interface{}{
+		"output": map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"status":     map[string]interface{}{"conditions": nil},
+		},
+	}
+	healthy, err := health.CheckHealth(tmplCtx, readyHealthPolicy, map[string]interface{}{
+		"objects": []interface{}{},
+	})
+	require.NoError(t, err)
+	assert.True(t, healthy, "null conditions with no readyConditionType must not break the eval")
 }

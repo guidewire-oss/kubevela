@@ -37,7 +37,11 @@ spec:
       ready: {
       	conditions: *[] | [...]
       } & {
-      	if context.output.status != _|_ {
+      	// Only read the object's conditions when a readyConditionType is set.
+      	// With none set (the backward-compatible default) leave conditions as
+      	// the empty default, so an object whose status.conditions is null or a
+      	// non-list shape cannot break the health evaluation.
+      	if _wantType != "" && context.output.status != _|_ {
       		if context.output.status.conditions != _|_ {
       			conditions: context.output.status.conditions
       		}
