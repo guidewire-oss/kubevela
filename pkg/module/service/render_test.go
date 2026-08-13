@@ -80,7 +80,7 @@ func components(t *testing.T, app map[string]interface{}) []map[string]interface
 }
 
 func TestRenderApplication_OwnedApplicationShape(t *testing.T) {
-	app, err := RenderApplication(fixtureModule())
+	app, err := RenderApplication(fixtureModule(), "")
 	require.NoError(t, err)
 
 	require.Equal(t, "core.oam.dev/v1beta1", app["apiVersion"])
@@ -94,6 +94,26 @@ func TestRenderApplication_OwnedApplicationShape(t *testing.T) {
 	require.Equal(t, "s3-xrd", comps[0]["name"])
 	require.Equal(t, "s3-v1-comp", comps[1]["name"])
 	require.Equal(t, "s3-v1-defs", comps[2]["name"])
+}
+
+func TestRenderApplication_DefaultsToVelaSystemWithLabel(t *testing.T) {
+	app, err := RenderApplication(&module.Module{Name: "s3"}, "")
+	require.NoError(t, err)
+
+	meta := app["metadata"].(map[string]interface{})
+	require.Equal(t, types.DefaultKubeVelaNS, meta["namespace"])
+	require.Equal(t, "module-s3", meta["name"])
+
+	labels := meta["labels"].(map[string]interface{})
+	require.Equal(t, "s3", labels[types.LabelDefinitionModule])
+}
+
+func TestRenderApplication_HonorsChosenNamespace(t *testing.T) {
+	app, err := RenderApplication(&module.Module{Name: "s3"}, "team-a")
+	require.NoError(t, err)
+
+	meta := app["metadata"].(map[string]interface{})
+	require.Equal(t, "team-a", meta["namespace"])
 }
 
 // twoLineModule ships v1 and v2, both with a Composition and a definition.
@@ -134,7 +154,7 @@ func names(comps []map[string]interface{}) []string {
 }
 
 func TestRenderApplication_BothEnabledLinesInstall(t *testing.T) {
-	app, err := RenderApplication(twoLineModule(true, true))
+	app, err := RenderApplication(twoLineModule(true, true), "")
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
@@ -145,7 +165,7 @@ func TestRenderApplication_BothEnabledLinesInstall(t *testing.T) {
 }
 
 func TestRenderApplication_DisabledLineIsSkipped(t *testing.T) {
-	app, err := RenderApplication(twoLineModule(false, true))
+	app, err := RenderApplication(twoLineModule(false, true), "")
 	require.NoError(t, err)
 
 	got := names(components(t, app))
@@ -154,7 +174,7 @@ func TestRenderApplication_DisabledLineIsSkipped(t *testing.T) {
 }
 
 func TestRenderApplication_LinesAreSiblingsNotAChain(t *testing.T) {
-	app, err := RenderApplication(twoLineModule(true, true))
+	app, err := RenderApplication(twoLineModule(true, true), "")
 	require.NoError(t, err)
 
 	byName := map[string]map[string]interface{}{}
@@ -175,7 +195,7 @@ func TestRenderApplication_NoXRDOmitsTheXRDTier(t *testing.T) {
 	mod := fixtureModule()
 	mod.XRD = nil
 
-	app, err := RenderApplication(mod)
+	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	comps := components(t, app)
@@ -190,7 +210,7 @@ func TestRenderApplication_NoCompositionOmitsTheCompositionTier(t *testing.T) {
 	line.Composition = nil
 	mod.Lines["v1"] = line
 
-	app, err := RenderApplication(mod)
+	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	comps := components(t, app)
@@ -206,7 +226,7 @@ func TestRenderApplication_KROStyleModuleHasNoGates(t *testing.T) {
 	line.Composition = nil
 	mod.Lines["v1"] = line
 
-	app, err := RenderApplication(mod)
+	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	comps := components(t, app)
@@ -215,7 +235,7 @@ func TestRenderApplication_KROStyleModuleHasNoGates(t *testing.T) {
 }
 
 func TestRenderApplication_AllLinesDisabledYieldsOnlyTheXRDTier(t *testing.T) {
-	app, err := RenderApplication(twoLineModule(false, false))
+	app, err := RenderApplication(twoLineModule(false, false), "")
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"s3-xrd"}, names(components(t, app)))
@@ -234,14 +254,14 @@ func TestRenderApplication_TierNamesComeFromTheMapKey(t *testing.T) {
 	delete(mod.Lines, "v1")
 	mod.Lines["v9beta1"] = line // declared apiVersion disagreed with the directory
 
-	app, err := RenderApplication(mod)
+	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"s3-xrd", "s3-v9beta1-comp", "s3-v9beta1-defs"}, names(components(t, app)))
 }
 
 func TestRenderApplication_TierCarriesReadyCondition(t *testing.T) {
-	app, err := RenderApplication(fixtureModule())
+	app, err := RenderApplication(fixtureModule(), "")
 	require.NoError(t, err)
 
 	byName := map[string]map[string]interface{}{}
@@ -268,7 +288,7 @@ func TestRenderApplication_TierCarriesReadyCondition(t *testing.T) {
 }
 
 func TestRenderApplication_StampsDefinitionIdentity(t *testing.T) {
-	app, err := RenderApplication(fixtureModule())
+	app, err := RenderApplication(fixtureModule(), "")
 	require.NoError(t, err)
 
 	var defs []interface{}
@@ -299,7 +319,7 @@ func TestRenderApplication_StampsDefinitionIdentity(t *testing.T) {
 
 func TestRenderApplication_DoesNotMutateTheFetchedModule(t *testing.T) {
 	mod := fixtureModule()
-	_, err := RenderApplication(mod)
+	_, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	// The parsed Module is shared and may be cached; the render must copy.
@@ -315,9 +335,9 @@ func TestRenderApplication_TruncatesLongNamesWithAStableHash(t *testing.T) {
 	line.Definitions = []map[string]interface{}{definition(long)}
 	mod.Lines["v1"] = line
 
-	app, err := RenderApplication(mod)
+	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
-	app2, err := RenderApplication(mod)
+	app2, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	nameOf := func(a map[string]interface{}) string {

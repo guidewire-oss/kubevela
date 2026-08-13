@@ -31,6 +31,9 @@ import (
 type ModuleRequest struct {
 	Module   string
 	Registry string
+	// Namespace places the owned Application (install location). Empty means the
+	// default system namespace. The module is still installed once cluster-wide.
+	Namespace string
 }
 
 // ModuleResult is the rendered output: the module's owned Application as a
