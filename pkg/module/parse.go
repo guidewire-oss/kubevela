@@ -104,6 +104,11 @@ func parseLine(fsys fs.FS, dir string) (*Line, error) {
 		return nil, err
 	}
 
+	enabled, err := readCUEBoolField(fsys, versionPath, "enabled", true)
+	if err != nil {
+		return nil, fmt.Errorf("read enabled: %w", err)
+	}
+
 	composition, err := readOptionalYAMLFile(fsys, path.Join(dir, "auxiliary", "composition.yaml"))
 	if err != nil {
 		return nil, fmt.Errorf("read composition: %w", err)
@@ -142,7 +147,7 @@ func parseLine(fsys fs.FS, dir string) (*Line, error) {
 		defs = append(defs, rendered)
 	}
 
-	return &Line{APIVersion: apiVersion, Composition: composition, Definitions: defs}, nil
+	return &Line{APIVersion: apiVersion, Enabled: enabled, Composition: composition, Definitions: defs}, nil
 }
 
 // renderDefinition compiles a single definition file into its unstructured
@@ -186,21 +191,46 @@ func unmarshalYAML(data []byte) (map[string]interface{}, error) {
 	return obj, nil
 }
 
-// readCUEStringField compiles the small identity CUE file at p in fsys and
-// returns the string value at fieldPath (e.g. "module", "version",
-// "apiVersion").
-func readCUEStringField(fsys fs.FS, p, fieldPath string) (string, error) {
+// lookupCUEField compiles the small identity CUE file at p in fsys and
+// returns the value at fieldPath along with whether it exists, shared by
+// readCUEStringField and readCUEBoolField.
+func lookupCUEField(fsys fs.FS, p, fieldPath string) (cue.Value, bool, error) {
 	data, err := fs.ReadFile(fsys, p)
 	if err != nil {
-		return "", err
+		return cue.Value{}, false, err
 	}
 	val := cuecontext.New().CompileBytes(data)
 	if err := val.Err(); err != nil {
-		return "", err
+		return cue.Value{}, false, err
 	}
 	field := val.LookupPath(cue.ParsePath(fieldPath))
-	if !field.Exists() {
+	return field, field.Exists(), nil
+}
+
+// readCUEStringField returns the string value at fieldPath (e.g. "module",
+// "version", "apiVersion"); a missing field is an error since these are
+// required identity fields.
+func readCUEStringField(fsys fs.FS, p, fieldPath string) (string, error) {
+	field, exists, err := lookupCUEField(fsys, p, fieldPath)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
 		return "", fmt.Errorf("field %s not found in %s", fieldPath, p)
 	}
 	return field.String()
+}
+
+// readCUEBoolField returns the bool value at fieldPath. A missing field
+// yields def, so an optional switch like "enabled" can default without every
+// module having to declare it.
+func readCUEBoolField(fsys fs.FS, p, fieldPath string, def bool) (bool, error) {
+	field, exists, err := lookupCUEField(fsys, p, fieldPath)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return def, nil
+	}
+	return field.Bool()
 }
