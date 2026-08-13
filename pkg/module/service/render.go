@@ -63,7 +63,7 @@ func (r *rendererImpl) RenderModule(ctx context.Context, req api.ModuleRequest) 
 	if err != nil {
 		return nil, err
 	}
-	app, err := RenderApplication(mod)
+	app, err := RenderApplication(mod, req.Namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -73,9 +73,12 @@ func (r *rendererImpl) RenderModule(ctx context.Context, req api.ModuleRequest) 
 // RenderApplication builds the module's owned Application. It is pure: given a
 // parsed Module it touches no cluster and no registry, which is what lets the
 // whole tier layout be unit-tested against a fixture.
-func RenderApplication(mod *module.Module) (map[string]interface{}, error) {
+func RenderApplication(mod *module.Module, namespace string) (map[string]interface{}, error) {
 	if mod == nil || mod.Name == "" {
 		return nil, fmt.Errorf("render module: module has no name")
+	}
+	if namespace == "" {
+		namespace = types.DefaultKubeVelaNS
 	}
 
 	comps := []interface{}{}
@@ -116,8 +119,14 @@ func RenderApplication(mod *module.Module) (map[string]interface{}, error) {
 	return map[string]interface{}{
 		"apiVersion": "core.oam.dev/v1beta1",
 		"kind":       "Application",
-		"metadata":   map[string]interface{}{"name": "module-" + mod.Name},
-		"spec":       map[string]interface{}{"components": comps},
+		"metadata": map[string]interface{}{
+			"name":      "module-" + mod.Name,
+			"namespace": namespace,
+			"labels": map[string]interface{}{
+				types.LabelDefinitionModule: mod.Name,
+			},
+		},
+		"spec": map[string]interface{}{"components": comps},
 	}, nil
 }
 

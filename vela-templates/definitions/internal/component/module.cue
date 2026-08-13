@@ -13,8 +13,9 @@ import (
 template: {
 	_render: module.#Render & {
 		$params: {
-			module:   parameter.module
-			registry: parameter.registry
+			module:    parameter.module
+			registry:  parameter.registry
+			namespace: parameter.namespace
 		}
 	}
 
@@ -25,5 +26,7 @@ template: {
 		module: *context.name | string
 		// Registry name; empty means the configured default.
 		registry: *"" | string
+		// Install namespace; empty means the default system namespace (vela-system).
+		namespace: *"" | string
 	}
 }

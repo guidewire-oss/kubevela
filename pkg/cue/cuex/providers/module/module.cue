@@ -5,8 +5,9 @@ package module
 	#provider: "module"
 
 	$params: {
-		module:   string
-		registry: *"" | string
+		module:    string
+		registry:  *"" | string
+		namespace: *"" | string
 	}
 	$returns?: {
 		application: {...}

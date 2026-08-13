@@ -39,8 +39,9 @@ var template string
 
 // RenderVars is the $params shape.
 type RenderVars struct {
-	Module   string `json:"module"`
-	Registry string `json:"registry"`
+	Module    string `json:"module"`
+	Registry  string `json:"registry"`
+	Namespace string `json:"namespace"`
 }
 
 // ResultVars is the $returns shape.
@@ -63,8 +64,9 @@ func Render(ctx context.Context, params *RenderParams) (*RenderReturns, error) {
 	}
 	p := params.Params
 	res, err := r.RenderModule(ctx, api.ModuleRequest{
-		Module:   p.Module,
-		Registry: p.Registry,
+		Module:    p.Module,
+		Registry:  p.Registry,
+		Namespace: p.Namespace,
 	})
 	if err != nil {
 		return nil, err
