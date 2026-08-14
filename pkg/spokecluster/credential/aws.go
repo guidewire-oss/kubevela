@@ -127,6 +127,11 @@ func defaultAWSClientFactory(ctx context.Context, cred *v1beta1.AWSCredential) (
 			o.ExternalID = &cred.ExternalID
 		}
 	})
-	scoped := aws.Config{Region: cred.Region, Credentials: aws.NewCredentialsCache(assumed)}
+	// Derive from base instead of building a fresh Config. base carries BaseEndpoint
+	// (from AWS_ENDPOINT_URL), the HTTP client and the retryer; a struct literal drops
+	// all of it and silently sends eks:DescribeCluster to the default AWS endpoint.
+	scoped := base.Copy()
+	scoped.Region = cred.Region
+	scoped.Credentials = aws.NewCredentialsCache(assumed)
 	return eks.NewFromConfig(scoped), signerFromCredentials(cred.Region, scoped.Credentials), nil
 }
