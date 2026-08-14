@@ -203,8 +203,12 @@ type ApplicationTraitStatus struct {
 
 // ApplicationSourceStatus records source resolution status.
 type ApplicationSourceStatus struct {
-	Name   string `json:"name"`
-	Type   string `json:"type,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
+	// Phase reports how the last resolution attempt for this source ended.
+	// Empty when the source has not been reached in this render.
+	// +optional
+	Phase  string `json:"phase,omitempty"`
 	Config string `json:"config,omitempty"`
 	// ExpiresAt is the RFC3339 timestamp when the currently served cache value expires.
 	ExpiresAt string `json:"expiresAt,omitempty"`

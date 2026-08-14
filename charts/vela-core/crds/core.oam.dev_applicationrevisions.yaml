@@ -197,8 +197,8 @@ spec:
                           type: object
                         type: array
                       sources:
-                        description: Sources defines external sources that can be
-                          read with $(source...).
+                        description: Sources defines external sources that properties
+                          can read with $(source...).
                         items:
                           description: ApplicationSource defines a source binding
                             under spec.sources.
@@ -733,6 +733,11 @@ spec:
                                   message:
                                     type: string
                                   name:
+                                    type: string
+                                  phase:
+                                    description: |-
+                                      Phase reports how the last resolution attempt for this source ended.
+                                      Empty when the source has not been reached in this render.
                                     type: string
                                   properties:
                                     description: Properties records only source fields
