@@ -49,7 +49,7 @@ The provider is stricter than `kubectl`. From `pkg/spokecluster/credential/kubec
 | `spokecluster-azure.yaml` | AKS shape. Do not apply: webhook rejects `type: azure` |
 | `spokecluster-gcp.yaml` | GKE shape. Do not apply: webhook rejects `type: gcp` |
 | `09-spoke-least-privilege-rbac.yaml` | Spoke-side ServiceAccount, ClusterRole, and binding for connect probes (not cluster-admin) |
-| `10-networkpolicy.yaml` | Hub NetworkPolicy example for cluster-core (webhook, metrics, egress via cluster-gateway). Prefer `clusterCore.networkPolicy.enabled=true` on the chart; keep this file as a hand-apply reference when the CNI enforces NetworkPolicy |
+| `10-networkpolicy.yaml` | Hub NetworkPolicy example for cluster-core (webhook, metrics, egress via cluster-gateway). Chart default is `clusterCore.networkPolicy.enabled=true`; keep this file as a hand-apply reference |
 | `99-gateway-secret-reference.yaml` | What the controller produces, for reading only |
 
 ## Applying them
@@ -71,7 +71,7 @@ helm install vela-core charts/vela-core -n vela-system --create-namespace \
 
 Note the gate does **not** control whether the CRD exists. Helm applies `crds/` unconditionally, so `kubectl get spokeclusters` works either way; with the gate off the objects simply never get a status.
 
-Apply `10-networkpolicy.yaml`, or set `clusterCore.networkPolicy.enabled=true` on the chart, when the CNI enforces NetworkPolicy. The policy opens the webhook port as to-source (API server IPs vary), restricts `/metrics` to Prometheus, and lets cluster-core egress to DNS, the API server, cluster-gateway, and HTTPS (AWS). It does not lock cluster-gateway ingress; the aggregated APIService and vela-core also dial it.
+`clusterCore.networkPolicy.enabled` defaults to `true`. The policy opens the webhook port as to-source (API server IPs vary), restricts `/metrics` to Prometheus, and lets cluster-core egress to DNS, the API server, cluster-gateway, and HTTPS (AWS). It does not lock cluster-gateway ingress; the aggregated APIService and vela-core also dial it. Set `clusterCore.networkPolicy.enabled=false` only when the CNI rejects NetworkPolicy objects, or apply `10-networkpolicy.yaml` by hand as a reference.
 
 ## CLI
 

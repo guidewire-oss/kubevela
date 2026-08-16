@@ -209,12 +209,12 @@ clusterCore:
     port: 9441
   ## @param clusterCore.metricsPort Metrics port for vela-cluster-core
   metricsPort: 8080
-  ## @param clusterCore.networkPolicy.enabled Create a NetworkPolicy that limits who can scrape cluster-core /metrics and constrains egress. Off by default (example-equivalent policy also lives under docs/examples/spokecluster-connect/10-networkpolicy.yaml). Enable when the CNI enforces NetworkPolicy.
+  ## @param clusterCore.networkPolicy.enabled Create a NetworkPolicy that limits who can scrape cluster-core /metrics and constrains egress. On by default so /metrics is not world-reachable when the CNI enforces NetworkPolicy; set false only for CNIs that reject or ignore NetworkPolicy objects. An example-equivalent policy also lives under docs/examples/spokecluster-connect/10-networkpolicy.yaml.
   ## @param clusterCore.networkPolicy.metricsScraperLabels Pod labels that may scrape :metricsPort. Default matches common Prometheus operator labels.
   ## @param clusterCore.networkPolicy.extraIngress Extra ingress rules appended after health/webhook/metrics (for example node CIDR pins for kubelet).
   ## @param clusterCore.networkPolicy.extraEgress Extra egress rules appended after DNS/API/gateway.
   networkPolicy:
-    enabled: false
+    enabled: true
     metricsScraperLabels:
       app.kubernetes.io/name: prometheus
     extraIngress: []
