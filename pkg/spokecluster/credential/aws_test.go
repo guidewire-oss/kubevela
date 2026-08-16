@@ -61,6 +61,16 @@ func awsSpoke() *v1beta1.SpokeCluster {
 
 func strptr(s string) *string { return &s }
 
+var _ = BeforeEach(func() {
+	// Materialize specs use fake AWS clients; do not let the runner's IRSA/Pod
+	// Identity env trip assertAWSAuthModeMatchesAmbient before newClients runs.
+	ambientAWSIdentityHintsFn = func() (bool, bool) { return false, false }
+})
+
+var _ = AfterEach(func() {
+	ambientAWSIdentityHintsFn = ambientAWSIdentityHints
+})
+
 var _ = It("AWSProviderMaterialize", func() {
 	t := GinkgoT()
 	now := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
@@ -171,6 +181,7 @@ var _ = It("AWSProviderIncompleteCluster", func() {
 
 var _ = It("AssertAWSAuthModeMatchesAmbient", func() {
 	t := GinkgoT()
+	ambientAWSIdentityHintsFn = ambientAWSIdentityHints
 
 	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "")
 	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")

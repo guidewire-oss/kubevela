@@ -152,8 +152,13 @@ func ambientAWSIdentityHints() (podIdentity, irsa bool) {
 	return podIdentity, irsa
 }
 
+// ambientAWSIdentityHintsFn is the ambient-identity probe used by
+// assertAWSAuthModeMatchesAmbient. Tests replace it so Materialize specs do not
+// depend on IRSA/Pod Identity env vars inherited from the runner.
+var ambientAWSIdentityHintsFn = ambientAWSIdentityHints
+
 func assertAWSAuthModeMatchesAmbient(mode v1beta1.AWSAuthMode) error {
-	podIdentity, irsa := ambientAWSIdentityHints()
+	podIdentity, irsa := ambientAWSIdentityHintsFn()
 	switch mode {
 	case v1beta1.AWSAuthModePodIdentity:
 		if irsa && !podIdentity {
