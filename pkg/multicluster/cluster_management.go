@@ -49,6 +49,14 @@ import (
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
+// SpokeClusterOwnerAnnotation marks a gateway Secret as owned by a SpokeCluster
+// (namespace/name). Join and rename must not overwrite those Secrets. The
+// SpokeCluster controller writes the same key via its
+// secretOwnerAnnotation alias of this constant (see
+// pkg/controller/.../spokecluster/connect.go); do not introduce a second
+// string literal for this annotation.
+const SpokeClusterOwnerAnnotation = "spokecluster.core.oam.dev/owner"
+
 // ContextKey defines the key in context
 type ContextKey string
 
@@ -154,6 +162,11 @@ func (clusterConfig *KubeClusterConfig) createOrUpdateClusterSecret(ctx context.
 	if err := cli.Get(ctx, apitypes.NamespacedName{Name: clusterConfig.ClusterName, Namespace: ClusterGatewaySecretNamespace}, secret); client.IgnoreNotFound(err) != nil {
 		return err
 	}
+	if secret.ResourceVersion != "" {
+		if err := refuseSpokeClusterOwnedSecret(secret); err != nil {
+			return err
+		}
+	}
 	secret.Name = clusterConfig.ClusterName
 	secret.Namespace = ClusterGatewaySecretNamespace
 	secret.Type = corev1.SecretTypeOpaque
@@ -163,6 +176,23 @@ func (clusterConfig *KubeClusterConfig) createOrUpdateClusterSecret(ctx context.
 		return cli.Create(ctx, secret)
 	}
 	return cli.Update(ctx, secret)
+}
+
+// refuseSpokeClusterOwnedSecret blocks join/rename overwrite of a gateway Secret
+// that connect mode already manages. Without this, `vela cluster join` would
+// Update in place and the next SpokeCluster reconcile would fight over the bytes.
+func refuseSpokeClusterOwnedSecret(secret *corev1.Secret) error {
+	if secret == nil {
+		return nil
+	}
+	owner := ""
+	if secret.Annotations != nil {
+		owner = secret.Annotations[SpokeClusterOwnerAnnotation]
+	}
+	if owner == "" {
+		return nil
+	}
+	return fmt.Errorf("cluster secret %q is managed by SpokeCluster %s; refuse overwrite (detach the SpokeCluster or pick another name)", secret.Name, owner)
 }
 
 // RegisterByVelaSecret create cluster secrets for KubeVela to use
@@ -505,7 +535,12 @@ func DetachCluster(ctx context.Context, cli client.Client, clusterName string, o
 		if err != nil {
 			return errors.Wrapf(err, "cluster %s is not mutable now", clusterName)
 		}
-		if err := cli.Delete(ctx, clusterSecret); err != nil {
+		// UID precondition: a concurrent recreate under the same name must not
+		// delete the new Secret. Detach still removes SpokeCluster-owned Secrets
+		// (join overwrite is what we refuse); operators who detach by name are
+		// explicit about tearing the registration down.
+		uid := clusterSecret.UID
+		if err := cli.Delete(ctx, clusterSecret, client.Preconditions{UID: &uid}); err != nil {
 			return errors.Wrapf(err, "failed to detach cluster %s", clusterName)
 		}
 	case clusterv1alpha1.CredentialTypeOCMManagedCluster:
@@ -548,10 +583,14 @@ func RenameCluster(ctx context.Context, k8sClient client.Client, oldClusterName 
 	if err != nil {
 		return errors.Wrapf(err, "cluster %s is not mutable now", oldClusterName)
 	}
+	if err := refuseSpokeClusterOwnedSecret(clusterSecret); err != nil {
+		return err
+	}
 	if err := ensureClusterNotExists(ctx, k8sClient, newClusterName); err != nil {
 		return errors.Wrapf(err, "cannot set cluster name to %s", newClusterName)
 	}
-	if err := k8sClient.Delete(ctx, clusterSecret); err != nil {
+	uid := clusterSecret.UID
+	if err := k8sClient.Delete(ctx, clusterSecret, client.Preconditions{UID: &uid}); err != nil {
 		return errors.Wrapf(err, "failed to rename cluster from %s to %s", oldClusterName, newClusterName)
 	}
 	clusterSecret.ObjectMeta = metav1.ObjectMeta{

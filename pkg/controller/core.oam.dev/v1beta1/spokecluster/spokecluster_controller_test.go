@@ -900,7 +900,13 @@ var _ = It("StatusNeedsWriteIgnoresHeartbeatFields", func() {
 	heartbeat.ClusterInfo.LatencyMillis = 9
 	heartbeat.ClusterInfo.LastSyncedTime = &metav1.Time{Time: time.Unix(130, 0)}
 	if statusNeedsWrite(base, *heartbeat) {
-		t.Fatal("heartbeat-only status change should not write")
+		t.Fatal("sub-heartbeat status change should not write")
+	}
+
+	staleProbe := base.DeepCopy()
+	staleProbe.LastProbeTime = &metav1.Time{Time: time.Unix(100, 0).Add(probeHeartbeatInterval)}
+	if !statusNeedsWrite(base, *staleProbe) {
+		t.Fatal("lastProbeTime past the heartbeat interval must write")
 	}
 
 	versionBump := base.DeepCopy()
@@ -918,6 +924,20 @@ var _ = It("StatusNeedsWriteIgnoresHeartbeatFields", func() {
 	empty := v1beta1.SpokeClusterStatus{}
 	if !statusNeedsWrite(empty, base) {
 		t.Fatal("first status populate must write")
+	}
+
+	failing := base.DeepCopy()
+	failing.Connection = v1beta1.ConnectionStateDisconnected
+	setCondition(failing, v1beta1.SpokeClusterConditionConnected, metav1.ConditionFalse, reasonProbeFailed, "dial timeout")
+	failing.LastProbeTime = &metav1.Time{Time: time.Unix(130, 0)}
+	prevFailing := failing.DeepCopy()
+	prevFailing.LastProbeTime = &metav1.Time{Time: time.Unix(100, 0)}
+	if !statusNeedsWrite(*prevFailing, *failing) {
+		t.Fatal("repeated ProbeFailed with a newer lastProbeTime must write immediately")
+	}
+	sameProbe := failing.DeepCopy()
+	if statusNeedsWrite(*failing, *sameProbe) {
+		t.Fatal("identical ProbeFailed status should not write")
 	}
 })
 

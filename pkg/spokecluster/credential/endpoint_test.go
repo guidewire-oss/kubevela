@@ -104,6 +104,11 @@ func TestValidateSpokeEndpoint_deny(t *testing.T) {
 		{"https://169.254.169.254:80/", "blocked"},
 		{"https://169.254.0.1:6443", "blocked"},
 		{"https://169.254.255.255/", "blocked"},
+		{"https://100.100.100.200/", "blocked"},
+		{"https://100.100.100.200:80/latest/meta-data/", "blocked"},
+		{"https://[fc00::1]:6443", "blocked"},
+		{"https://[fd12:3456:789a::1]:6443", "blocked"},
+		{"https://[fec0::1]:6443", "blocked"},
 		{"https://[fe80::1]:6443", "blocked"},
 		{"https://[fe80::a00:27ff:fe4e:66a1]:6443", "blocked"},
 		// Zone IDs must be percent-encoded as %25 in URLs; Go rejects bare "%eth0".

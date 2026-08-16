@@ -66,15 +66,11 @@ const (
 	secretKeyProxyURL = "proxy-url"
 )
 
-// secretOwnerAnnotation records which SpokeCluster (namespace/name) last wrote a gateway
-// Secret. It is the only reliable way to tell "a Secret this controller manages" from "a
-// Secret it does not": the gateway Secret's identity is name-only within the fixed gateway
-// namespace, so a SpokeCluster's own namespace plays no part in it, and the owner
-// reference cannot be used for this because orphan deliberately clears it. Without this
-// marker register would silently adopt any pre-existing Secret with a matching name,
-// including one `vela cluster join` wrote by hand, or one written by an entirely different
-// SpokeCluster that happens to share a name across namespaces.
-const secretOwnerAnnotation = "spokecluster.core.oam.dev/owner"
+// secretOwnerAnnotation is the controller-local alias of
+// multicluster.SpokeClusterOwnerAnnotation. Join and rename refuse overwrite
+// using the same key; keep this alias so register/janitor and `vela cluster join`
+// cannot drift onto different annotation strings.
+const secretOwnerAnnotation = multicluster.SpokeClusterOwnerAnnotation
 
 // secretDeletionPolicyAnnotation records the SpokeCluster's deletionPolicy at the time the
 // gateway Secret was last written. Cross-namespace spokes cannot use an OwnerReference
@@ -270,9 +266,10 @@ func (r *Reconciler) secretReader() client.Reader {
 //     (see verifyServerNameCompatible) rather than silently registered and left to fail TLS
 //     verification on every connection.
 //   - An absent ca.crt historically meant an insecure endpoint to cluster-gateway
-//     (not "verify against the system roots"). Kubeconfig materialization now
-//     rejects insecure-skip-tls-verify and missing certificate-authority-data, so
-//     a successfully materialized connect credential always carries ca.crt.
+//     (not "verify against the system roots"). Kubeconfig materialization
+//     rejects insecure-skip-tls-verify and missing certificate-authority-data,
+//     and register refuses an empty CA bundle so a future provider cannot
+//     reopen skip-verify by omission.
 //   - Materialized.ProxyURL is written to data["proxy-url"] so a proxied
 //     kubeconfig matches what `vela cluster join` already records. Empty means
 //     the key is omitted (direct dial).
@@ -286,6 +283,12 @@ func (r *Reconciler) secretReader() client.Reader {
 // when the SpokeCluster itself is deleted. Confirmed live against a real `vela cluster
 // join` fixture before this guard existed.
 func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *credential.Materialized) error {
+	// Reserved name: admission and reconcile SpecInvalid already reject this, but
+	// register is the last write before a gateway Secret named "local" would
+	// collide with in-process hub routing.
+	if sc.Name == multicluster.ClusterLocalName {
+		return fmt.Errorf("refusing to register reserved cluster name %q", multicluster.ClusterLocalName)
+	}
 	secret := &corev1.Secret{}
 	key := gatewaySecretKey(sc)
 	err := r.Get(ctx, key, secret)
@@ -309,14 +312,17 @@ func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *
 	if err := credential.ValidateSpokeProxyURL(m.ProxyURL); err != nil {
 		return err
 	}
+	if len(m.CAData) == 0 {
+		return fmt.Errorf("refusing to register spoke %q without a CA bundle; empty ca.crt would make cluster-gateway skip TLS verification", sc.Name)
+	}
 
 	secret.Name = key.Name
 	secret.Namespace = key.Namespace
 	secret.Type = corev1.SecretTypeOpaque
 
-	data := map[string][]byte{secretKeyEndpoint: []byte(m.Endpoint)}
-	if len(m.CAData) > 0 {
-		data[secretKeyCACert] = m.CAData
+	data := map[string][]byte{
+		secretKeyEndpoint: []byte(m.Endpoint),
+		secretKeyCACert:   m.CAData,
 	}
 	var credType clusterv1alpha1.CredentialType
 	switch {

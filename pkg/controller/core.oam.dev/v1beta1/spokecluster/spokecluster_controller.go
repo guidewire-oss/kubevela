@@ -62,6 +62,11 @@ const (
 	// minRequeue floors every requeue. A credential whose refresh deadline has already
 	// passed would otherwise ask to be reconciled immediately, forever.
 	minRequeue = 5 * time.Second
+
+	// probeHeartbeatInterval is how often a healthy spoke may rewrite lastProbeTime
+	// (and only that heartbeat) so the LAST PROBE column stays meaningful without
+	// an etcd write every probe interval.
+	probeHeartbeatInterval = 5 * time.Minute
 )
 
 // Condition reasons. These are an operator-facing contract: they are what distinguishes an
@@ -302,12 +307,35 @@ func (r *Reconciler) updateStatus(ctx context.Context, sc *v1beta1.SpokeCluster,
 }
 
 // statusNeedsWrite reports whether next differs from prev in any operator-facing
-// field. lastProbeTime, lastSyncedTime, and latencyMillis move on every healthy
-// pass; writing them every probe interval is ~2 etcd writes per spoke per
-// interval for no state change. ignoreOwnStatusWrites already stops those
-// writes from requeueing. This skips the write itself.
+// field. latencyMillis and lastSyncedTime still move on every healthy pass and
+// are stripped from the compare so they do not force a write alone. lastProbeTime
+// is written on the first probe and then at most once per probeHeartbeatInterval
+// while Connected stays True, so LAST PROBE stays recent without ~2 etcd writes
+// per spoke per interval. Connection flips always write. Repeated probe failures
+// (Connected=False, ProbeFailed) also write whenever lastProbeTime advances, so
+// a stuck outage keeps LAST PROBE moving even when the error text is unchanged.
 func statusNeedsWrite(prev, next v1beta1.SpokeClusterStatus) bool {
-	return !apiequality.Semantic.DeepEqual(statusForCompare(prev), statusForCompare(next))
+	if !apiequality.Semantic.DeepEqual(statusForCompare(prev), statusForCompare(next)) {
+		return true
+	}
+	if probeFailedLastProbeAdvanced(prev, next) {
+		return true
+	}
+	return lastProbeNeedsWrite(prev.LastProbeTime, next.LastProbeTime)
+}
+
+func probeFailedLastProbeAdvanced(prev, next v1beta1.SpokeClusterStatus) bool {
+	cond := meta.FindStatusCondition(next.Conditions, v1beta1.SpokeClusterConditionConnected)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonProbeFailed {
+		return false
+	}
+	if next.LastProbeTime == nil {
+		return false
+	}
+	if prev.LastProbeTime == nil {
+		return true
+	}
+	return !next.LastProbeTime.Equal(prev.LastProbeTime)
 }
 
 func statusForCompare(in v1beta1.SpokeClusterStatus) *v1beta1.SpokeClusterStatus {
@@ -318,6 +346,16 @@ func statusForCompare(in v1beta1.SpokeClusterStatus) *v1beta1.SpokeClusterStatus
 		out.ClusterInfo.LatencyMillis = 0
 	}
 	return out
+}
+
+func lastProbeNeedsWrite(prev, next *metav1.Time) bool {
+	if next == nil {
+		return false
+	}
+	if prev == nil {
+		return true
+	}
+	return next.Time.Sub(prev.Time) >= probeHeartbeatInterval
 }
 
 // setCondition records one condition. meta.SetStatusCondition leaves LastTransitionTime

@@ -49,7 +49,7 @@ The provider is stricter than `kubectl`. From `pkg/spokecluster/credential/kubec
 | `spokecluster-azure.yaml` | AKS shape. Do not apply: webhook rejects `type: azure` |
 | `spokecluster-gcp.yaml` | GKE shape. Do not apply: webhook rejects `type: gcp` |
 | `09-spoke-least-privilege-rbac.yaml` | Spoke-side ServiceAccount, ClusterRole, and binding for connect probes (not cluster-admin) |
-| `10-networkpolicy.yaml` | Hub NetworkPolicy example for cluster-core (webhook, metrics, egress via cluster-gateway). Apply by hand when the CNI enforces NetworkPolicy |
+| `10-networkpolicy.yaml` | Hub NetworkPolicy example for cluster-core (webhook, metrics, egress via cluster-gateway). Prefer `clusterCore.networkPolicy.enabled=true` on the chart; keep this file as a hand-apply reference when the CNI enforces NetworkPolicy |
 | `99-gateway-secret-reference.yaml` | What the controller produces, for reading only |
 
 ## Applying them
@@ -71,7 +71,7 @@ helm install vela-core charts/vela-core -n vela-system --create-namespace \
 
 Note the gate does **not** control whether the CRD exists. Helm applies `crds/` unconditionally, so `kubectl get spokeclusters` works either way; with the gate off the objects simply never get a status.
 
-Apply `10-networkpolicy.yaml` when the CNI enforces NetworkPolicy. The policy opens the webhook port as to-source (API server IPs vary), restricts `/metrics` to Prometheus, and lets cluster-core egress to DNS, the API server, cluster-gateway, and HTTPS (AWS). It does not lock cluster-gateway ingress; the aggregated APIService and vela-core also dial it.
+Apply `10-networkpolicy.yaml`, or set `clusterCore.networkPolicy.enabled=true` on the chart, when the CNI enforces NetworkPolicy. The policy opens the webhook port as to-source (API server IPs vary), restricts `/metrics` to Prometheus, and lets cluster-core egress to DNS, the API server, cluster-gateway, and HTTPS (AWS). It does not lock cluster-gateway ingress; the aggregated APIService and vela-core also dial it.
 
 ## CLI
 
@@ -86,7 +86,7 @@ vela cluster spokes show my-spoke
 vela cluster spokes detach my-spoke
 ```
 
-`create --kubeconfig` writes a Secret (`<name>-kubeconfig` by default, or `--secret`) and a SpokeCluster. `create --aws` writes no Secret; pass `--aws-region` and `--aws-role-arn` (optional `--aws-cluster-name`, `--aws-auth-mode`, `--aws-external-id`). `detach` deletes the SpokeCluster; the controller then removes the gateway Secret unless `deletionPolicy` is `orphan`. A kubeconfig source Secret is left in place. Use `--secret existing-name` when the kubeconfig Secret already exists.
+`create --kubeconfig` writes a Secret (`<name>-kubeconfig` by default, or `--secret`) and a SpokeCluster. `create --aws` writes no Secret; pass `--aws-region`, `--aws-role-arn`, and `--aws-external-id` (optional `--aws-cluster-name`, `--aws-auth-mode`). `detach` deletes the SpokeCluster; the controller then removes the gateway Secret unless `deletionPolicy` is `orphan`. A kubeconfig source Secret is left in place. Use `--secret existing-name` when the kubeconfig Secret already exists.
 
 ## Migrating from `vela cluster join`
 

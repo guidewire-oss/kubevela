@@ -291,6 +291,38 @@ func TestRegisterByVelaSecret(t *testing.T) {
 			},
 		},
 		{
+			name: "Refuse overwrite of SpokeCluster-managed Secret",
+			cfg: func() *KubeClusterConfig {
+				cfg := makeBaseClusterConfig("c-owned")
+				cfg.AuthInfo.Token = "new-token"
+				cfg.ClusterAlreadyExistCallback = func(string) bool { return true }
+				return cfg
+			}(),
+			cli: func() client.Client {
+				pre := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "c-owned",
+						Namespace: ClusterGatewaySecretNamespace,
+						Labels: map[string]string{
+							clustercommon.LabelKeyClusterCredentialType: string(clusterv1alpha1.CredentialTypeServiceAccountToken),
+						},
+						Annotations: map[string]string{
+							SpokeClusterOwnerAnnotation: "vela-system/c-owned",
+						},
+						ResourceVersion: "1",
+					},
+					Data: map[string][]byte{"token": []byte("old-token"), "endpoint": []byte("https://example:6443")},
+				}
+				return fake.NewClientBuilder().WithScheme(scheme).WithObjects(pre).Build()
+			}(),
+			expectErr: true,
+			verify: func(t *testing.T, cli client.Client, cfg *KubeClusterConfig) {
+				var sec corev1.Secret
+				require.NoError(t, cli.Get(ctx, client.ObjectKey{Name: cfg.ClusterName, Namespace: ClusterGatewaySecretNamespace}, &sec))
+				require.Equal(t, []byte("old-token"), sec.Data["token"], "join must not overwrite a SpokeCluster-managed Secret")
+			},
+		},
+		{
 			name: "Get error from createOrUpdate",
 			cfg: func() *KubeClusterConfig {
 				cfg := makeBaseClusterConfig("c-get-err")

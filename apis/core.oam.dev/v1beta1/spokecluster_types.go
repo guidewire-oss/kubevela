@@ -244,9 +244,10 @@ type AWSCredential struct {
 	// RoleARN is the per-cluster IAM role the hub assumes.
 	RoleARN string `json:"roleArn"`
 
-	// ExternalID is an optional STS external id for the role assumption.
-	// +optional
-	ExternalID string `json:"externalId,omitempty"`
+	// ExternalID is the STS external id for the role assumption. Required with
+	// roleArn so the trust policy can demand the same value (confused-deputy
+	// mitigation). Admission rejects AWS spokes that omit it.
+	ExternalID string `json:"externalId"`
 }
 
 // AzureCredential connects to an AKS cluster via Azure cloud-native identity.
@@ -342,7 +343,12 @@ type SpokeClusterStatus struct {
 	// +optional
 	ClusterInfo *SpokeClusterInfo `json:"clusterInfo,omitempty"`
 
-	// LastProbeTime is when the hub last probed the spoke.
+	// LastProbeTime is when the hub last wrote a probe observation into status.
+	// Healthy passes refresh it at most every five minutes so the LAST PROBE
+	// column stays recent without an etcd write on every probe interval.
+	// Probe failures (Connected=False, ProbeFailed) update it on every observed
+	// probe. Pre-probe failures (credential or register) flip connection via
+	// markConnectionUnobserved without advancing LastProbeTime.
 	// +optional
 	LastProbeTime *metav1.Time `json:"lastProbeTime,omitempty"`
 
@@ -427,8 +433,8 @@ type SpokeClusterInfo struct {
 	// It advances only on a successful discovery, so it does not move while the spoke is
 	// unreachable (discovery is skipped) or while discovery is failing. That is what makes
 	// it the field to read for staleness: the InfoSynced condition's lastTransitionTime
-	// records when discovery first started succeeding, not when it last did, and
-	// status.lastProbeTime advances even on failed passes.
+	// records when discovery first started succeeding, not when it last did.
+	// status.lastProbeTime is refreshed on a coarser cadence (see probeHeartbeatInterval).
 	// +optional
 	LastSyncedTime *metav1.Time `json:"lastSyncedTime,omitempty"`
 }

@@ -23,8 +23,7 @@ spec:
       clusterName: prod-west
       region: us-east-1
       roleArn: arn:aws:iam::111122223333:role/oam-sc-prod-west-scoped
-      # externalId is optional but recommended. Omit only if the scoped role's
-      # trust policy does not require it.
+      # Required: must match the Condition sts:ExternalId on the role trust policy.
       externalId: us-east-1/111122223333/hub-cluster/vela-system/vela-core-cluster-core
   # Any probeIntervalSeconds is fine for token freshness: nextRequeue is
   # min(probeInterval, time until the +13m NextRefresh). Prefer <= 13m so

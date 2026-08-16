@@ -517,6 +517,7 @@ var _ = Describe("vela cluster spokes create", func() {
 			Name: "alias", Namespace: "vela-system", AWS: true,
 			AWSAuthMode: "irsa", AWSClusterName: "prod-west",
 			AWSRegion: "us-east-1", AWSRoleARN: "arn:aws:iam::1:role/scoped",
+			AWSExternalID: "us-east-1/1/hub/vela-system/vela-core-cluster-core",
 		})).To(Succeed())
 		var sc v1beta1.SpokeCluster
 		Expect(cli.Get(ctx, client.ObjectKey{Namespace: "vela-system", Name: "alias"}, &sc)).To(Succeed())
@@ -539,10 +540,19 @@ var _ = Describe("vela cluster spokes create", func() {
 		Expect(err).To(MatchError(ContainSubstring("--aws requires --aws-region and --aws-role-arn")))
 	})
 
+	It("rejects --aws without external id", func() {
+		err := runSpokeClusterCreate(ctx, fakeClientWith(), &bytes.Buffer{}, spokeClusterCreateOpts{
+			Name: "demo", AWS: true,
+			AWSRegion: "us-west-2", AWSRoleARN: "arn:aws:iam::1:role/x",
+		})
+		Expect(err).To(MatchError(ContainSubstring("--aws requires --aws-external-id")))
+	})
+
 	It("rejects an unknown --aws-auth-mode", func() {
 		err := runSpokeClusterCreate(ctx, fakeClientWith(), &bytes.Buffer{}, spokeClusterCreateOpts{
 			Name: "demo", AWS: true, AWSAuthMode: "keys",
 			AWSRegion: "us-west-2", AWSRoleARN: "arn:aws:iam::1:role/x",
+			AWSExternalID: "ext",
 		})
 		Expect(err).To(MatchError(ContainSubstring("invalid --aws-auth-mode")))
 	})

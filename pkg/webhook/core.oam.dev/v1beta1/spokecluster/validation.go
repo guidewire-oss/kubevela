@@ -147,6 +147,13 @@ func validateAWSCredential(awsPath *field.Path, aws *v1beta1.AWSCredential) fiel
 	if aws.RoleARN == "" {
 		errs = append(errs, field.Required(awsPath.Child("roleArn"), "roleArn is required"))
 	}
+	// Require ExternalID whenever RoleARN is present so a stolen SpokeCluster
+	// (or a confused-deputy caller) cannot AssumeRole without the shared secret
+	// the trust policy should also demand (confused-deputy mitigation).
+	if aws.RoleARN != "" && aws.ExternalID == "" {
+		errs = append(errs, field.Required(awsPath.Child("externalId"),
+			"externalId is required with roleArn (set the same value in the role trust policy Condition)"))
+	}
 
 	return errs
 }

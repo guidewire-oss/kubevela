@@ -56,6 +56,7 @@ func validAWSSpoke() *v1beta1.SpokeCluster {
 					ClusterName: "prod-us-east-1",
 					Region:      "us-east-1",
 					RoleARN:     "arn:aws:iam::123456789012:role/per-cluster-role",
+					ExternalID:  "us-east-1/123456789012/hub/vela-system/vela-core-cluster-core",
 				},
 			},
 		},
@@ -147,6 +148,9 @@ var _ = Describe("Validate", func() {
 		Entry("missing aws.roleArn", validAWSSpoke, func(sc *v1beta1.SpokeCluster) {
 			sc.Spec.Credential.AWS.RoleARN = ""
 		}, "spec.credential.aws.roleArn"),
+		Entry("missing aws.externalId", validAWSSpoke, func(sc *v1beta1.SpokeCluster) {
+			sc.Spec.Credential.AWS.ExternalID = ""
+		}, "spec.credential.aws.externalId"),
 		Entry("kubeconfig arm set alongside type aws", validAWSSpoke, func(sc *v1beta1.SpokeCluster) {
 			sc.Spec.Credential.Kubeconfig = &v1beta1.KubeconfigCredential{
 				SecretRef: v1beta1.SecretKeyRef{Name: "prod-us-east-1-kubeconfig"},
@@ -224,6 +228,7 @@ var _ = Describe("Default", func() {
 						ClusterName: "prod-us-east-1",
 						Region:      "us-east-1",
 						RoleARN:     "arn:aws:iam::123456789012:role/per-cluster-role",
+						ExternalID:  "us-east-1/123456789012/hub/vela-system/vela-core-cluster-core",
 					},
 				},
 			},
@@ -246,6 +251,7 @@ var _ = Describe("Default", func() {
 						ClusterName: "prod-us-east-1",
 						Region:      "us-east-1",
 						RoleARN:     "arn:aws:iam::123456789012:role/per-cluster-role",
+						ExternalID:  "us-east-1/123456789012/hub/vela-system/vela-core-cluster-core",
 					},
 				},
 			},

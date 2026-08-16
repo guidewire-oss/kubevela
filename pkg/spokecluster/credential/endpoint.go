@@ -208,15 +208,18 @@ var blockedHostSuffixes = []string{
 }
 
 var blockedCIDRs = mustParseCIDRs(
-	"127.0.0.0/8",    // IPv4 loopback
-	"::1/128",        // IPv6 loopback
-	"169.254.0.0/16", // IPv4 link-local / most cloud IMDS
-	"fe80::/10",      // IPv6 link-local
+	"127.0.0.0/8",     // IPv4 loopback
+	"::1/128",         // IPv6 loopback
+	"169.254.0.0/16",  // IPv4 link-local / AWS+GCP IMDS
+	"fe80::/10",       // IPv6 link-local
+	"fc00::/7",        // IPv6 unique local (ULA)
+	"fec0::/10",       // IPv6 site-local (deprecated, still routable on some nets)
 )
 
 var blockedIPs = []net.IP{
-	net.ParseIP("168.63.129.16"), // Azure IMDS wire server
-	net.ParseIP("fd00:ec2::254"), // AWS IMDS IPv6
+	net.ParseIP("168.63.129.16"),  // Azure IMDS wire server
+	net.ParseIP("fd00:ec2::254"),  // AWS IMDS IPv6
+	net.ParseIP("100.100.100.200"), // Alibaba Cloud IMDS
 }
 
 func mustParseCIDRs(cidrs ...string) []*net.IPNet {

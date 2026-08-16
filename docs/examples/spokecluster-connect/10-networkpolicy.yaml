@@ -2,6 +2,10 @@
 #   helm install vela-core charts/vela-core -n vela-system
 # with featureGates.enableClusterInfrastructure=true.
 #
+# Prefer the chart flag instead of this hand-applied example:
+#   --set clusterCore.networkPolicy.enabled=true
+# This file remains as a readable, install-agnostic reference.
+#
 # Example only. Apply by hand when the CNI enforces NetworkPolicy.
 #
 # What it allows:
