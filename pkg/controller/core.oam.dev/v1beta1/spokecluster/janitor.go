@@ -135,14 +135,17 @@ func (r *Reconciler) reapGatewaySecretIfOwnerGone(ctx context.Context, secret *c
 
 	// LIFE-01: scrub ResourceTrackers while the orphan Secret still exists so a
 	// scrub failure is retryable (the next janitor pass still sees the Secret).
-	// Skip scrub and delete when a SpokeCluster already reclaims the gateway name:
-	// the recreated spoke may have adopted this Secret (same UID) via verifyAdoptable.
+	// Skip scrub and delete only when a SpokeCluster in the recorded owner
+	// namespace already reclaims the gateway name: that object may have adopted
+	// this Secret (same UID) via verifyAdoptable. A same-name SpokeCluster in a
+	// different namespace cannot adopt (owner annotation mismatch), so reclaim
+	// must proceed and free the Secret for registration.
 	list := &v1beta1.SpokeClusterList{}
 	if listErr := r.List(ctx, list); listErr != nil {
 		return fmt.Errorf("gateway secret janitor failed listing SpokeClusters before ResourceTracker scrub: %w", listErr)
 	}
 	for i := range list.Items {
-		if list.Items[i].Name == clusterName {
+		if list.Items[i].Name == clusterName && list.Items[i].Namespace == ns {
 			klog.InfoS("gateway secret janitor skipping reclaim; SpokeCluster name is in use again",
 				"cluster", clusterName, "spokecluster", klog.KObj(&list.Items[i]))
 			return nil

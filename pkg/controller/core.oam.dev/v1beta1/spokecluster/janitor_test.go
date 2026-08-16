@@ -133,20 +133,36 @@ var _ = It("JanitorKeepsSecretWhenSpokeClusterExists", func() {
 	}
 })
 
-var _ = It("JanitorKeepsSecretWhenNameReclaimedByNewSpoke", func() {
+var _ = It("JanitorReapsSecretWhenOtherNamespaceReclaimsName", func() {
 	t := GinkgoT()
-	// Owner team-a is gone, but another SpokeCluster already reclaims the gateway
-	// name (same-name recreate / cross-ns collision). Do not scrub or delete: the
-	// new spoke may have adopted this Secret via verifyAdoptable.
+	// Owner team-a is gone. A same-named SpokeCluster in team-b cannot adopt this
+	// Secret (verifyAdoptable checks namespace/name), so the janitor must scrub and
+	// delete it to unblock registration.
 	secret := gatewaySecretOwnedBy("reclaimed-spoke", "team-a")
 	secret.Annotations[secretDeletionPolicyAnnotation] = string(v1beta1.SpokeDeletionPolicyDetach)
 	live := spokeIn("reclaimed-spoke", "team-b", v1beta1.SpokeDeletionPolicyDetach)
-	r := newTestReconciler(t, secret, live)
+	rt := &v1beta1.ResourceTracker{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-reclaimed-spoke"},
+		Spec: v1beta1.ResourceTrackerSpec{
+			ManagedResources: []v1beta1.ManagedResource{
+				{ClusterObjectReference: common.ClusterObjectReference{Cluster: "reclaimed-spoke"}},
+				{ClusterObjectReference: common.ClusterObjectReference{Cluster: "other"}},
+			},
+		},
+	}
+	r := newTestReconciler(t, secret, live, rt)
 
 	r.sweepOrphanedGatewaySecrets(context.Background())
 
-	if !secretExists(t, r.Client, "reclaimed-spoke") {
-		t.Fatal("janitor deleted a Secret whose cluster name is in use by another SpokeCluster")
+	if secretExists(t, r.Client, "reclaimed-spoke") {
+		t.Fatal("janitor left a Secret owned by a gone SpokeCluster while another namespace holds the name")
+	}
+	got := &v1beta1.ResourceTracker{}
+	if err := r.Get(context.Background(), types.NamespacedName{Name: "app-reclaimed-spoke"}, got); err != nil {
+		t.Fatalf("get ResourceTracker: %v", err)
+	}
+	if len(got.Spec.ManagedResources) != 1 || got.Spec.ManagedResources[0].Cluster != "other" {
+		t.Fatalf("ManagedResources = %+v, want only cluster other", got.Spec.ManagedResources)
 	}
 })
 
