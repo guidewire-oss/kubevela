@@ -484,6 +484,14 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: name must not be the reserved local cluster name
+          rule: self.metadata.name != 'local'
+        - message: mode must be 'connect' in Phase 1 (provision and adopt are not supported
+            yet)
+          rule: self.spec.mode == 'connect'
+        - message: credential.type must be kubeconfig or aws in Phase 1
+          rule: self.spec.credential.type in ['kubeconfig', 'aws']
     served: true
     storage: true
     subresources:

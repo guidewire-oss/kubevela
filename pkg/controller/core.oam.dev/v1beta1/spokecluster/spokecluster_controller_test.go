@@ -335,6 +335,33 @@ var _ = It("ProbeFailureMessageNamesTheEndpoint", func() {
 	}
 })
 
+var _ = It("ReconcileRejectsInvalidSpecWithoutRegistering", func() {
+	t := GinkgoT()
+	sc := connectableSpoke("provision-blocked")
+	sc.Spec.Mode = v1beta1.SpokeClusterModeProvision
+	r := connectedReconciler(t, sc)
+
+	res, err := reconcileOnce(t, r, sc)
+	if err != nil {
+		t.Fatalf("invalid spec must not fail the reconcile with an error: %v", err)
+	}
+	if res.RequeueAfter <= 0 {
+		t.Errorf("RequeueAfter = %v, want a probe-interval requeue for a stored invalid spec", res.RequeueAfter)
+	}
+
+	latest := readSpoke(t, r, sc)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonSpecInvalid)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, reasonSpecInvalid)
+	if latest.Status.Connection != v1beta1.ConnectionStateUnknown {
+		t.Errorf("connection = %q, want Unknown", latest.Status.Connection)
+	}
+	sec := &corev1.Secret{}
+	err = r.Get(context.Background(), client.ObjectKey{Namespace: "vela-system", Name: sc.Name}, sec)
+	if err == nil {
+		t.Fatal("gateway Secret must not be created for an invalid SpokeCluster")
+	}
+})
+
 // TestReconcileCredentialFailure checks both halves of a materialization failure: the
 // condition is recorded, and the error still surfaces so controller-runtime backs off.
 var _ = It("ReconcileCredentialFailure", func() {

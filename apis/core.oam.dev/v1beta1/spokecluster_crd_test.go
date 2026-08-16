@@ -234,3 +234,17 @@ var _ = It("SpokeClusterCRD Phase2Stubs", func() {
 		r.Contains(health.Properties, field)
 	}
 })
+
+var _ = It("SpokeClusterCRD Phase1CEL", func() {
+	t := GinkgoT()
+	r := require.New(t)
+	schema := v1beta1Schema(t, loadSpokeClusterCRD(t))
+	r.GreaterOrEqual(len(schema.XValidations), 3)
+	rules := map[string]string{}
+	for _, v := range schema.XValidations {
+		rules[v.Rule] = v.Message
+	}
+	r.Contains(rules, "self.metadata.name != 'local'")
+	r.Contains(rules, "self.spec.mode == 'connect'")
+	r.Contains(rules, "self.spec.credential.type in ['kubeconfig', 'aws']")
+})

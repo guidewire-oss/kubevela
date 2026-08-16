@@ -45,6 +45,7 @@ import (
 	oamctrl "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/spokecluster/credential"
+	spokeadmission "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/spokecluster"
 )
 
 const (
@@ -67,6 +68,7 @@ const (
 // unreachable spoke from a broken credential, so they are stable strings, not prose.
 const (
 	reasonNoProvider         = "NoProvider"
+	reasonSpecInvalid        = "SpecInvalid"
 	reasonMaterializeFailed  = "MaterializeFailed"
 	reasonMaterialized       = "Materialized"
 	reasonRegisterFailed     = "RegisterFailed"
@@ -116,6 +118,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeCluster) (ctrl.Result, error) {
 	status := sc.Status.DeepCopy()
 	status.ObservedGeneration = sc.Generation
+
+	// Re-check Phase 1 admission rules even when the validating webhook is Ignore
+	// (job-patch bootstrap window) or disabled. A stored provision/adopt/local/azure
+	// object must not register a gateway Secret.
+	if errs := spokeadmission.Validate(sc); len(errs) > 0 {
+		msg := errs.ToAggregate().Error()
+		setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonSpecInvalid, msg)
+		markConnectionUnobserved(status, reasonSpecInvalid, msg)
+		return r.finish(ctx, sc, status, probeInterval(sc), nil)
+	}
 
 	// Every failure before the probe reports Unknown rather than Disconnected: the spoke was
 	// never reached, so its reachability is genuinely unobserved this pass. Disconnected

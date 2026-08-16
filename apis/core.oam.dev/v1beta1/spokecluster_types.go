@@ -450,6 +450,9 @@ type SpokeClusterInfo struct {
 // +kubebuilder:printcolumn:name="SYNCED",type=date,JSONPath=`.status.clusterInfo.lastSyncedTime`,priority=1
 // +kubebuilder:printcolumn:name="AUTH",type=string,JSONPath=`.spec.credential.type`,priority=1
 // +kubebuilder:printcolumn:name="LAST PROBE",type=date,JSONPath=`.status.lastProbeTime`,priority=1
+// +kubebuilder:validation:XValidation:rule="self.metadata.name != 'local'",message="name must not be the reserved local cluster name"
+// +kubebuilder:validation:XValidation:rule="self.spec.mode == 'connect'",message="mode must be 'connect' in Phase 1 (provision and adopt are not supported yet)"
+// +kubebuilder:validation:XValidation:rule="self.spec.credential.type in ['kubeconfig', 'aws']",message="credential.type must be kubeconfig or aws in Phase 1"
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
