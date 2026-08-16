@@ -43,7 +43,7 @@ func TestEmitStatusEventsTransitions(t *testing.T) {
 
 	prev := &v1beta1.SpokeClusterStatus{Connection: v1beta1.ConnectionStateUnknown}
 	next := &v1beta1.SpokeClusterStatus{Connection: v1beta1.ConnectionStateConnected}
-	setCondition(next, v1beta1.SpokeClusterConditionConnected, metav1.ConditionTrue, reasonProbeSucceeded, "spoke answered the healthz probe")
+	setCondition(next, v1beta1.SpokeClusterConditionConnected, metav1.ConditionTrue, reasonProbeSucceeded, "spoke answered the authenticated probe")
 	r.emitStatusEvents(sc, prev, next)
 	if len(rec.events) != 1 || rec.events[0].Reason != reasonProbeSucceeded {
 		t.Fatalf("want one ProbeSucceeded event, got %#v", rec.events)

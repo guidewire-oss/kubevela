@@ -400,7 +400,7 @@ var _ = It("ReconcileCredentialFailureMarksConnectionUnknown", func() {
 				Type:    v1beta1.SpokeClusterConditionConnected,
 				Status:  metav1.ConditionTrue,
 				Reason:  reasonProbeSucceeded,
-				Message: "spoke answered the healthz probe",
+				Message: "spoke answered the authenticated probe",
 			})
 			r := connectedReconciler(t, sc)
 			r.Providers = tc.registry
@@ -798,7 +798,7 @@ var _ = It("ReconcileEvictsTheCachedCredentialOnlyOn401", func() {
 		},
 		{
 			name:      "403 does not evict, because reminting cannot fix RBAC",
-			probeErr:  apierrors.NewForbidden(schema.GroupResource{Resource: "healthz"}, "healthz", errors.New("forbidden")),
+			probeErr:  apierrors.NewForbidden(schema.GroupResource{Resource: "apis"}, "apis", errors.New("forbidden")),
 			wantCalls: 1,
 		},
 		{
@@ -831,6 +831,28 @@ var _ = It("ReconcileEvictsTheCachedCredentialOnlyOn401", func() {
 			}
 		})
 	}
+})
+
+var _ = It("ReconcileEvictsTheCachedCredentialOnDiscovery401", func() {
+	t := GinkgoT()
+	sc := connectableSpoke("discover-401")
+	r, provider := cachingReconciler(t, sc, refreshingCredential(13*time.Minute))
+	r.discoverFn = func(_ context.Context, _ *v1beta1.SpokeCluster, _ *credential.Materialized, _ time.Duration) (*v1beta1.SpokeClusterInfo, error) {
+		return nil, apierrors.NewUnauthorized("token rejected on version read")
+	}
+
+	for pass := 1; pass <= 2; pass++ {
+		if _, err := reconcileOnce(t, r, sc); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+	}
+
+	if provider.calls != 2 {
+		t.Errorf("Materialize ran %d times, want 2: a discovery 401 must remint on the next pass", provider.calls)
+	}
+	latest := readSpoke(t, r, sc)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionTrue, reasonProbeSucceeded)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionInfoSynced, metav1.ConditionFalse, reasonDiscoveryFailed)
 })
 
 var _ = It("StatusNeedsWriteIgnoresHeartbeatFields", func() {

@@ -123,7 +123,7 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	// would keep asserting reachability the controller can no longer see.
 	//
 	// The Connected *condition* must move to Unknown as well. status.connection alone left
-	// kubectl describe showing Connected=True "spoke answered the healthz probe" after a
+	// kubectl describe showing Connected=True "spoke answered the authenticated probe" after a
 	// credential or registration failure.
 	provider, err := r.Providers.For(sc.Spec.Credential.Type)
 	if err != nil {
@@ -204,14 +204,21 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	// message that changes every pass would make every status write a real write for no
 	// added information, and it is already reported in a field with a printer column.
 	setCondition(status, v1beta1.SpokeClusterConditionConnected, metav1.ConditionTrue, reasonProbeSucceeded,
-		"spoke answered the healthz probe")
+		"spoke answered the authenticated probe")
 	status.Connection = v1beta1.ConnectionStateConnected
 
 	info, discoverErr := r.discoverSpoke(ctx, sc, materialized, latency)
 	if discoverErr != nil {
-		// Inventory is not connectivity: a spoke that answers /healthz but refuses a node
+		// Inventory is not connectivity: a spoke that answers /apis but refuses a node
 		// list is still connected, so this never fails the pass.
 		setCondition(status, v1beta1.SpokeClusterConditionInfoSynced, metav1.ConditionFalse, reasonDiscoveryFailed, discoverErr.Error())
+		// Discovery runs authenticated API reads. A 401 here means the credential was
+		// rejected after the probe succeeded (or the probe path was somehow still
+		// anonymous). Drop the cache so the next pass remints; leave 403 alone, because
+		// reminting cannot fix missing get/list RBAC on nodes or version.
+		if apierrors.IsUnauthorized(discoverErr) {
+			r.credentials.Invalidate(client.ObjectKeyFromObject(sc))
+		}
 	} else {
 		// Stamped only here, on success. A skipped pass (probe failed) or a failed discovery
 		// leaves the previous value in place, so the gap between this and now is exactly how
