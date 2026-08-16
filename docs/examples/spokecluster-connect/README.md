@@ -86,7 +86,7 @@ vela cluster spokes show my-spoke
 vela cluster spokes detach my-spoke
 ```
 
-`create --kubeconfig` writes a Secret (`<name>-kubeconfig` by default, or `--secret`) and a SpokeCluster. `create --aws` writes no Secret; pass `--aws-region` and `--aws-role-arn` (optional `--aws-cluster-name`, `--aws-auth-mode`, `--aws-external-id`). `detach` deletes the SpokeCluster; the controller then removes the gateway Secret unless `deletionPolicy` is `orphan`. A kubeconfig source Secret is left in place. Use `--secret existing-name` when the kubeconfig Secret already exists.
+`create --kubeconfig` writes a Secret (`<name>-kubeconfig` by default, or `--secret`) and a SpokeCluster. `create --aws` writes no Secret; pass `--aws-region`, `--aws-role-arn`, and `--aws-external-id` (optional `--aws-cluster-name`, `--aws-auth-mode`). `detach` deletes the SpokeCluster; the controller then removes the gateway Secret unless `deletionPolicy` is `orphan`. A kubeconfig source Secret is left in place. Use `--secret existing-name` when the kubeconfig Secret already exists.
 
 ## Migrating from `vela cluster join`
 

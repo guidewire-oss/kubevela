@@ -50,8 +50,11 @@ import (
 )
 
 // SpokeClusterOwnerAnnotation marks a gateway Secret as owned by a SpokeCluster
-// (namespace/name). Join and rename must not overwrite those Secrets; connect
-// register sets the annotation when it writes.
+// (namespace/name). Join and rename must not overwrite those Secrets. The
+// SpokeCluster controller writes the same key via its
+// secretOwnerAnnotation alias of this constant (see
+// pkg/controller/.../spokecluster/connect.go); do not introduce a second
+// string literal for this annotation.
 const SpokeClusterOwnerAnnotation = "spokecluster.core.oam.dev/owner"
 
 // ContextKey defines the key in context
