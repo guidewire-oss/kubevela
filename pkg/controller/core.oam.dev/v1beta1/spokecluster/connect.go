@@ -287,6 +287,12 @@ func (r *Reconciler) secretReader() client.Reader {
 	// when the SpokeCluster itself is deleted. Confirmed live against a real `vela cluster
 	// join` fixture before this guard existed.
 func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *credential.Materialized) error {
+	// Reserved name: admission and reconcile SpecInvalid already reject this, but
+	// register is the last write before a gateway Secret named "local" would
+	// collide with in-process hub routing.
+	if sc.Name == multicluster.ClusterLocalName {
+		return fmt.Errorf("refusing to register reserved cluster name %q", multicluster.ClusterLocalName)
+	}
 	secret := &corev1.Secret{}
 	key := gatewaySecretKey(sc)
 	err := r.Get(ctx, key, secret)

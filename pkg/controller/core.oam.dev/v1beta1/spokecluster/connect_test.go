@@ -218,6 +218,19 @@ var _ = It("RegisterRefusesEmptyCAData", func() {
 	}
 })
 
+var _ = It("RegisterRefusesReservedLocalName", func() {
+	t := GinkgoT()
+	sc := spoke(multicluster.ClusterLocalName, v1beta1.SpokeDeletionPolicyDetach)
+	r := newTestReconciler(t, sc)
+	err := r.register(context.Background(), sc, tokenCredential())
+	if err == nil {
+		t.Fatal("register must refuse the reserved local cluster name")
+	}
+	if !strings.Contains(err.Error(), multicluster.ClusterLocalName) {
+		t.Fatalf("error = %v, want it to name the reserved cluster", err)
+	}
+})
+
 var _ = It("RegisterOwnershipPerPolicy", func() {
 	t := GinkgoT()
 	cases := map[string]struct {
