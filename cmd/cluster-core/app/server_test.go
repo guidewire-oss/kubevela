@@ -20,10 +20,13 @@ import (
 	"errors"
 	"time"
 
+	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 
@@ -190,4 +193,33 @@ var _ = It("ResolveGatewaySecretNamespacePrefersConfigured", func() {
 	assert.Equal(t, "kubevela", resolveGatewaySecretNamespace("vela-system", "kubevela"))
 	assert.Equal(t, "vela-system", resolveGatewaySecretNamespace("vela-system", ""))
 	assert.Equal(t, types.DefaultKubeVelaNS, resolveGatewaySecretNamespace("", ""))
+})
+
+var _ = It("StripNonCredentialSecretDataKeepsCredentialPayloads", func() {
+	t := GinkgoT()
+	cred := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "spoke",
+			Labels: map[string]string{
+				clustercommon.LabelKeyClusterCredentialType: "ServiceAccountToken",
+			},
+		},
+		Data: map[string][]byte{"token": []byte("tok"), "ca.crt": []byte("ca")},
+	}
+	got, err := stripNonCredentialSecretData(cred)
+	require.NoError(t, err)
+	out, ok := got.(*corev1.Secret)
+	require.True(t, ok)
+	assert.Equal(t, []byte("tok"), out.Data["token"])
+
+	tls := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "vela-core-cluster-core-admission"},
+		Data:       map[string][]byte{"tls.key": []byte("private")},
+	}
+	got, err = stripNonCredentialSecretData(tls)
+	require.NoError(t, err)
+	out, ok = got.(*corev1.Secret)
+	require.True(t, ok)
+	assert.Equal(t, "vela-core-cluster-core-admission", out.Name)
+	assert.Nil(t, out.Data)
 })

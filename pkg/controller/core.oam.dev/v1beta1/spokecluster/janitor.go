@@ -60,7 +60,12 @@ func (r *Reconciler) StartGatewaySecretJanitor(ctx context.Context) error {
 // deletionPolicy is orphan. Manually joined Secrets (no owner annotation) are left alone.
 func (r *Reconciler) sweepOrphanedGatewaySecrets(ctx context.Context) {
 	var secrets corev1.SecretList
-	if err := r.List(ctx, &secrets, client.InNamespace(multicluster.ClusterGatewaySecretNamespace)); err != nil {
+	// Only credential-labeled Secrets are candidates. Admission and TLS Secrets
+	// in the same namespace are skipped at the List so the janitor never pulls them.
+	if err := r.List(ctx, &secrets,
+		client.InNamespace(multicluster.ClusterGatewaySecretNamespace),
+		client.HasLabels{clustercommon.LabelKeyClusterCredentialType},
+	); err != nil {
 		klog.ErrorS(err, "gateway secret janitor failed to list secrets",
 			"namespace", multicluster.ClusterGatewaySecretNamespace)
 		return

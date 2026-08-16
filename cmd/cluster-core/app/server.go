@@ -40,6 +40,9 @@ import (
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	common "github.com/oam-dev/kubevela/pkg/utils/common"
 	webhookspokecluster "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/spokecluster"
+
+	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
+	toolscache "k8s.io/client-go/tools/cache"
 )
 
 // options holds the flags for the vela-cluster-core manager.
@@ -200,12 +203,18 @@ func run(o *options) error {
 		}),
 		// RBAC-01: cache Secrets only in the gateway namespace. Source kubeconfig
 		// Secrets in tenant namespaces are read via mgr.GetAPIReader() instead.
+		//
+		// RBAC-03: do not keep unlabeled Secret payloads (admission TLS, etc.) in
+		// process memory. Metadata stays so the source-kubeconfig watch still
+		// fires for same-ns rotates. A Label selector on credential-type would
+		// drop those source Secrets from the informer entirely and undo CACHE-01.
 		Cache: cache.Options{
 			ByObject: map[client.Object]cache.ByObject{
 				&corev1.Secret{}: {
 					Namespaces: map[string]cache.Config{
 						gatewayNS: {},
 					},
+					Transform: stripNonCredentialSecretData,
 				},
 			},
 		},
@@ -263,4 +272,27 @@ func resolveGatewaySecretNamespace(discovered, configured string) string {
 		return discovered
 	}
 	return types.DefaultKubeVelaNS
+}
+
+// stripNonCredentialSecretData drops Secret.Data for objects that are not
+// cluster-gateway credentials. Admission and cluster-gateway TLS Secrets share
+// the gateway namespace with connect Secrets; caching their payloads would keep
+// those keys in process memory for the life of the informer. Metadata is kept
+// so source-kubeconfig watches still enqueue.
+func stripNonCredentialSecretData(obj interface{}) (interface{}, error) {
+	secret, ok := obj.(*corev1.Secret)
+	if !ok {
+		// DeletedFinalStateUnknown wraps the last known object.
+		if tombstone, ok := obj.(toolscache.DeletedFinalStateUnknown); ok {
+			return stripNonCredentialSecretData(tombstone.Obj)
+		}
+		return obj, nil
+	}
+	if secret.Labels != nil && secret.Labels[clustercommon.LabelKeyClusterCredentialType] != "" {
+		return obj, nil
+	}
+	out := secret.DeepCopy()
+	out.Data = nil
+	out.StringData = nil
+	return out, nil
 }
