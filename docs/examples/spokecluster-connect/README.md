@@ -54,7 +54,7 @@ The provider is stricter than `kubectl`. From `pkg/spokecluster/credential/kubec
 
 ## Applying them
 
-The feature gate must be on, or nothing reconciles and status stays empty. The SpokeCluster admission webhook is enabled by default whenever the gate is on (`clusterCore.webhook.enabled=true`); set it to `false` only if you intentionally want CRD-schema-only admission. `clusterCore.replicaCount` defaults to `2` with preferred pod anti-affinity, soft topology spread, and a PodDisruptionBudget so the webhook and leader-elected controller survive a node drain; use `--set clusterCore.replicaCount=1` on single-node sandboxes if you need a lighter footprint:
+The feature gate must be on, or nothing reconciles and status stays empty. The SpokeCluster admission webhook is enabled by default whenever the gate is on (`clusterCore.webhook.enabled=true`); set it to `false` only if you intentionally want CRD-schema-only admission. `clusterCore.replicaCount` defaults to `2` with required hostname pod anti-affinity (and soft zone topology spread) plus a PodDisruptionBudget so the webhook and leader-elected controller survive a node drain. That needs a second node for both pods to become Ready; use `--set clusterCore.replicaCount=1` on single-node sandboxes if you need a lighter footprint:
 
 ```
 helm install vela-core charts/vela-core -n vela-system --create-namespace \
@@ -80,7 +80,8 @@ Prefer `vela cluster spokes` over `vela cluster join` for new clusters.
 ```
 vela cluster spokes create my-spoke --kubeconfig ./spoke.kubeconfig
 vela cluster spokes create prod-east --aws --aws-region us-west-2 \
-  --aws-role-arn arn:aws:iam::111122223333:role/spokecluster-prod-east
+  --aws-role-arn arn:aws:iam::111122223333:role/spokecluster-prod-east \
+  --aws-external-id us-west-2/111122223333/hub-cluster/vela-system/vela-core-cluster-core
 vela cluster spokes list
 vela cluster spokes show my-spoke
 vela cluster spokes detach my-spoke
