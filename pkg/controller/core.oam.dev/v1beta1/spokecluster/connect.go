@@ -270,21 +270,22 @@ func (r *Reconciler) secretReader() client.Reader {
 //     (see verifyServerNameCompatible) rather than silently registered and left to fail TLS
 //     verification on every connection.
 //   - An absent ca.crt historically meant an insecure endpoint to cluster-gateway
-//     (not "verify against the system roots"). Kubeconfig materialization now
-//     rejects insecure-skip-tls-verify and missing certificate-authority-data, so
-//     a successfully materialized connect credential always carries ca.crt.
-//   - Materialized.ProxyURL is written to data["proxy-url"] so a proxied
-//     kubeconfig matches what `vela cluster join` already records. Empty means
-//     the key is omitted (direct dial).
-//
-// register refuses to adopt a pre-existing Secret it does not recognize (see
-// verifyAdoptable): design.md reasoned that the admission webhook already
-// rejects a name collision with an existing gateway Secret, but that webhook is stateless
-// by design and does not read Secrets, so no such check exists. Without this guard a
-// SpokeCluster could silently take over a manually joined cluster's Secret, redirecting
-// its traffic to a different cluster and, under detach, later deleting its credential
-// when the SpokeCluster itself is deleted. Confirmed live against a real `vela cluster
-// join` fixture before this guard existed.
+	//     (not "verify against the system roots"). Kubeconfig materialization
+	//     rejects insecure-skip-tls-verify and missing certificate-authority-data,
+	//     and register refuses an empty CA bundle so a future provider cannot
+	//     reopen skip-verify by omission.
+	//   - Materialized.ProxyURL is written to data["proxy-url"] so a proxied
+	//     kubeconfig matches what `vela cluster join` already records. Empty means
+	//     the key is omitted (direct dial).
+	//
+	// register refuses to adopt a pre-existing Secret it does not recognize (see
+	// verifyAdoptable): design.md reasoned that the admission webhook already
+	// rejects a name collision with an existing gateway Secret, but that webhook is stateless
+	// by design and does not read Secrets, so no such check exists. Without this guard a
+	// SpokeCluster could silently take over a manually joined cluster's Secret, redirecting
+	// its traffic to a different cluster and, under detach, later deleting its credential
+	// when the SpokeCluster itself is deleted. Confirmed live against a real `vela cluster
+	// join` fixture before this guard existed.
 func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *credential.Materialized) error {
 	secret := &corev1.Secret{}
 	key := gatewaySecretKey(sc)
@@ -309,14 +310,17 @@ func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *
 	if err := credential.ValidateSpokeProxyURL(m.ProxyURL); err != nil {
 		return err
 	}
+	if len(m.CAData) == 0 {
+		return fmt.Errorf("refusing to register spoke %q without a CA bundle; empty ca.crt would make cluster-gateway skip TLS verification", sc.Name)
+	}
 
 	secret.Name = key.Name
 	secret.Namespace = key.Namespace
 	secret.Type = corev1.SecretTypeOpaque
 
-	data := map[string][]byte{secretKeyEndpoint: []byte(m.Endpoint)}
-	if len(m.CAData) > 0 {
-		data[secretKeyCACert] = m.CAData
+	data := map[string][]byte{
+		secretKeyEndpoint: []byte(m.Endpoint),
+		secretKeyCACert:   m.CAData,
 	}
 	var credType clusterv1alpha1.CredentialType
 	switch {

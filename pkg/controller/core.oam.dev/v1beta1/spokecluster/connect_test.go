@@ -151,15 +151,6 @@ var _ = It("RegisterSecretShape", func() {
 			wantAbsent:   []string{"token"},
 			wantCredType: "X509Certificate",
 		},
-		"empty CA omits ca.crt": {
-			materialized: &credential.Materialized{Endpoint: "https://spoke.example.com", Token: "tok"},
-			wantData: map[string]string{
-				"endpoint": "https://spoke.example.com",
-				"token":    "tok",
-			},
-			wantAbsent:   []string{"ca.crt", "proxy-url"},
-			wantCredType: "ServiceAccountToken",
-		},
 		"proxy-url is written when set": {
 			materialized: &credential.Materialized{
 				Endpoint: "https://spoke.example.com",
@@ -204,6 +195,26 @@ var _ = It("RegisterSecretShape", func() {
 				t.Errorf("label %s = %q, want %q", credentialTypeLabel, got, tc.wantCredType)
 			}
 		})
+	}
+})
+
+var _ = It("RegisterRefusesEmptyCAData", func() {
+	t := GinkgoT()
+	sc := spoke("no-ca", v1beta1.SpokeDeletionPolicyDetach)
+	r := newTestReconciler(t, sc)
+	err := r.register(context.Background(), sc, &credential.Materialized{
+		Endpoint: "https://spoke.example.com",
+		Token:    "tok",
+	})
+	if err == nil {
+		t.Fatal("register must refuse an empty CA bundle")
+	}
+	if !strings.Contains(err.Error(), "without a CA bundle") {
+		t.Fatalf("error = %v, want it to name the missing CA bundle", err)
+	}
+	sec := &corev1.Secret{}
+	if getErr := r.Get(context.Background(), gatewaySecretKey(sc), sec); getErr == nil {
+		t.Fatal("gateway Secret must not be created when CAData is empty")
 	}
 })
 
