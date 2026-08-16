@@ -36,9 +36,11 @@ import (
 //
 // Hostnames are resolved and every returned address is checked against the same
 // IP deny-list, so spellings like 169.254.169.254.nip.io cannot bypass the
-// literal-IP checks. DNS rebinding after this check remains a residual risk
-// (validation is point-in-time); cluster-gateway dials whatever the name
-// resolves to later.
+// literal-IP checks. DNS rebinding after this check remains a residual risk for
+// the dial that cluster-gateway performs (validation is point-in-time and the
+// gateway has no dial-time denylist). The SpokeCluster reconciler re-runs this
+// check on every pass, including credential-cache hits, and revokes the gateway
+// Secret when revalidation fails.
 func ValidateSpokeEndpoint(endpoint string) error {
 	return validateSpokeEndpoint(context.Background(), endpoint)
 }

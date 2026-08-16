@@ -170,6 +170,21 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 			return r.finish(ctx, sc, status, 0, err)
 		}
 		r.credentials.Put(sc, materialized)
+	} else if err := credential.ValidateSpokeEndpoint(materialized.Endpoint); err != nil {
+		// SSRF-02: DNS can rebind after the point-in-time check inside Materialize.
+		// Re-resolve on every reconcile (including cache hits) and revoke the gateway
+		// Secret so cluster-gateway stops dialing a newly blocked address. cluster-gateway
+		// has no dial-time denylist and cannot pin ServerName separately from the
+		// endpoint host, so this reconcile-time revoke is the available control point.
+		r.credentials.Invalidate(client.ObjectKeyFromObject(sc))
+		if delErr := r.deleteGatewaySecret(ctx, sc); delErr != nil {
+			klog.ErrorS(delErr, "failed to revoke gateway Secret after endpoint revalidation failure",
+				"spokecluster", klog.KObj(sc))
+		}
+		msg := "spoke endpoint failed revalidation (possible DNS rebinding): " + err.Error()
+		setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonMaterializeFailed, msg)
+		markConnectionUnobserved(status, reasonMaterializeFailed, msg)
+		return r.finish(ctx, sc, status, probeInterval(sc), nil)
 	}
 	setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionTrue, reasonMaterialized,
 		"credential materialized for endpoint "+materialized.Endpoint)

@@ -505,6 +505,7 @@ var _ = It("RegisterAllowsServerNameMatchingEndpointHost", func() {
 
 	m := &credential.Materialized{
 		Endpoint:   "https://api.internal.example.com:6443",
+		CAData:     []byte("ca-pem"),
 		Token:      "tok",
 		ServerName: "api.internal.example.com",
 	}
