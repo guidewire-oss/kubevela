@@ -102,6 +102,18 @@ func (clusterConfig *KubeClusterConfig) Validate() error {
 	case ClusterLocalName:
 		return errors.Errorf("ClusterName cannot be `%s`, it is reserved as the local cluster", ClusterLocalName)
 	}
+	// Align join TLS with SpokeCluster connect: cluster-gateway treats a missing
+	// ca.crt as skip-verify, so insecure-skip-tls-verify or an empty CA would
+	// silently disable the spoke hop. Refuse both here rather than writing a
+	// soft Secret that connect would never accept.
+	if clusterConfig.Cluster != nil {
+		if clusterConfig.Cluster.InsecureSkipTLSVerify {
+			return errors.Errorf("cluster kubeconfig sets insecure-skip-tls-verify; join requires TLS verification with inline certificate-authority-data (same as SpokeCluster connect)")
+		}
+		if len(clusterConfig.Cluster.CertificateAuthorityData) == 0 {
+			return errors.Errorf("cluster kubeconfig has no certificate-authority-data; join requires an inline CA bundle so cluster-gateway can verify the spoke API server")
+		}
+	}
 	return nil
 }
 
@@ -132,10 +144,16 @@ func (clusterConfig *KubeClusterConfig) createOrUpdateClusterSecret(ctx context.
 	var credentialType clusterv1alpha1.CredentialType
 	data := map[string][]byte{}
 	if withEndpoint {
-		data["endpoint"] = []byte(clusterConfig.Cluster.Server)
-		if !clusterConfig.Cluster.InsecureSkipTLSVerify {
-			data["ca.crt"] = clusterConfig.Cluster.CertificateAuthorityData
+		// Defense in depth: Validate() already refuses insecure/empty CA, but
+		// RegisterByVelaSecret can be called without Validate from older paths.
+		if clusterConfig.Cluster.InsecureSkipTLSVerify {
+			return fmt.Errorf("refusing to register cluster %q with insecure-skip-tls-verify; join requires TLS verification", clusterConfig.ClusterName)
 		}
+		if len(clusterConfig.Cluster.CertificateAuthorityData) == 0 {
+			return fmt.Errorf("refusing to register cluster %q without a CA bundle; empty ca.crt would make cluster-gateway skip TLS verification", clusterConfig.ClusterName)
+		}
+		data["endpoint"] = []byte(clusterConfig.Cluster.Server)
+		data["ca.crt"] = clusterConfig.Cluster.CertificateAuthorityData
 	}
 	switch {
 	case len(clusterConfig.AuthInfo.Token) > 0:
