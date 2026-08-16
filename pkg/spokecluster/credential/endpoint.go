@@ -130,7 +130,7 @@ func denyHubOrMetadataHost(ctx context.Context, host string, denyPrivate bool) e
 		}
 	}
 	if ip := net.ParseIP(ipHost); ip != nil {
-		return denyBlockedIPWithPolicy(ip, host, denyPrivate)
+		return denyBlockedIP(ip, host, denyPrivate)
 	}
 	if strings.Contains(host, "%") {
 		return fmt.Errorf("host %q has an IPv6 zone identifier and is not permitted", host)
@@ -144,7 +144,7 @@ func denyHubOrMetadataHost(ctx context.Context, host string, denyPrivate bool) e
 		return fmt.Errorf("host %q resolved to no addresses", host)
 	}
 	for _, ip := range ips {
-		if err := denyBlockedIPWithPolicy(ip, host, denyPrivate); err != nil {
+		if err := denyBlockedIP(ip, host, denyPrivate); err != nil {
 			return err
 		}
 	}
@@ -159,11 +159,7 @@ func denyHubOrMetadataHost(ctx context.Context, host string, denyPrivate bool) e
 // every spoke endpoint is expected to be public (or otherwise outside those ranges).
 var DenyPrivateEndpoints bool
 
-func denyBlockedIP(ip net.IP, host string) error {
-	return denyBlockedIPWithPolicy(ip, host, false)
-}
-
-func denyBlockedIPWithPolicy(ip net.IP, host string, denyPrivate bool) error {
+func denyBlockedIP(ip net.IP, host string, denyPrivate bool) error {
 	if ip.IsUnspecified() {
 		return fmt.Errorf("host %q is an unspecified address", host)
 	}

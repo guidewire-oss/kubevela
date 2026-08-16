@@ -130,30 +130,28 @@ func (r *Reconciler) reapGatewaySecretIfOwnerGone(ctx context.Context, secret *c
 	klog.InfoS("gateway secret janitor reclaiming Secret whose SpokeCluster is gone",
 		"secret", klog.KObj(fresh), "owner", owner, "deletionPolicy", policy)
 	uid := fresh.UID
+	rv := fresh.ResourceVersion
 	clusterName := fresh.Name
 
 	// LIFE-01: scrub ResourceTrackers while the orphan Secret still exists so a
 	// scrub failure is retryable (the next janitor pass still sees the Secret).
-	// Skip scrub when a SpokeCluster already reclaims the gateway name.
+	// Skip scrub and delete when a SpokeCluster already reclaims the gateway name:
+	// the recreated spoke may have adopted this Secret (same UID) via verifyAdoptable.
 	list := &v1beta1.SpokeClusterList{}
 	if listErr := r.List(ctx, list); listErr != nil {
 		return fmt.Errorf("gateway secret janitor failed listing SpokeClusters before ResourceTracker scrub: %w", listErr)
 	}
-	nameInUse := false
 	for i := range list.Items {
 		if list.Items[i].Name == clusterName {
-			nameInUse = true
-			klog.InfoS("gateway secret janitor skipping ResourceTracker scrub; SpokeCluster name is in use again",
+			klog.InfoS("gateway secret janitor skipping reclaim; SpokeCluster name is in use again",
 				"cluster", clusterName, "spokecluster", klog.KObj(&list.Items[i]))
-			break
+			return nil
 		}
 	}
-	if !nameInUse {
-		if scrubErr := multicluster.RemoveClusterFromResourceTrackers(ctx, r.Client, clusterName); scrubErr != nil {
-			return fmt.Errorf("gateway secret janitor failed scrubbing ResourceTrackers for %s: %w", clusterName, scrubErr)
-		}
+	if scrubErr := multicluster.RemoveClusterFromResourceTrackers(ctx, r.Client, clusterName); scrubErr != nil {
+		return fmt.Errorf("gateway secret janitor failed scrubbing ResourceTrackers for %s: %w", clusterName, scrubErr)
 	}
-	return client.IgnoreNotFound(r.Delete(ctx, fresh, client.Preconditions{UID: &uid}))
+	return client.IgnoreNotFound(r.Delete(ctx, fresh, client.Preconditions{UID: &uid, ResourceVersion: &rv}))
 }
 
 func parseSecretOwner(owner string) (namespace, name string, ok bool) {

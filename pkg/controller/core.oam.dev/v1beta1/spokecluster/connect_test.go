@@ -514,6 +514,24 @@ var _ = It("RegisterAllowsServerNameMatchingEndpointHost", func() {
 	}
 })
 
+// DNS names are case-insensitive; a tls-server-name that differs only in case from the
+// endpoint host must still be accepted.
+var _ = It("RegisterAllowsServerNameMatchingEndpointHostCaseInsensitive", func() {
+	t := GinkgoT()
+	sc := spoke("spoke", v1beta1.SpokeDeletionPolicyDetach)
+	r := newTestReconciler(t, sc)
+
+	m := &credential.Materialized{
+		Endpoint:   "https://api.internal.example.com:6443",
+		CAData:     []byte("ca-pem"),
+		Token:      "tok",
+		ServerName: "API.Internal.Example.COM",
+	}
+	if err := r.register(context.Background(), sc, m); err != nil {
+		t.Fatalf("register refused a case-equivalent ServerName: %v", err)
+	}
+})
+
 var _ = It("RegisterRejectsBlockedProxyURL", func() {
 	t := GinkgoT()
 	sc := spoke("spoke", v1beta1.SpokeDeletionPolicyDetach)

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 	"time"
 
 	recorder "github.com/crossplane/crossplane-runtime/pkg/event"
@@ -149,7 +150,7 @@ func verifyServerNameCompatible(m *credential.Materialized) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse endpoint %q: %w", m.Endpoint, err)
 	}
-	if m.ServerName != host {
+	if !strings.EqualFold(m.ServerName, host) {
 		return fmt.Errorf("credential requires TLS server name %q, but cluster-gateway always verifies against the endpoint host %q for this substrate; there is no way to honor a differing server name", m.ServerName, host)
 	}
 	return nil

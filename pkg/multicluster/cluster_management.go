@@ -150,7 +150,7 @@ func (clusterConfig *KubeClusterConfig) createOrUpdateClusterSecret(ctx context.
 				return fmt.Errorf("refusing to register cluster %q: endpoint %q is not a valid URL: %w", clusterConfig.ClusterName, clusterConfig.Cluster.Server, err)
 			}
 			host := u.Hostname()
-			if sn != host {
+			if !strings.EqualFold(sn, host) {
 				return fmt.Errorf("refusing to register cluster %q: kubeconfig tls-server-name %q differs from endpoint host %q; cluster-gateway always verifies against the endpoint host", clusterConfig.ClusterName, sn, host)
 			}
 		}

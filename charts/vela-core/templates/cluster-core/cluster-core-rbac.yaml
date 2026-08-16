@@ -127,8 +127,10 @@ subjects:
 {{- /* ID-01: namespace-scoped source Secret gets when allowlist is set.
      The release namespace already has secrets get via the Role above. */}}
 {{- if .Values.clusterCore.kubeconfigSecretNamespaces }}
+{{- $seen := dict }}
 {{- range .Values.clusterCore.kubeconfigSecretNamespaces }}
-{{- if ne . $.Release.Namespace }}
+{{- if and (ne . $.Release.Namespace) (not (hasKey $seen .)) }}
+{{- $_ := set $seen . true }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

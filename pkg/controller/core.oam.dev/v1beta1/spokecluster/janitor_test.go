@@ -133,6 +133,23 @@ var _ = It("JanitorKeepsSecretWhenSpokeClusterExists", func() {
 	}
 })
 
+var _ = It("JanitorKeepsSecretWhenNameReclaimedByNewSpoke", func() {
+	t := GinkgoT()
+	// Owner team-a is gone, but another SpokeCluster already reclaims the gateway
+	// name (same-name recreate / cross-ns collision). Do not scrub or delete: the
+	// new spoke may have adopted this Secret via verifyAdoptable.
+	secret := gatewaySecretOwnedBy("reclaimed-spoke", "team-a")
+	secret.Annotations[secretDeletionPolicyAnnotation] = string(v1beta1.SpokeDeletionPolicyDetach)
+	live := spokeIn("reclaimed-spoke", "team-b", v1beta1.SpokeDeletionPolicyDetach)
+	r := newTestReconciler(t, secret, live)
+
+	r.sweepOrphanedGatewaySecrets(context.Background())
+
+	if !secretExists(t, r.Client, "reclaimed-spoke") {
+		t.Fatal("janitor deleted a Secret whose cluster name is in use by another SpokeCluster")
+	}
+})
+
 var _ = It("JanitorIgnoresManuallyJoinedSecret", func() {
 	t := GinkgoT()
 	secret := foreignGatewaySecret("manual-join")
