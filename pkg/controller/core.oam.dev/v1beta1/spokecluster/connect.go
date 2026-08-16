@@ -275,13 +275,10 @@ func (r *Reconciler) secretReader() client.Reader {
 //     the key is omitted (direct dial).
 //
 // register refuses to adopt a pre-existing Secret it does not recognize (see
-// verifyAdoptable): design.md reasoned that the admission webhook already
-// rejects a name collision with an existing gateway Secret, but that webhook is stateless
-// by design and does not read Secrets, so no such check exists. Without this guard a
-// SpokeCluster could silently take over a manually joined cluster's Secret, redirecting
-// its traffic to a different cluster and, under detach, later deleting its credential
-// when the SpokeCluster itself is deleted. Confirmed live against a real `vela cluster
-// join` fixture before this guard existed.
+// verifyAdoptable). Admission now also refuses two SpokeClusters that share a
+// metadata.name across namespaces (gateway Secret identity is name-only), but
+// it still does not inspect join-managed Secrets, so this adopt guard remains
+// the backstop against overwriting a manually joined cluster.
 func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *credential.Materialized) error {
 	// Reserved name: admission and reconcile SpecInvalid already reject this, but
 	// register is the last write before a gateway Secret named "local" would

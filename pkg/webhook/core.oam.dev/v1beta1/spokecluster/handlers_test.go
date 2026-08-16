@@ -27,6 +27,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -69,7 +70,7 @@ var _ = Describe("ValidatingHandler", func() {
 	var handler *ValidatingHandler
 
 	BeforeEach(func() {
-		handler = &ValidatingHandler{Decoder: decoder}
+		handler = &ValidatingHandler{Decoder: decoder, Client: fake.NewClientBuilder().WithScheme(testScheme).Build()}
 	})
 
 	It("allows a valid kubeconfig spoke on create", func() {
@@ -95,6 +96,32 @@ var _ = Describe("ValidatingHandler", func() {
 
 	It("admits delete without decoding", func() {
 		req := newSpokeClusterRequest(validKubeconfigSpoke(), admissionv1.Delete)
+		resp := handler.Handle(context.Background(), req)
+		gomega.Expect(resp.Allowed).To(gomega.BeTrue(), "response: %+v", resp.Result)
+	})
+
+	It("denies a create that reuses another namespace's SpokeCluster name", func() {
+		existing := validKubeconfigSpoke()
+		existing.Namespace = "team-a"
+		existing.Name = "shared-name"
+		cli := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(existing).Build()
+		handler = &ValidatingHandler{Decoder: decoder, Client: cli}
+
+		incoming := validKubeconfigSpoke()
+		incoming.Namespace = "team-b"
+		incoming.Name = "shared-name"
+		req := newSpokeClusterRequest(incoming, admissionv1.Create)
+		resp := handler.Handle(context.Background(), req)
+		gomega.Expect(resp.Allowed).To(gomega.BeFalse())
+		gomega.Expect(resp.Result.Message).To(gomega.ContainSubstring("unique cluster-wide"))
+	})
+
+	It("allows update of an existing SpokeCluster in its own namespace", func() {
+		existing := validKubeconfigSpoke()
+		cli := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(existing).Build()
+		handler = &ValidatingHandler{Decoder: decoder, Client: cli}
+
+		req := newSpokeClusterRequest(existing, admissionv1.Update)
 		resp := handler.Handle(context.Background(), req)
 		gomega.Expect(resp.Allowed).To(gomega.BeTrue(), "response: %+v", resp.Result)
 	})

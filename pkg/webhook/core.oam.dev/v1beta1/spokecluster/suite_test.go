@@ -37,12 +37,15 @@ func TestSpokeClusterWebhook(t *testing.T) {
 	RunSpecs(t, "SpokeCluster Webhook Suite")
 }
 
-// decoder is shared by the validating and mutating handler specs.
-var decoder admission.Decoder
+// decoder and testScheme are shared by the validating and mutating handler specs.
+var (
+	decoder    admission.Decoder
+	testScheme *runtime.Scheme
+)
 
 var _ = BeforeSuite(func() {
-	scheme := runtime.NewScheme()
-	gomega.Expect(k8sscheme.AddToScheme(scheme)).To(gomega.Succeed())
-	gomega.Expect(v1beta1.AddToScheme(scheme)).To(gomega.Succeed())
-	decoder = admission.NewDecoder(scheme)
+	testScheme = runtime.NewScheme()
+	gomega.Expect(k8sscheme.AddToScheme(testScheme)).To(gomega.Succeed())
+	gomega.Expect(v1beta1.AddToScheme(testScheme)).To(gomega.Succeed())
+	decoder = admission.NewDecoder(testScheme)
 })
