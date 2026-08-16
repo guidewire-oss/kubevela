@@ -57,6 +57,9 @@ spec:
             - "--concurrent-reconciles={{ .Values.clusterCore.concurrentReconciles }}"
             - "--credential-cache-ttl={{ include "kubevela.clusterCore.credentialCacheTTLSeconds" . }}s"
             - "--cluster-gateway-secret-namespace={{ .Release.Namespace }}"
+            {{- if .Values.clusterCore.spokeEndpoint.denyPrivate }}
+            - "--spoke-endpoint-deny-private=true"
+            {{- end }}
             - "--feature-gates=EnableClusterInfrastructure=true"
             {{- if .Values.clusterCore.webhook.enabled }}
             - "--use-webhook=true"

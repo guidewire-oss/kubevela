@@ -75,6 +75,7 @@ var _ = It("AddFlags", func() {
 		"auto-upgrade-cluster-secret",
 		"credential-cache-ttl",
 		"cluster-gateway-secret-namespace",
+		"spoke-endpoint-deny-private",
 		"feature-gates",
 	} {
 		f := fs.Lookup(name)

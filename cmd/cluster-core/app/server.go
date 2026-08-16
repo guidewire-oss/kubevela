@@ -38,6 +38,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1beta1/spokecluster"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
+	"github.com/oam-dev/kubevela/pkg/spokecluster/credential"
 	common "github.com/oam-dev/kubevela/pkg/utils/common"
 	webhookspokecluster "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/spokecluster"
 
@@ -61,6 +62,7 @@ type options struct {
 	autoUpgradeSecret    bool
 	credentialCacheTTL   time.Duration
 	gatewaySecretNS      string
+	denyPrivateEndpoints bool
 }
 
 // defaultOptions returns the options with their documented defaults.
@@ -118,6 +120,10 @@ func addFlags(fs *pflag.FlagSet, o *options) {
 			"The chart sets this to the release namespace. When set, it wins over both the package "+
 			"default (vela-system) and the namespace discovered from the cluster-gateway APIService, "+
 			"so a failed or late Initialize cannot point the Secret informer at a namespace the Role does not cover.")
+	fs.BoolVar(&o.denyPrivateEndpoints, "spoke-endpoint-deny-private", o.denyPrivateEndpoints,
+		"When true, refuse SpokeCluster endpoints (and kubeconfig servers) that resolve to RFC1918 or "+
+			"CGNAT addresses. Off by default so k3d/kind and VPC-peered private API endpoints keep working. "+
+			"Enable on hubs that should only dial public spoke APIs.")
 
 	utilfeature.DefaultMutableFeatureGate.AddFlag(fs)
 }
@@ -185,6 +191,10 @@ func run(o *options) error {
 			"discovered", multicluster.ClusterGatewaySecretNamespace, "configured", gatewayNS)
 	}
 	multicluster.ClusterGatewaySecretNamespace = gatewayNS
+	credential.DenyPrivateEndpoints = o.denyPrivateEndpoints
+	if o.denyPrivateEndpoints {
+		klog.InfoS("spoke endpoint policy denies RFC1918 and CGNAT addresses (--spoke-endpoint-deny-private)")
+	}
 
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                        common.Scheme,

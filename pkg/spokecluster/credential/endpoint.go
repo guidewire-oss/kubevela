@@ -30,7 +30,9 @@ import (
 //
 // Policy is a deny-list, not an allow-list: https is required, but RFC1918 /
 // Docker/k3d private IPs and public cloud API hostnames (for example
-// *.eks.amazonaws.com) remain allowed so real spokes keep working.
+// *.eks.amazonaws.com) remain allowed so real spokes keep working. Set
+// DenyPrivateEndpoints to also refuse RFC1918/CGNAT when every spoke is expected
+// to be reachable on a public (or otherwise non-private) address.
 //
 // Hostnames are resolved and every returned address is checked against the same
 // IP deny-list, so spellings like 169.254.169.254.nip.io cannot bypass the
@@ -147,6 +149,14 @@ func denyHubOrMetadataHost(ctx context.Context, host string) error {
 	return nil
 }
 
+// DenyPrivateEndpoints, when true, also refuses RFC1918 and CGNAT destinations
+// so a SpokeCluster cannot coerce cluster-gateway into dialing hub-LAN or
+// cloud-private API addresses from a public hub. Off by default: k3d, kind,
+// and many VPC-peered installs publish private spoke API endpoints that must
+// keep working. Enable via --spoke-endpoint-deny-private on cluster-core when
+// every spoke endpoint is expected to be public (or otherwise outside those ranges).
+var DenyPrivateEndpoints bool
+
 func denyBlockedIP(ip net.IP, host string) error {
 	if ip.IsUnspecified() {
 		return fmt.Errorf("host %q is an unspecified address", host)
@@ -159,6 +169,13 @@ func denyBlockedIP(ip net.IP, host string) error {
 	for _, blocked := range blockedIPs {
 		if ip.Equal(blocked) {
 			return fmt.Errorf("host %q is a blocked metadata address", host)
+		}
+	}
+	if DenyPrivateEndpoints {
+		for _, cidr := range privateCIDRs {
+			if cidr.Contains(ip) {
+				return fmt.Errorf("host %q is in private range %s (spoke-endpoint-deny-private is enabled)", host, cidr)
+			}
 		}
 	}
 	return nil
@@ -214,6 +231,15 @@ var blockedCIDRs = mustParseCIDRs(
 	"fe80::/10",       // IPv6 link-local
 	"fc00::/7",        // IPv6 unique local (ULA)
 	"fec0::/10",       // IPv6 site-local (deprecated, still routable on some nets)
+)
+
+// privateCIDRs are refused only when DenyPrivateEndpoints is set. They stay
+// allowed under the default deny-list so RFC1918 / CGNAT spoke APIs work.
+var privateCIDRs = mustParseCIDRs(
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10", // CGNAT / shared address space
 )
 
 var blockedIPs = []net.IP{

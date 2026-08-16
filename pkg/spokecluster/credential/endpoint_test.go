@@ -206,6 +206,33 @@ func TestValidateSpokeEndpoint_boundaryCIDRs(t *testing.T) {
 	}
 }
 
+func TestValidateSpokeEndpoint_denyPrivate(t *testing.T) {
+	prev := DenyPrivateEndpoints
+	DenyPrivateEndpoints = true
+	t.Cleanup(func() { DenyPrivateEndpoints = prev })
+
+	private := []string{
+		"https://10.0.0.1:6443",
+		"https://172.16.5.1:6443",
+		"https://192.168.1.10:6443",
+		"https://100.64.0.1:6443",
+	}
+	for _, ep := range private {
+		err := ValidateSpokeEndpoint(ep)
+		if err == nil {
+			t.Errorf("DenyPrivateEndpoints=%v ValidateSpokeEndpoint(%q) = nil, want error", true, ep)
+			continue
+		}
+		if !strings.Contains(err.Error(), "private range") {
+			t.Errorf("ValidateSpokeEndpoint(%q) = %v, want private range mention", ep, err)
+		}
+	}
+	// Public still allowed.
+	if err := ValidateSpokeEndpoint("https://8.8.8.8:6443"); err != nil {
+		t.Errorf("public endpoint refused under deny-private: %v", err)
+	}
+}
+
 func TestValidateSpokeEndpoint_tableDrivenPairs(t *testing.T) {
 	hosts := []string{
 		"172.27.0.2:6443",
