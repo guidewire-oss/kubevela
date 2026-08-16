@@ -50,6 +50,7 @@ func init() {
 	// Only the (condition, reason) pairs emitStatusEvents can increment.
 	spokeConditionFailures.WithLabelValues(v1beta1.SpokeClusterConditionCredentialValid, reasonMaterializeFailed)
 	spokeConditionFailures.WithLabelValues(v1beta1.SpokeClusterConditionCredentialValid, reasonNoProvider)
+	spokeConditionFailures.WithLabelValues(v1beta1.SpokeClusterConditionCredentialValid, reasonSpecInvalid)
 	spokeConditionFailures.WithLabelValues(v1beta1.SpokeClusterConditionRegistered, reasonRegisterFailed)
 	for _, result := range []string{"success", "error"} {
 		spokeDetachTotal.WithLabelValues(result)

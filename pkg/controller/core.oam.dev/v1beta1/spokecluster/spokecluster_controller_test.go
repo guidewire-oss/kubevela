@@ -335,6 +335,33 @@ var _ = It("ProbeFailureMessageNamesTheEndpoint", func() {
 	}
 })
 
+var _ = It("ReconcileRejectsInvalidSpecWithoutRegistering", func() {
+	t := GinkgoT()
+	sc := connectableSpoke("provision-blocked")
+	sc.Spec.Mode = v1beta1.SpokeClusterModeProvision
+	r := connectedReconciler(t, sc)
+
+	res, err := reconcileOnce(t, r, sc)
+	if err != nil {
+		t.Fatalf("invalid spec must not fail the reconcile with an error: %v", err)
+	}
+	if res.RequeueAfter <= 0 {
+		t.Errorf("RequeueAfter = %v, want a probe-interval requeue for a stored invalid spec", res.RequeueAfter)
+	}
+
+	latest := readSpoke(t, r, sc)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonSpecInvalid)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, reasonSpecInvalid)
+	if latest.Status.Connection != v1beta1.ConnectionStateUnknown {
+		t.Errorf("connection = %q, want Unknown", latest.Status.Connection)
+	}
+	sec := &corev1.Secret{}
+	err = r.Get(context.Background(), client.ObjectKey{Namespace: "vela-system", Name: sc.Name}, sec)
+	if err == nil {
+		t.Fatal("gateway Secret must not be created for an invalid SpokeCluster")
+	}
+})
+
 // TestReconcileCredentialFailure checks both halves of a materialization failure: the
 // condition is recorded, and the error still surfaces so controller-runtime backs off.
 var _ = It("ReconcileCredentialFailure", func() {
@@ -374,27 +401,45 @@ var _ = It("ReconcileCredentialFailure", func() {
 
 // TestReconcileCredentialFailureMarksConnectionUnknown separates "we never got far enough to
 // know" from "we probed and it was down". It also covers the regression case: a spoke that
-// was Connected and then loses its credential must stop asserting reachability.
+// was Connected and then loses its credential must stop asserting reachability on both
+// status.connection and the Connected condition.
 var _ = It("ReconcileCredentialFailureMarksConnectionUnknown", func() {
 	t := GinkgoT()
-	cases := map[string]credential.Registry{
-		"no provider":        {},
-		"materialize failed": kubeconfigRegistry(nil, errors.New("kubeconfig is malformed")),
+	cases := map[string]struct {
+		registry   credential.Registry
+		wantReason string
+	}{
+		"no provider": {
+			registry:   credential.Registry{},
+			wantReason: reasonNoProvider,
+		},
+		"materialize failed": {
+			registry:   kubeconfigRegistry(nil, errors.New("kubeconfig is malformed")),
+			wantReason: reasonMaterializeFailed,
+		},
 	}
 
-	for name, registry := range cases {
+	for name, tc := range cases {
 		By(name, func() {
 			sc := connectableSpoke("spoke-unknown")
 			sc.Status.Connection = v1beta1.ConnectionStateConnected
+			meta.SetStatusCondition(&sc.Status.Conditions, metav1.Condition{
+				Type:    v1beta1.SpokeClusterConditionConnected,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonProbeSucceeded,
+				Message: "spoke answered the authenticated probe",
+			})
 			r := connectedReconciler(t, sc)
-			r.Providers = registry
+			r.Providers = tc.registry
 
 			if _, err := reconcileOnce(t, r, sc); err == nil {
 				t.Fatal("Reconcile returned nil, want the credential error")
 			}
-			if got := readSpoke(t, r, sc).Status.Connection; got != v1beta1.ConnectionStateUnknown {
+			latest := readSpoke(t, r, sc)
+			if got := latest.Status.Connection; got != v1beta1.ConnectionStateUnknown {
 				t.Errorf("status.connection = %q, want %q", got, v1beta1.ConnectionStateUnknown)
 			}
+			wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, tc.wantReason)
 		})
 	}
 })
@@ -424,6 +469,7 @@ var _ = It("ReconcileRegisterFailure", func() {
 	if latest.Status.Connection != v1beta1.ConnectionStateUnknown {
 		t.Errorf("status.connection = %q, want %q after a registration failure", latest.Status.Connection, v1beta1.ConnectionStateUnknown)
 	}
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, reasonRegisterFailed)
 })
 
 // TestReconcileDiscoveryFailurePreservesClusterInfo keeps a transient inventory failure
@@ -779,7 +825,7 @@ var _ = It("ReconcileEvictsTheCachedCredentialOnlyOn401", func() {
 		},
 		{
 			name:      "403 does not evict, because reminting cannot fix RBAC",
-			probeErr:  apierrors.NewForbidden(schema.GroupResource{Resource: "healthz"}, "healthz", errors.New("forbidden")),
+			probeErr:  apierrors.NewForbidden(schema.GroupResource{Resource: "apis"}, "apis", errors.New("forbidden")),
 			wantCalls: 1,
 		},
 		{
@@ -812,6 +858,28 @@ var _ = It("ReconcileEvictsTheCachedCredentialOnlyOn401", func() {
 			}
 		})
 	}
+})
+
+var _ = It("ReconcileEvictsTheCachedCredentialOnDiscovery401", func() {
+	t := GinkgoT()
+	sc := connectableSpoke("discover-401")
+	r, provider := cachingReconciler(t, sc, refreshingCredential(13*time.Minute))
+	r.discoverFn = func(_ context.Context, _ *v1beta1.SpokeCluster, _ *credential.Materialized, _ time.Duration) (*v1beta1.SpokeClusterInfo, error) {
+		return nil, apierrors.NewUnauthorized("token rejected on version read")
+	}
+
+	for pass := 1; pass <= 2; pass++ {
+		if _, err := reconcileOnce(t, r, sc); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+	}
+
+	if provider.calls != 2 {
+		t.Errorf("Materialize ran %d times, want 2: a discovery 401 must remint on the next pass", provider.calls)
+	}
+	latest := readSpoke(t, r, sc)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionTrue, reasonProbeSucceeded)
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionInfoSynced, metav1.ConditionFalse, reasonDiscoveryFailed)
 })
 
 var _ = It("StatusNeedsWriteIgnoresHeartbeatFields", func() {
@@ -924,6 +992,41 @@ var _ = It("MapKubeconfigSecretEnqueuesOwner", func() {
 	reqs = r.mapKubeconfigSecret(context.Background(), secret)
 	if len(reqs) != 1 || reqs[0].Name != sc.Name {
 		t.Fatalf("empty secretRef.namespace: requests = %v, want %s", reqs, sc.Name)
+	}
+})
+
+var _ = It("MapKubeconfigSecretInvalidatesCachedCredential", func() {
+	t := GinkgoT()
+	sc := connectableSpoke("map-evict")
+	r, provider := cachingReconciler(t, sc, refreshingCredential(13*time.Minute))
+
+	if _, err := reconcileOnce(t, r, sc); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("Materialize calls = %d, want 1 after seed", provider.calls)
+	}
+	if _, hit := r.credentials.Get(readSpoke(t, r, sc), 0); !hit {
+		t.Fatal("expected a cache hit after the first pass")
+	}
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      sc.Spec.Credential.Kubeconfig.SecretRef.Name,
+		Namespace: sc.Namespace,
+	}}
+	reqs := r.mapKubeconfigSecret(context.Background(), secret)
+	if len(reqs) != 1 || reqs[0].Name != sc.Name {
+		t.Fatalf("requests = %v, want %s", reqs, sc.Name)
+	}
+	if _, hit := r.credentials.Get(readSpoke(t, r, sc), 0); hit {
+		t.Fatal("source Secret event must drop the cached credential before enqueue")
+	}
+
+	if _, err := reconcileOnce(t, r, sc); err != nil {
+		t.Fatalf("rematerialize: %v", err)
+	}
+	if provider.calls != 2 {
+		t.Errorf("Materialize ran %d times, want 2 after Secret-driven eviction", provider.calls)
 	}
 })
 

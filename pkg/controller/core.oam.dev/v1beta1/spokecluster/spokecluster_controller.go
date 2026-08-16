@@ -45,6 +45,7 @@ import (
 	oamctrl "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/spokecluster/credential"
+	spokeadmission "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1beta1/spokecluster"
 )
 
 const (
@@ -67,6 +68,7 @@ const (
 // unreachable spoke from a broken credential, so they are stable strings, not prose.
 const (
 	reasonNoProvider         = "NoProvider"
+	reasonSpecInvalid        = "SpecInvalid"
 	reasonMaterializeFailed  = "MaterializeFailed"
 	reasonMaterialized       = "Materialized"
 	reasonRegisterFailed     = "RegisterFailed"
@@ -117,14 +119,28 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	status := sc.Status.DeepCopy()
 	status.ObservedGeneration = sc.Generation
 
+	// Re-check Phase 1 admission rules even when the validating webhook is Ignore
+	// (job-patch bootstrap window) or disabled. A stored provision/adopt/local/azure
+	// object must not register a gateway Secret.
+	if errs := spokeadmission.Validate(sc); len(errs) > 0 {
+		msg := errs.ToAggregate().Error()
+		setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonSpecInvalid, msg)
+		markConnectionUnobserved(status, reasonSpecInvalid, msg)
+		return r.finish(ctx, sc, status, probeInterval(sc), nil)
+	}
+
 	// Every failure before the probe reports Unknown rather than Disconnected: the spoke was
 	// never reached, so its reachability is genuinely unobserved this pass. Disconnected
 	// would claim we looked and found it down, and leaving a previous Connected in place
 	// would keep asserting reachability the controller can no longer see.
+	//
+	// The Connected *condition* must move to Unknown as well. status.connection alone left
+	// kubectl describe showing Connected=True "spoke answered the authenticated probe" after a
+	// credential or registration failure.
 	provider, err := r.Providers.For(sc.Spec.Credential.Type)
 	if err != nil {
 		setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonNoProvider, err.Error())
-		status.Connection = v1beta1.ConnectionStateUnknown
+		markConnectionUnobserved(status, reasonNoProvider, err.Error())
 		return r.finish(ctx, sc, status, 0, err)
 	}
 
@@ -145,7 +161,7 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 		materialized, err = provider.Materialize(ctx, r.secretReader(), sc)
 		if err != nil {
 			setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonMaterializeFailed, err.Error())
-			status.Connection = v1beta1.ConnectionStateUnknown
+			markConnectionUnobserved(status, reasonMaterializeFailed, err.Error())
 			return r.finish(ctx, sc, status, 0, err)
 		}
 		r.credentials.Put(sc, materialized)
@@ -155,7 +171,7 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 
 	if err := r.register(ctx, sc, materialized); err != nil {
 		setCondition(status, v1beta1.SpokeClusterConditionRegistered, metav1.ConditionFalse, reasonRegisterFailed, err.Error())
-		status.Connection = v1beta1.ConnectionStateUnknown
+		markConnectionUnobserved(status, reasonRegisterFailed, err.Error())
 		return r.finish(ctx, sc, status, 0, err)
 	}
 	setCondition(status, v1beta1.SpokeClusterConditionRegistered, metav1.ConditionTrue, reasonSecretMaterialized,
@@ -200,14 +216,21 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	// message that changes every pass would make every status write a real write for no
 	// added information, and it is already reported in a field with a printer column.
 	setCondition(status, v1beta1.SpokeClusterConditionConnected, metav1.ConditionTrue, reasonProbeSucceeded,
-		"spoke answered the healthz probe")
+		"spoke answered the authenticated probe")
 	status.Connection = v1beta1.ConnectionStateConnected
 
 	info, discoverErr := r.discoverSpoke(ctx, sc, materialized, latency)
 	if discoverErr != nil {
-		// Inventory is not connectivity: a spoke that answers /healthz but refuses a node
+		// Inventory is not connectivity: a spoke that answers /apis but refuses a node
 		// list is still connected, so this never fails the pass.
 		setCondition(status, v1beta1.SpokeClusterConditionInfoSynced, metav1.ConditionFalse, reasonDiscoveryFailed, discoverErr.Error())
+		// Discovery runs authenticated API reads. A 401 here means the credential was
+		// rejected after the probe succeeded (or the probe path was somehow still
+		// anonymous). Drop the cache so the next pass remints; leave 403 alone, because
+		// reminting cannot fix missing get/list RBAC on nodes or version.
+		if apierrors.IsUnauthorized(discoverErr) {
+			r.credentials.Invalidate(client.ObjectKeyFromObject(sc))
+		}
 	} else {
 		// Stamped only here, on success. A skipped pass (probe failed) or a failed discovery
 		// leaves the previous value in place, so the gap between this and now is exactly how
@@ -307,6 +330,14 @@ func setCondition(status *v1beta1.SpokeClusterStatus, condType string, condStatu
 		Reason:  reason,
 		Message: message,
 	})
+}
+
+// markConnectionUnobserved sets status.connection and the Connected condition to Unknown
+// when this pass never reached the probe. reason and message name the earlier failure so
+// describe stays accurate after a previously Connected spoke loses its credential.
+func markConnectionUnobserved(status *v1beta1.SpokeClusterStatus, reason, message string) {
+	status.Connection = v1beta1.ConnectionStateUnknown
+	setCondition(status, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, reason, message)
 }
 
 // probeInterval is how often a spoke is probed when nothing else forces an earlier pass.

@@ -219,9 +219,12 @@ type Reconciler struct {
 	// so a Reconciler built directly behaves exactly as it did before this field existed.
 	// Setup installs a real one.
 	//
-	// Only a spec change, a delete, a 401 from the spoke, or a controller restart evicts
-	// an entry early. Editing a label or an annotation does not, because neither bumps
-	// metadata.generation, so there is no "annotate the object to force a refresh".
+	// Spec change, delete, source-Secret watch, a 401 from the spoke, or a controller
+	// restart evicts an entry early. Editing a label or an annotation does not, because
+	// neither bumps metadata.generation, so there is no "annotate the object to force a
+	// refresh". Source kubeconfig Secret create/update/delete goes through
+	// mapKubeconfigSecret, which Invalidates before enqueue so a rotate is not held
+	// behind NextRefresh.
 	credentials *credentialCache
 
 	probeFn    func(ctx context.Context, sc *v1beta1.SpokeCluster) (time.Duration, error)

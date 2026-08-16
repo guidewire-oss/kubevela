@@ -31,10 +31,10 @@ import (
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 )
 
-// probe asks the spoke's own API server whether it is healthy, through the cluster-gateway
-// proxy, and measures the round trip. It is deliberately a plain reachability check: the
-// gateway Secret register wrote is what makes the spoke addressable, so a successful probe
-// also proves the registration is usable end to end, not merely written.
+// probe asks the spoke's API server for /apis through the cluster-gateway proxy and
+// measures the round trip. /apis requires authentication on typical clusters (including
+// EKS and k3s), so a successful probe proves the registered credential still works, not
+// merely that the apiserver answers anonymous /healthz.
 //
 // The measured latency is returned for discovery to record as clusterInfo.latencyMillis, so
 // the probe is where that number comes from rather than a second round trip.
@@ -56,7 +56,7 @@ func (r *Reconciler) probe(ctx context.Context, sc *v1beta1.SpokeCluster) (time.
 	cfg := rest.CopyConfig(r.Config)
 
 	start := time.Now()
-	if _, err := multicluster.RequestRawK8sAPIForCluster(probeCtx, "healthz", sc.Name, cfg); err != nil {
+	if _, err := multicluster.RequestRawK8sAPIForCluster(probeCtx, "apis", sc.Name, cfg); err != nil {
 		// Returned unwrapped: describeProbeFailure names the spoke and endpoint when it
 		// renders this for status, and wrapping here only duplicated the cluster name.
 		return 0, err
@@ -85,7 +85,7 @@ func describeProbeFailure(sc *v1beta1.SpokeCluster, endpoint string, err error) 
 	case apierrors.IsUnauthorized(err):
 		cause = "the spoke rejected the credential (401); it may have been revoked or expired"
 	case apierrors.IsForbidden(err):
-		cause = "the spoke refused the healthz request (403); check the RBAC bound to this credential"
+		cause = "the spoke refused the authenticated probe (403); check the RBAC bound to this credential"
 	case apierrors.IsNotFound(err):
 		cause = "cluster-gateway has no route for this spoke; check the gateway Secret in " +
 			multicluster.ClusterGatewaySecretNamespace
