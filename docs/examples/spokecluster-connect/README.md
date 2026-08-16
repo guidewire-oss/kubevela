@@ -89,6 +89,8 @@ vela cluster spokes detach my-spoke
 
 `create --kubeconfig` writes a Secret (`<name>-kubeconfig` by default, or `--secret`) and a SpokeCluster. `create --aws` writes no Secret; pass `--aws-region`, `--aws-role-arn`, and `--aws-external-id` (optional `--aws-cluster-name`, `--aws-auth-mode`). `detach` deletes the SpokeCluster; the controller then removes the gateway Secret unless `deletionPolicy` is `orphan`. A kubeconfig source Secret is left in place. Use `--secret existing-name` when the kubeconfig Secret already exists.
 
+SpokeCluster `metadata.name` must be unique cluster-wide (the gateway Secret is keyed by that name). For AWS spokes, `spec.credential.aws.roleArn` must also be unique: admission refuses a second SpokeCluster that reuses another spoke's AssumeRole target. The shared Pod Identity `externalId` form is still valid, but each spoke needs its own role, and that role's trust policy should demand the hub identity plus `sts:ExternalId`. Prefer platform-admin creation of AWS SpokeClusters rather than letting arbitrary tenants pick arbitrary role ARNs.
+
 ## Migrating from `vela cluster join`
 
 `vela cluster join` writes the gateway Secret itself. A SpokeCluster with the same name is refused: the controller will not adopt a Secret it did not create.

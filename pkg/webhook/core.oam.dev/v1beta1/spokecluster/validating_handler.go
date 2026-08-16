@@ -55,7 +55,7 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 		if errs := Validate(sc); len(errs) > 0 {
 			return admission.Denied(errs.ToAggregate().Error())
 		}
-		if errs := h.validateUniqueName(ctx, sc); len(errs) > 0 {
+		if errs := h.validateClusterScopedUniqueness(ctx, sc); len(errs) > 0 {
 			return admission.Denied(errs.ToAggregate().Error())
 		}
 	}
@@ -63,19 +63,25 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 	return admission.ValidationResponse(true, "")
 }
 
-// validateUniqueName enforces cluster-wide uniqueness of SpokeCluster
-// metadata.name. The gateway Secret is keyed only by that name in the gateway
-// namespace, so two SpokeClusters in different namespaces with the same name
-// would fight over one Secret (MT-01).
-func (h *ValidatingHandler) validateUniqueName(ctx context.Context, sc *v1beta1.SpokeCluster) field.ErrorList {
+// validateClusterScopedUniqueness enforces identity constraints that span
+// namespaces: SpokeCluster metadata.name (gateway Secret key) and AWS roleArn
+// (one hub AssumeRole target per spoke).
+func (h *ValidatingHandler) validateClusterScopedUniqueness(ctx context.Context, sc *v1beta1.SpokeCluster) field.ErrorList {
 	if h.Client == nil {
 		return nil
 	}
 	list := &v1beta1.SpokeClusterList{}
 	if err := h.Client.List(ctx, list); err != nil {
 		return field.ErrorList{field.InternalError(field.NewPath("metadata", "name"),
-			fmt.Errorf("failed to list SpokeClusters for name uniqueness: %w", err))}
+			fmt.Errorf("failed to list SpokeClusters for uniqueness checks: %w", err))}
 	}
+	if errs := checkUniqueName(sc, list); len(errs) > 0 {
+		return errs
+	}
+	return checkUniqueAWSRoleARN(sc, list)
+}
+
+func checkUniqueName(sc *v1beta1.SpokeCluster, list *v1beta1.SpokeClusterList) field.ErrorList {
 	for i := range list.Items {
 		other := &list.Items[i]
 		if other.Name != sc.Name {
@@ -87,6 +93,32 @@ func (h *ValidatingHandler) validateUniqueName(ctx context.Context, sc *v1beta1.
 		return field.ErrorList{field.Duplicate(field.NewPath("metadata", "name"),
 			fmt.Sprintf("SpokeCluster name %q is already used by %s/%s; names must be unique cluster-wide because the gateway Secret is keyed by name alone",
 				sc.Name, other.Namespace, other.Name))}
+	}
+	return nil
+}
+
+func checkUniqueAWSRoleARN(sc *v1beta1.SpokeCluster, list *v1beta1.SpokeClusterList) field.ErrorList {
+	if sc.Spec.Credential.Type != v1beta1.CredentialTypeAWS || sc.Spec.Credential.AWS == nil {
+		return nil
+	}
+	roleARN := sc.Spec.Credential.AWS.RoleARN
+	if roleARN == "" {
+		return nil
+	}
+	for i := range list.Items {
+		other := &list.Items[i]
+		if other.Namespace == sc.Namespace && other.Name == sc.Name {
+			continue
+		}
+		if other.Spec.Credential.Type != v1beta1.CredentialTypeAWS || other.Spec.Credential.AWS == nil {
+			continue
+		}
+		if other.Spec.Credential.AWS.RoleARN != roleARN {
+			continue
+		}
+		return field.ErrorList{field.Duplicate(field.NewPath("spec", "credential", "aws", "roleArn"),
+			fmt.Sprintf("roleArn %q is already used by SpokeCluster %s/%s; each AWS spoke must use a distinct role so a tenant cannot share another spoke's AssumeRole target",
+				roleARN, other.Namespace, other.Name))}
 	}
 	return nil
 }

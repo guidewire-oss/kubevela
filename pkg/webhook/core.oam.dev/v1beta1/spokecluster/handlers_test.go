@@ -125,6 +125,36 @@ var _ = Describe("ValidatingHandler", func() {
 		resp := handler.Handle(context.Background(), req)
 		gomega.Expect(resp.Allowed).To(gomega.BeTrue(), "response: %+v", resp.Result)
 	})
+
+	It("denies an AWS create that reuses another spoke's roleArn", func() {
+		existing := validAWSSpoke()
+		existing.Name = "spoke-a"
+		cli := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(existing).Build()
+		handler = &ValidatingHandler{Decoder: decoder, Client: cli}
+
+		incoming := validAWSSpoke()
+		incoming.Name = "spoke-b"
+		incoming.Spec.Credential.AWS.ClusterName = "spoke-b"
+		req := newSpokeClusterRequest(incoming, admissionv1.Create)
+		resp := handler.Handle(context.Background(), req)
+		gomega.Expect(resp.Allowed).To(gomega.BeFalse())
+		gomega.Expect(resp.Result.Message).To(gomega.ContainSubstring("roleArn"))
+	})
+
+	It("allows an AWS create with a distinct roleArn", func() {
+		existing := validAWSSpoke()
+		existing.Name = "spoke-a"
+		cli := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(existing).Build()
+		handler = &ValidatingHandler{Decoder: decoder, Client: cli}
+
+		incoming := validAWSSpoke()
+		incoming.Name = "spoke-b"
+		incoming.Spec.Credential.AWS.ClusterName = "spoke-b"
+		incoming.Spec.Credential.AWS.RoleARN = "arn:aws:iam::123456789012:role/other-role"
+		req := newSpokeClusterRequest(incoming, admissionv1.Create)
+		resp := handler.Handle(context.Background(), req)
+		gomega.Expect(resp.Allowed).To(gomega.BeTrue(), "response: %+v", resp.Result)
+	})
 })
 
 var _ = Describe("MutatingHandler", func() {
