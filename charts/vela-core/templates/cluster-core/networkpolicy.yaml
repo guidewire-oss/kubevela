@@ -60,6 +60,20 @@ spec:
           port: 443
         - protocol: TCP
           port: 6443
+    # EKS Pod Identity hands the controller its base AWS identity over plain HTTP on a
+    # link-local address, so the 443 rule above does not cover it. Without this rule every
+    # aws-arm spoke fails at Materialize with a connection refused buried in an SDK retry
+    # chain, which reads as a credential problem rather than a network policy one.
+    #
+    # IRSA needs nothing extra: it exchanges a projected token with STS over 443. An EC2
+    # instance profile would need 169.254.169.254 adding here, which is why it is called
+    # out rather than assumed.
+    - to:
+        - ipBlock:
+            cidr: 169.254.170.23/32
+      ports:
+        - protocol: TCP
+          port: 80
     - to:
         - podSelector:
             matchLabels:
