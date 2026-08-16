@@ -232,6 +232,10 @@ func TestRegisterByVelaSecret(t *testing.T) {
 	ClusterGatewaySecretNamespace = "vela-system"
 	t.Cleanup(func() { ClusterGatewaySecretNamespace = oldNS })
 
+	// Records whether the already-exists prompt was consulted, so the ownership case
+	// below can assert the refusal short-circuits ahead of it.
+	var ownedSecretPrompted bool
+
 	testCases := []struct {
 		name      string
 		cfg       *KubeClusterConfig
@@ -357,6 +361,48 @@ func TestRegisterByVelaSecret(t *testing.T) {
 				var sec corev1.Secret
 				require.NoError(t, cli.Get(ctx, client.ObjectKey{Name: cfg.ClusterName, Namespace: ClusterGatewaySecretNamespace}, &sec))
 				require.Equal(t, []byte("old-token"), sec.Data["token"], "join must not overwrite a SpokeCluster-managed Secret")
+			},
+		},
+		{
+			// The refusal must come before the overwrite prompt. A caller without --yes
+			// answers false, and a script reading EOF answers false too; if the prompt ran
+			// first, that path returned without ever saying the Secret belongs to a
+			// SpokeCluster. ownedSecretPrompted records whether the prompt was consulted.
+			name: "Refuse SpokeCluster-managed Secret without consulting the overwrite prompt",
+			cfg: func() *KubeClusterConfig {
+				cfg := makeBaseClusterConfig("c-owned-noyes")
+				cfg.AuthInfo.Token = "new-token"
+				cfg.ClusterAlreadyExistCallback = func(string) bool {
+					ownedSecretPrompted = true
+					return false
+				}
+				return cfg
+			}(),
+			cli: func() client.Client {
+				pre := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "c-owned-noyes",
+						Namespace: ClusterGatewaySecretNamespace,
+						Labels: map[string]string{
+							clustercommon.LabelKeyClusterCredentialType: string(clusterv1alpha1.CredentialTypeServiceAccountToken),
+						},
+						Annotations: map[string]string{
+							SpokeClusterOwnerAnnotation: "tenant-a/c-owned-noyes",
+						},
+						ResourceVersion: "1",
+					},
+					Data: map[string][]byte{"token": []byte("old-token"), "endpoint": []byte("https://example:6443")},
+				}
+				return fake.NewClientBuilder().WithScheme(scheme).WithObjects(pre).Build()
+			}(),
+			expectErr: true,
+			verify: func(t *testing.T, cli client.Client, cfg *KubeClusterConfig) {
+				require.False(t, ownedSecretPrompted,
+					"ownership is not the operator's decision, so join must refuse without asking")
+				var sec corev1.Secret
+				require.NoError(t, cli.Get(ctx, client.ObjectKey{Name: cfg.ClusterName, Namespace: ClusterGatewaySecretNamespace}, &sec))
+				require.Equal(t, []byte("old-token"), sec.Data["token"])
+				require.Equal(t, "1", sec.ResourceVersion, "a refused join must not write at all")
 			},
 		},
 		{

@@ -215,6 +215,18 @@ func refuseSpokeClusterOwnedSecret(secret *corev1.Secret) error {
 	return fmt.Errorf("cluster secret %q is managed by SpokeCluster %s; refuse overwrite (detach the SpokeCluster or pick another name)", secret.Name, owner)
 }
 
+// refuseIfSpokeClusterOwned reads the gateway Secret this join would write and refuses
+// when a SpokeCluster already owns it. A missing Secret is not an error: the cluster may
+// be OCM-managed, or registered by something that writes no Secret at all.
+func (clusterConfig *KubeClusterConfig) refuseIfSpokeClusterOwned(ctx context.Context, cli client.Client) error {
+	secret := &corev1.Secret{}
+	key := apitypes.NamespacedName{Name: clusterConfig.ClusterName, Namespace: ClusterGatewaySecretNamespace}
+	if err := cli.Get(ctx, key, secret); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	return refuseSpokeClusterOwnedSecret(secret)
+}
+
 // RegisterByVelaSecret create cluster secrets for KubeVela to use
 func (clusterConfig *KubeClusterConfig) RegisterByVelaSecret(ctx context.Context, cli client.Client) error {
 	cluster, err := NewClusterClient(cli).Get(ctx, clusterConfig.ClusterName)
@@ -222,6 +234,18 @@ func (clusterConfig *KubeClusterConfig) RegisterByVelaSecret(ctx context.Context
 		return err
 	}
 	if cluster != nil {
+		// Checked before the already-exists callback, and deliberately so. Ownership by
+		// connect mode is not a decision the operator gets to override: no confirmation
+		// and no --yes may let join take a Secret the SpokeCluster controller manages,
+		// because both would then rewrite it on every reconcile.
+		//
+		// Order is what makes the message usable. Behind the prompt, a non-interactive
+		// caller (a script, or CI) failed on an EOF from a question it could not answer,
+		// which says nothing about why the join was wrong. In front of it, the refusal
+		// names the owning SpokeCluster whichever way the CLI was invoked.
+		if err := clusterConfig.refuseIfSpokeClusterOwned(ctx, cli); err != nil {
+			return err
+		}
 		if clusterConfig.ClusterAlreadyExistCallback == nil {
 			return fmt.Errorf("cluster %s already exists", cluster.Name)
 		}
