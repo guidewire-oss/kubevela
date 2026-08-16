@@ -946,6 +946,41 @@ var _ = It("MapKubeconfigSecretEnqueuesOwner", func() {
 	}
 })
 
+var _ = It("MapKubeconfigSecretInvalidatesCachedCredential", func() {
+	t := GinkgoT()
+	sc := connectableSpoke("map-evict")
+	r, provider := cachingReconciler(t, sc, refreshingCredential(13*time.Minute))
+
+	if _, err := reconcileOnce(t, r, sc); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("Materialize calls = %d, want 1 after seed", provider.calls)
+	}
+	if _, hit := r.credentials.Get(readSpoke(t, r, sc), 0); !hit {
+		t.Fatal("expected a cache hit after the first pass")
+	}
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      sc.Spec.Credential.Kubeconfig.SecretRef.Name,
+		Namespace: sc.Namespace,
+	}}
+	reqs := r.mapKubeconfigSecret(context.Background(), secret)
+	if len(reqs) != 1 || reqs[0].Name != sc.Name {
+		t.Fatalf("requests = %v, want %s", reqs, sc.Name)
+	}
+	if _, hit := r.credentials.Get(readSpoke(t, r, sc), 0); hit {
+		t.Fatal("source Secret event must drop the cached credential before enqueue")
+	}
+
+	if _, err := reconcileOnce(t, r, sc); err != nil {
+		t.Fatalf("rematerialize: %v", err)
+	}
+	if provider.calls != 2 {
+		t.Errorf("Materialize ran %d times, want 2 after Secret-driven eviction", provider.calls)
+	}
+})
+
 var _ = It("SourceKubeconfigSecretPredicateIgnoresGatewaySecrets", func() {
 	t := GinkgoT()
 	src := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "src", Namespace: "vela-system"}}

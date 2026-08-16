@@ -79,11 +79,18 @@ func (r *Reconciler) mapKubeconfigSecret(ctx context.Context, obj client.Object)
 	// Filter in process rather than MatchingFields. A custom field index is easy
 	// to get wrong against the manager cache, and the SpokeCluster list is
 	// already in memory. Gateway Secret updates never reach here (predicate).
+	//
+	// Drop any cached credential for a matching spoke before enqueue. JWT and
+	// client-cert kubeconfigs carry a NextRefresh and would otherwise keep
+	// serving the pre-rotate material until that deadline (up to the cache TTL),
+	// even though this watch already requeues the SpokeCluster.
 	reqs := make([]reconcile.Request, 0, 1)
 	for i := range list.Items {
 		for _, indexed := range kubeconfigSecretIndexKeys(&list.Items[i]) {
 			if indexed == key {
-				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
+				sc := &list.Items[i]
+				r.credentials.Invalidate(client.ObjectKeyFromObject(sc))
+				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(sc)})
 				break
 			}
 		}
