@@ -673,6 +673,14 @@ func getMutableClusterSecret(ctx context.Context, c client.Client, clusterName s
 	return clusterSecret, nil
 }
 
+// RemoveClusterFromResourceTrackers removes clusterName from every
+// ResourceTracker's ManagedResources. Exported so the gateway Secret janitor
+// can scrub after reclaiming a force-deleted SpokeCluster's Secret without
+// going through DetachCluster (which would look up the Secret by name again).
+func RemoveClusterFromResourceTrackers(ctx context.Context, cli client.Client, clusterName string) error {
+	return removeClusterFromResourceTrackers(ctx, cli, clusterName)
+}
+
 // removeClusterFromResourceTrackers removes cluster references from all resource trackers.
 func removeClusterFromResourceTrackers(ctx context.Context, cli client.Client, clusterName string) error {
 	rts := v1beta1.ResourceTrackerList{}
