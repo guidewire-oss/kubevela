@@ -61,15 +61,9 @@ func awsSpoke() *v1beta1.SpokeCluster {
 
 func strptr(s string) *string { return &s }
 
-var _ = BeforeEach(func() {
-	// Materialize specs use fake AWS clients; do not let the runner's IRSA/Pod
-	// Identity env trip assertAWSAuthModeMatchesAmbient before newClients runs.
-	ambientAWSIdentityHintsFn = func() (bool, bool) { return false, false }
-})
-
-var _ = AfterEach(func() {
-	ambientAWSIdentityHintsFn = ambientAWSIdentityHints
-})
+// noAmbientAWSHints keeps Materialize specs independent of the runner's IRSA /
+// Pod Identity environment.
+func noAmbientAWSHints() (bool, bool) { return false, false }
 
 var _ = It("AWSProviderMaterialize", func() {
 	t := GinkgoT()
@@ -78,7 +72,8 @@ var _ = It("AWSProviderMaterialize", func() {
 	presignedURL := "https://sts.amazonaws.com/?Action=GetCallerIdentity"
 
 	p := &AWSProvider{
-		now: func() time.Time { return now },
+		now:          func() time.Time { return now },
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			ek := &fakeEKS{out: &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{
 				Endpoint:             strptr("https://XYZ.eks.amazonaws.com"),
@@ -113,6 +108,7 @@ var _ = It("AWSProviderMaterialize", func() {
 var _ = It("AWSProviderValidation", func() {
 	t := GinkgoT()
 	p := NewAWSProvider()
+	p.ambientHints = noAmbientAWSHints
 
 	// Missing aws arm.
 	scNoArm := &v1beta1.SpokeCluster{Spec: v1beta1.SpokeClusterSpec{Credential: v1beta1.CredentialSpec{Type: v1beta1.CredentialTypeAWS}}}
@@ -131,7 +127,8 @@ var _ = It("AWSProviderValidation", func() {
 var _ = It("AWSProviderDescribeFailure", func() {
 	t := GinkgoT()
 	p := &AWSProvider{
-		now: time.Now,
+		now:          time.Now,
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			return &fakeEKS{err: errors.New("access denied")}, &fakePresigner{url: "https://x"}, nil
 		},
@@ -145,7 +142,8 @@ var _ = It("AWSProviderRejectsBlockedEndpoint", func() {
 	t := GinkgoT()
 	caB64 := base64.StdEncoding.EncodeToString([]byte("spoke-ca-pem"))
 	p := &AWSProvider{
-		now: time.Now,
+		now:          time.Now,
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			// Defense in depth: even if DescribeCluster returned a metadata IP, refuse it.
 			ek := &fakeEKS{out: &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{
@@ -167,7 +165,8 @@ var _ = It("AWSProviderRejectsBlockedEndpoint", func() {
 var _ = It("AWSProviderIncompleteCluster", func() {
 	t := GinkgoT()
 	p := &AWSProvider{
-		now: time.Now,
+		now:          time.Now,
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			// Endpoint present but CA missing.
 			ek := &fakeEKS{out: &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{Endpoint: strptr("https://x")}}}

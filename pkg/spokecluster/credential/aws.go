@@ -52,14 +52,18 @@ type AWSProvider struct {
 	newClients awsClientFactory
 	// now returns the current time; overridable in tests for deterministic refresh math.
 	now func() time.Time
+	// ambientHints reports whether the hub pod looks like Pod Identity and/or IRSA.
+	// Overridable in tests so Materialize does not depend on the runner's AWS env.
+	ambientHints func() (podIdentity, irsa bool)
 }
 
 // NewAWSProvider builds an AWS provider that uses the ambient base identity (EKS Pod Identity or
 // IRSA on the hub controller pod) and assumes the per-cluster role declared on each SpokeCluster.
 func NewAWSProvider() *AWSProvider {
 	return &AWSProvider{
-		newClients: defaultAWSClientFactory,
-		now:        time.Now,
+		newClients:   defaultAWSClientFactory,
+		now:          time.Now,
+		ambientHints: ambientAWSIdentityHints,
 	}
 }
 
@@ -77,7 +81,7 @@ func (p *AWSProvider) Materialize(ctx context.Context, _ client.Reader, sc *v1be
 	if cred.ClusterName == "" || cred.Region == "" || cred.RoleARN == "" {
 		return nil, fmt.Errorf("credential.aws requires clusterName, region, and roleArn")
 	}
-	if err := assertAWSAuthModeMatchesAmbient(cred.AuthMode); err != nil {
+	if err := p.assertAuthModeMatchesAmbient(cred.AuthMode); err != nil {
 		return nil, err
 	}
 
@@ -152,13 +156,12 @@ func ambientAWSIdentityHints() (podIdentity, irsa bool) {
 	return podIdentity, irsa
 }
 
-// ambientAWSIdentityHintsFn is the ambient-identity probe used by
-// assertAWSAuthModeMatchesAmbient. Tests replace it so Materialize specs do not
-// depend on IRSA/Pod Identity env vars inherited from the runner.
-var ambientAWSIdentityHintsFn = ambientAWSIdentityHints
-
-func assertAWSAuthModeMatchesAmbient(mode v1beta1.AWSAuthMode) error {
-	podIdentity, irsa := ambientAWSIdentityHintsFn()
+func (p *AWSProvider) assertAuthModeMatchesAmbient(mode v1beta1.AWSAuthMode) error {
+	hints := p.ambientHints
+	if hints == nil {
+		hints = ambientAWSIdentityHints
+	}
+	podIdentity, irsa := hints()
 	switch mode {
 	case v1beta1.AWSAuthModePodIdentity:
 		if irsa && !podIdentity {
