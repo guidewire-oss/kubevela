@@ -18,6 +18,7 @@ package spokecluster
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -109,12 +110,9 @@ func (r *Reconciler) reapGatewaySecretIfOwnerGone(ctx context.Context, secret *c
 		return err
 	}
 
-	// Re-read, then delete only that UID. DetachCluster looks up the Secret by
-	// cluster name and scrubs ResourceTrackers for that name, so a SpokeCluster
-	// recreated between this check and the delete would lose its new registration.
-	// The janitor is the force-delete backstop; it must not impersonate a detach
-	// of whatever currently holds the name. Stale ResourceTracker refs are left
-	// for the next owned detach (or stay, if the name is reused on purpose).
+	// Re-read, then delete only that UID. A SpokeCluster recreated under the
+	// same name between this check and the delete must not lose its new Secret:
+	// the UID precondition fails if another Secret already replaced this one.
 	fresh := &corev1.Secret{}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(secret), fresh); err != nil {
 		return client.IgnoreNotFound(err)
@@ -132,7 +130,31 @@ func (r *Reconciler) reapGatewaySecretIfOwnerGone(ctx context.Context, secret *c
 	klog.InfoS("gateway secret janitor reclaiming Secret whose SpokeCluster is gone",
 		"secret", klog.KObj(fresh), "owner", owner, "deletionPolicy", policy)
 	uid := fresh.UID
-	return client.IgnoreNotFound(r.Delete(ctx, fresh, client.Preconditions{UID: &uid}))
+	rv := fresh.ResourceVersion
+	clusterName := fresh.Name
+
+	// LIFE-01: scrub ResourceTrackers while the orphan Secret still exists so a
+	// scrub failure is retryable (the next janitor pass still sees the Secret).
+	// Skip scrub and delete only when a SpokeCluster in the recorded owner
+	// namespace already reclaims the gateway name: that object may have adopted
+	// this Secret (same UID) via verifyAdoptable. A same-name SpokeCluster in a
+	// different namespace cannot adopt (owner annotation mismatch), so reclaim
+	// must proceed and free the Secret for registration.
+	list := &v1beta1.SpokeClusterList{}
+	if listErr := r.List(ctx, list); listErr != nil {
+		return fmt.Errorf("gateway secret janitor failed listing SpokeClusters before ResourceTracker scrub: %w", listErr)
+	}
+	for i := range list.Items {
+		if list.Items[i].Name == clusterName && list.Items[i].Namespace == ns {
+			klog.InfoS("gateway secret janitor skipping reclaim; SpokeCluster name is in use again",
+				"cluster", clusterName, "spokecluster", klog.KObj(&list.Items[i]))
+			return nil
+		}
+	}
+	if scrubErr := multicluster.RemoveClusterFromResourceTrackers(ctx, r.Client, clusterName); scrubErr != nil {
+		return fmt.Errorf("gateway secret janitor failed scrubbing ResourceTrackers for %s: %w", clusterName, scrubErr)
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, fresh, client.Preconditions{UID: &uid, ResourceVersion: &rv}))
 }
 
 func parseSecretOwner(owner string) (namespace, name string, ok bool) {

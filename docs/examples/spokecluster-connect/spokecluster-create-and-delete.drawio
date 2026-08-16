@@ -99,7 +99,7 @@
         <mxCell id="de4" edge="1" parent="1" source="d3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;entryX=0.5;entryY=0;fontSize=12;" target="d5" value="orphan">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="note" parent="1" style="text;html=1;align=left;verticalAlign=top;fontSize=11;fontColor=#666666;" value="Force delete (finalizer patched off) skips all of this.&#xa;In vela-system the owner reference still lets GC remove the Secret.&#xa;In a tenant namespace there is no owner reference, so the Secret leaks." vertex="1">
+        <mxCell id="note" parent="1" style="text;html=1;align=left;verticalAlign=top;fontSize=11;fontColor=#666666;" value="Force delete (finalizer patched off) skips the finalizer path.&#xa;Owner references still let GC remove a gateway Secret in vela-system.&#xa;Across namespaces the gateway Secret janitor reclaims orphans&#xa;(and scrubs ResourceTrackers when the cluster name is free)." vertex="1">
           <mxGeometry height="70" width="460" x="700" y="850" as="geometry" />
         </mxCell>
       </root>

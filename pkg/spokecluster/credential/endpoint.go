@@ -30,13 +30,17 @@ import (
 //
 // Policy is a deny-list, not an allow-list: https is required, but RFC1918 /
 // Docker/k3d private IPs and public cloud API hostnames (for example
-// *.eks.amazonaws.com) remain allowed so real spokes keep working.
+// *.eks.amazonaws.com) remain allowed so real spokes keep working. Set
+// DenyPrivateEndpoints to also refuse RFC1918/CGNAT when every spoke is expected
+// to be reachable on a public (or otherwise non-private) address.
 //
 // Hostnames are resolved and every returned address is checked against the same
 // IP deny-list, so spellings like 169.254.169.254.nip.io cannot bypass the
-// literal-IP checks. DNS rebinding after this check remains a residual risk
-// (validation is point-in-time); cluster-gateway dials whatever the name
-// resolves to later.
+// literal-IP checks. DNS rebinding after this check remains a residual risk for
+// the dial that cluster-gateway performs (validation is point-in-time and the
+// gateway has no dial-time denylist). The SpokeCluster reconciler re-runs this
+// check on every pass, including credential-cache hits, and revokes the gateway
+// Secret when revalidation fails.
 func ValidateSpokeEndpoint(endpoint string) error {
 	return validateSpokeEndpoint(context.Background(), endpoint)
 }
@@ -69,7 +73,7 @@ func validateSpokeProxyURL(ctx context.Context, proxy string) error {
 	if host == "" {
 		return fmt.Errorf("spoke proxy-url %q has no host", proxy)
 	}
-	if err := denyHubOrMetadataHost(ctx, host); err != nil {
+	if err := denyHubOrMetadataHost(ctx, host, false); err != nil {
 		return fmt.Errorf("spoke proxy-url %q is not permitted: %w", proxy, err)
 	}
 	return nil
@@ -93,13 +97,13 @@ func validateSpokeEndpoint(ctx context.Context, endpoint string) error {
 	if host == "" {
 		return fmt.Errorf("spoke endpoint %q has no host", endpoint)
 	}
-	if err := denyHubOrMetadataHost(ctx, host); err != nil {
+	if err := denyHubOrMetadataHost(ctx, host, DenyPrivateEndpoints); err != nil {
 		return fmt.Errorf("spoke endpoint %q is not permitted: %w", endpoint, err)
 	}
 	return nil
 }
 
-func denyHubOrMetadataHost(ctx context.Context, host string) error {
+func denyHubOrMetadataHost(ctx context.Context, host string, denyPrivate bool) error {
 	lower := strings.ToLower(strings.TrimSuffix(host, "."))
 
 	if lower == "localhost" {
@@ -126,7 +130,7 @@ func denyHubOrMetadataHost(ctx context.Context, host string) error {
 		}
 	}
 	if ip := net.ParseIP(ipHost); ip != nil {
-		return denyBlockedIP(ip, host)
+		return denyBlockedIP(ip, host, denyPrivate)
 	}
 	if strings.Contains(host, "%") {
 		return fmt.Errorf("host %q has an IPv6 zone identifier and is not permitted", host)
@@ -140,14 +144,22 @@ func denyHubOrMetadataHost(ctx context.Context, host string) error {
 		return fmt.Errorf("host %q resolved to no addresses", host)
 	}
 	for _, ip := range ips {
-		if err := denyBlockedIP(ip, host); err != nil {
+		if err := denyBlockedIP(ip, host, denyPrivate); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func denyBlockedIP(ip net.IP, host string) error {
+// DenyPrivateEndpoints, when true, also refuses RFC1918 and CGNAT destinations
+// so a SpokeCluster cannot coerce cluster-gateway into dialing hub-LAN or
+// cloud-private API addresses from a public hub. Off by default: k3d, kind,
+// and many VPC-peered installs publish private spoke API endpoints that must
+// keep working. Enable via --spoke-endpoint-deny-private on cluster-core when
+// every spoke endpoint is expected to be public (or otherwise outside those ranges).
+var DenyPrivateEndpoints bool
+
+func denyBlockedIP(ip net.IP, host string, denyPrivate bool) error {
 	if ip.IsUnspecified() {
 		return fmt.Errorf("host %q is an unspecified address", host)
 	}
@@ -159,6 +171,13 @@ func denyBlockedIP(ip net.IP, host string) error {
 	for _, blocked := range blockedIPs {
 		if ip.Equal(blocked) {
 			return fmt.Errorf("host %q is a blocked metadata address", host)
+		}
+	}
+	if denyPrivate {
+		for _, cidr := range privateCIDRs {
+			if cidr.Contains(ip) {
+				return fmt.Errorf("host %q is in private range %s (spoke-endpoint-deny-private is enabled)", host, cidr)
+			}
 		}
 	}
 	return nil
@@ -214,6 +233,15 @@ var blockedCIDRs = mustParseCIDRs(
 	"fe80::/10",       // IPv6 link-local
 	"fc00::/7",        // IPv6 unique local (ULA)
 	"fec0::/10",       // IPv6 site-local (deprecated, still routable on some nets)
+)
+
+// privateCIDRs are refused only when DenyPrivateEndpoints is set. They stay
+// allowed under the default deny-list so RFC1918 / CGNAT spoke APIs work.
+var privateCIDRs = mustParseCIDRs(
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10", // CGNAT / shared address space
 )
 
 var blockedIPs = []net.IP{

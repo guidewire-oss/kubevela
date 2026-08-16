@@ -38,13 +38,19 @@ rules:
   - apiGroups: ["core.oam.dev"]
     resources: ["spokeclusters/finalizers"]
     verbs: ["update"]
-  # Direct Get of a same-namespace kubeconfig Secret (source credential).
+  # Direct Get of a same-namespace or allowlisted kubeconfig Secret (source credential).
   # list/watch stay off the ClusterRole so the manager never starts a
   # cluster-wide Secret informer; gateway-ns informer verbs live on the Role
   # below, and source Gets use the uncached API reader.
+  # ID-01: when clusterCore.kubeconfigSecretNamespaces is non-empty, omit this
+  # cluster-wide get and grant secrets get only via Roles in those namespaces
+  # (plus the release namespace). Empty (default) keeps cluster-wide get so
+  # tenant-ns SpokeClusters keep working without listing every namespace.
+  {{- if not .Values.clusterCore.kubeconfigSecretNamespaces }}
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
+  {{- end }}
   # multicluster.Initialize reads the cluster-gateway APIService by name to discover the
   # gateway service and Secret namespace.
   - apiGroups: ["apiregistration.k8s.io"]
@@ -118,5 +124,43 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "kubevela.fullname" . }}-cluster-core
     namespace: {{ .Release.Namespace }}
+{{- /* ID-01: namespace-scoped source Secret gets when allowlist is set.
+     The release namespace already has secrets get via the Role above. */}}
+{{- if .Values.clusterCore.kubeconfigSecretNamespaces }}
+{{- $seen := dict }}
+{{- range .Values.clusterCore.kubeconfigSecretNamespaces }}
+{{- if and (ne . $.Release.Namespace) (not (hasKey $seen .)) }}
+{{- $_ := set $seen . true }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kubevela.fullname" $ }}:cluster-core-kubeconfig-read
+  namespace: {{ . }}
+  labels:
+    {{- include "kubevela.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubevela.fullname" $ }}:cluster-core-kubeconfig-read
+  namespace: {{ . }}
+  labels:
+    {{- include "kubevela.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kubevela.fullname" $ }}:cluster-core-kubeconfig-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubevela.fullname" $ }}-cluster-core
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}

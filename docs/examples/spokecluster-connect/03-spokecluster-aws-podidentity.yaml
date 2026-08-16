@@ -33,7 +33,8 @@ spec:
       clusterName: prod-east
       region: us-west-2
       # Per-cluster scoped role in the SPOKE's account, trusted by the hub base role.
-      # Cross-account works through this same assume.
+      # Cross-account works through this same assume. Admission requires each AWS
+      # SpokeCluster to use a distinct roleArn (do not share one role across spokes).
       roleArn: arn:aws:iam::111122223333:role/spokecluster-prod-east
       externalId: us-west-2/111122223333/hub-cluster/vela-system/vela-core-cluster-core
   probeIntervalSeconds: 30

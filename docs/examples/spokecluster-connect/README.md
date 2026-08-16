@@ -26,8 +26,8 @@ The provider is stricter than `kubectl`. From `pkg/spokecluster/credential/kubec
 - The `current-context` is used. It must exist, and its cluster and user must resolve.
 - `certificate-authority-data` must be **inline**. A file-path `certificate-authority` is rejected, because the path refers to the machine that produced the kubeconfig, not the hub controller.
 - Auth must be an **embedded** `token`, or an embedded `client-certificate-data` plus `client-key-data`. Exec plugins (`aws eks get-token`, `gke-gcloud-auth-plugin`) and file-path credentials are rejected.
-- `tls-server-name`, if set, must equal the endpoint host. cluster-gateway always derives the verified ServerName from the endpoint, so a differing value is rejected at registration rather than producing a spoke that registers and then fails every handshake.
-- The cluster `server` must be `https` and must not target hub-internal DNS (`*.svc`, `*.cluster.local`, `kubernetes.default…`) or cloud metadata/link-local addresses (`169.254.0.0/16`, loopback, Azure `168.63.129.16`, AWS IMDS IPv6). RFC1918 endpoints (for example k3d Docker IPs) and public cloud API hostnames (for example `*.eks.amazonaws.com`) are allowed.
+- `tls-server-name`, if set, must equal the endpoint host (case-insensitive). cluster-gateway always derives the verified ServerName from the endpoint, so a differing value is rejected at registration rather than producing a spoke that registers and then fails every handshake.
+- The cluster `server` must be `https` and must not target hub-internal DNS (`*.svc`, `*.cluster.local`, `kubernetes.default…`) or cloud metadata/link-local addresses (`169.254.0.0/16`, loopback, Azure `168.63.129.16`, AWS IMDS IPv6). RFC1918 endpoints (for example k3d Docker IPs) and public cloud API hostnames (for example `*.eks.amazonaws.com`) are allowed by default; set `clusterCore.spokeEndpoint.denyPrivate=true` to also refuse RFC1918/CGNAT. DNS is re-checked on every reconcile (including credential-cache hits); if it later resolves into a blocked range the controller revokes the gateway Secret. A short window remains between that revoke and cluster-gateway's next dial, because the gateway has no dial-time denylist.
 - `insecure-skip-tls-verify: true` is rejected. cluster-gateway treats a missing `ca.crt` as skip-verify, so connect requires inline `certificate-authority-data` and refuses to drop the trust anchor.
 - A kubeconfig with neither `certificate-authority-data` nor a usable CA path is likewise rejected (file-path CAs are already refused separately).
 - Prefer `credential.type: aws` (short-lived EKS tokens) over a static kubeconfig. When a kubeconfig is unavoidable, use a projected ServiceAccount token or a short-lived client cert. The provider reads JWT `exp` and client-cert `NotAfter` and sets `NextRefresh` two minutes earlier so a rotated source Secret is re-read before the credential dies. If the credential is already inside that lead window, `NextRefresh` is the hard expiry so a long probe interval cannot outlive the token. If it is already expired, `NextRefresh` stays unset and the next pass follows the probe interval instead of a 5s rematerialize loop. Opaque long-lived tokens still rematerialize every pass.
@@ -49,12 +49,12 @@ The provider is stricter than `kubectl`. From `pkg/spokecluster/credential/kubec
 | `spokecluster-azure.yaml` | AKS shape. Do not apply: webhook rejects `type: azure` |
 | `spokecluster-gcp.yaml` | GKE shape. Do not apply: webhook rejects `type: gcp` |
 | `09-spoke-least-privilege-rbac.yaml` | Spoke-side ServiceAccount, ClusterRole, and binding for connect probes (not cluster-admin) |
-| `10-networkpolicy.yaml` | Hub NetworkPolicy example for cluster-core (webhook, metrics, egress via cluster-gateway). Prefer `clusterCore.networkPolicy.enabled=true` on the chart; keep this file as a hand-apply reference when the CNI enforces NetworkPolicy |
+| `10-networkpolicy.yaml` | Hub NetworkPolicy example for cluster-core (webhook, metrics, egress via cluster-gateway). Chart default is `clusterCore.networkPolicy.enabled=true`; keep this file as a hand-apply reference |
 | `99-gateway-secret-reference.yaml` | What the controller produces, for reading only |
 
 ## Applying them
 
-The feature gate must be on, or nothing reconciles and status stays empty. The SpokeCluster admission webhook is enabled by default whenever the gate is on (`clusterCore.webhook.enabled=true`); set it to `false` only if you intentionally want CRD-schema-only admission. `clusterCore.replicaCount` defaults to `2` with preferred pod anti-affinity, soft topology spread, and a PodDisruptionBudget so the webhook and leader-elected controller survive a node drain; use `--set clusterCore.replicaCount=1` on single-node sandboxes if you need a lighter footprint:
+The feature gate must be on, or nothing reconciles and status stays empty. The SpokeCluster admission webhook is enabled by default whenever the gate is on (`clusterCore.webhook.enabled=true`); set it to `false` only if you intentionally want CRD-schema-only admission. `clusterCore.replicaCount` defaults to `2` with required hostname pod anti-affinity (and soft zone topology spread) plus a PodDisruptionBudget so the webhook and leader-elected controller survive a node drain. That needs a second node for both pods to become Ready; use `--set clusterCore.replicaCount=1` on single-node sandboxes if you need a lighter footprint:
 
 ```
 helm install vela-core charts/vela-core -n vela-system --create-namespace \
@@ -71,7 +71,11 @@ helm install vela-core charts/vela-core -n vela-system --create-namespace \
 
 Note the gate does **not** control whether the CRD exists. Helm applies `crds/` unconditionally, so `kubectl get spokeclusters` works either way; with the gate off the objects simply never get a status.
 
-Apply `10-networkpolicy.yaml`, or set `clusterCore.networkPolicy.enabled=true` on the chart, when the CNI enforces NetworkPolicy. The policy opens the webhook port as to-source (API server IPs vary), restricts `/metrics` to Prometheus, and lets cluster-core egress to DNS, the API server, cluster-gateway, and HTTPS (AWS). It does not lock cluster-gateway ingress; the aggregated APIService and vela-core also dial it.
+`clusterCore.networkPolicy.enabled` defaults to `true`. The policy opens the webhook port as to-source (API server IPs vary), restricts `/metrics` to Prometheus, and lets cluster-core egress to DNS, the API server, cluster-gateway, and HTTPS (AWS). It does not lock cluster-gateway ingress; the aggregated APIService and vela-core also dial it. Set `clusterCore.networkPolicy.enabled=false` only when the CNI rejects NetworkPolicy objects, or apply `10-networkpolicy.yaml` by hand as a reference.
+
+Tenant-namespace kubeconfig Secrets are read with an uncached API Get. Rotating a source Secret outside the gateway namespace does not fire the gateway-ns Secret informer; the next probe interval rematerializes. Prefer short-lived tokens (`credential.type: aws` or projected ServiceAccount tokens) so a rotate is picked up within one probe. For multi-tenant hubs that should not grant cluster-wide `secrets get`, set `clusterCore.kubeconfigSecretNamespaces` to the tenant namespaces that may hold kubeconfig Secrets (the release namespace already has secrets get via the gateway Role); that drops the ClusterRole `secrets get` and installs Role/RoleBinding gets only in those listed namespaces.
+
+Job-patch webhook bootstrap still ships `failurePolicy: Ignore` until the patch Job rewrites the CA. Prefer `admissionWebhooks.certManager.enabled=true` in production so Fail is present from the first apply. CEL on the CRD and the controller's SpecInvalid re-check remain the backstops during that window.
 
 ## CLI
 
@@ -80,13 +84,16 @@ Prefer `vela cluster spokes` over `vela cluster join` for new clusters.
 ```
 vela cluster spokes create my-spoke --kubeconfig ./spoke.kubeconfig
 vela cluster spokes create prod-east --aws --aws-region us-west-2 \
-  --aws-role-arn arn:aws:iam::111122223333:role/spokecluster-prod-east
+  --aws-role-arn arn:aws:iam::111122223333:role/spokecluster-prod-east \
+  --aws-external-id us-west-2/111122223333/hub-cluster/vela-system/vela-core-cluster-core
 vela cluster spokes list
 vela cluster spokes show my-spoke
 vela cluster spokes detach my-spoke
 ```
 
 `create --kubeconfig` writes a Secret (`<name>-kubeconfig` by default, or `--secret`) and a SpokeCluster. `create --aws` writes no Secret; pass `--aws-region`, `--aws-role-arn`, and `--aws-external-id` (optional `--aws-cluster-name`, `--aws-auth-mode`). `detach` deletes the SpokeCluster; the controller then removes the gateway Secret unless `deletionPolicy` is `orphan`. A kubeconfig source Secret is left in place. Use `--secret existing-name` when the kubeconfig Secret already exists.
+
+SpokeCluster `metadata.name` must be unique cluster-wide (the gateway Secret is keyed by that name). For AWS spokes, `spec.credential.aws.roleArn` must also be unique: admission refuses a second SpokeCluster that reuses another spoke's AssumeRole target. The shared Pod Identity `externalId` form is still valid, but each spoke needs its own role, and that role's trust policy should demand the hub identity plus `sts:ExternalId`. Prefer platform-admin creation of AWS SpokeClusters rather than letting arbitrary tenants pick arbitrary role ARNs.
 
 ## Migrating from `vela cluster join`
 

@@ -85,33 +85,63 @@ func TestKubeClusterConfig_SetCreateNamespace(t *testing.T) {
 
 func TestKubeClusterConfig_Validate(t *testing.T) {
 	testCases := []struct {
-		name        string
-		clusterName string
-		expectErr   bool
+		name      string
+		cfg       *KubeClusterConfig
+		expectErr bool
+		wantSub   string
 	}{
 		{
-			name:        "Empty name",
-			clusterName: "",
-			expectErr:   true,
+			name:      "Empty name",
+			cfg:       &KubeClusterConfig{ClusterName: ""},
+			expectErr: true,
 		},
 		{
-			name:        "Local name",
-			clusterName: ClusterLocalName,
-			expectErr:   true,
+			name:      "Local name",
+			cfg:       &KubeClusterConfig{ClusterName: ClusterLocalName},
+			expectErr: true,
 		},
 		{
-			name:        "Valid name",
-			clusterName: "prod",
-			expectErr:   false,
+			name: "Valid name with CA",
+			cfg: &KubeClusterConfig{
+				ClusterName: "prod",
+				Cluster: &clientcmdapi.Cluster{
+					Server:                   "https://example:6443",
+					CertificateAuthorityData: []byte("ca"),
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "Insecure skip TLS allowed in Validate (gateway path refuses later)",
+			cfg: &KubeClusterConfig{
+				ClusterName: "prod",
+				Cluster: &clientcmdapi.Cluster{
+					Server:                "https://example:6443",
+					InsecureSkipTLSVerify: true,
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "Empty CA allowed in Validate (gateway path refuses later)",
+			cfg: &KubeClusterConfig{
+				ClusterName: "prod",
+				Cluster: &clientcmdapi.Cluster{
+					Server: "https://example:6443",
+				},
+			},
+			expectErr: false,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &KubeClusterConfig{ClusterName: tc.clusterName}
-			err := cfg.Validate()
+			err := tc.cfg.Validate()
 			if tc.expectErr {
 				require.Error(t, err)
+				if tc.wantSub != "" {
+					require.Contains(t, err.Error(), tc.wantSub)
+				}
 			} else {
 				require.NoError(t, err)
 			}
@@ -227,19 +257,26 @@ func TestRegisterByVelaSecret(t *testing.T) {
 			},
 		},
 		{
-			name: "Token no CA when insecure",
+			name: "Token insecure skip TLS refused",
 			cfg: func() *KubeClusterConfig {
 				cfg := makeBaseClusterConfig("c-token-insecure")
 				cfg.Cluster.InsecureSkipTLSVerify = true
 				cfg.AuthInfo.Token = "tok"
 				return cfg
 			}(),
-			cli: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			verify: func(t *testing.T, cli client.Client, cfg *KubeClusterConfig) {
-				var sec corev1.Secret
-				require.NoError(t, cli.Get(ctx, client.ObjectKey{Name: cfg.ClusterName, Namespace: ClusterGatewaySecretNamespace}, &sec))
-				require.Nil(t, sec.Data["ca.crt"])
-			},
+			cli:       fake.NewClientBuilder().WithScheme(scheme).Build(),
+			expectErr: true,
+		},
+		{
+			name: "Token empty CA refused",
+			cfg: func() *KubeClusterConfig {
+				cfg := makeBaseClusterConfig("c-token-empty-ca")
+				cfg.Cluster.CertificateAuthorityData = nil
+				cfg.AuthInfo.Token = "tok"
+				return cfg
+			}(),
+			cli:       fake.NewClientBuilder().WithScheme(scheme).Build(),
+			expectErr: true,
 		},
 		{
 			name: "Exec success",

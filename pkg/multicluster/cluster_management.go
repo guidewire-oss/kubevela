@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -102,6 +103,9 @@ func (clusterConfig *KubeClusterConfig) Validate() error {
 	case ClusterLocalName:
 		return errors.Errorf("ClusterName cannot be `%s`, it is reserved as the local cluster", ClusterLocalName)
 	}
+	// TLS refusal for insecure-skip / empty CA lives in createOrUpdateClusterSecret
+	// (cluster-gateway path only). OCM joins honor file-path CAs via client-go and
+	// must not be rejected here.
 	return nil
 }
 
@@ -132,10 +136,26 @@ func (clusterConfig *KubeClusterConfig) createOrUpdateClusterSecret(ctx context.
 	var credentialType clusterv1alpha1.CredentialType
 	data := map[string][]byte{}
 	if withEndpoint {
-		data["endpoint"] = []byte(clusterConfig.Cluster.Server)
-		if !clusterConfig.Cluster.InsecureSkipTLSVerify {
-			data["ca.crt"] = clusterConfig.Cluster.CertificateAuthorityData
+		// Align join TLS with SpokeCluster connect: cluster-gateway treats a
+		// missing ca.crt as skip-verify. OCM joins never reach this helper.
+		if clusterConfig.Cluster.InsecureSkipTLSVerify {
+			return fmt.Errorf("refusing to register cluster %q with insecure-skip-tls-verify; join requires TLS verification", clusterConfig.ClusterName)
 		}
+		if len(clusterConfig.Cluster.CertificateAuthorityData) == 0 {
+			return fmt.Errorf("refusing to register cluster %q without a CA bundle; empty ca.crt would make cluster-gateway skip TLS verification", clusterConfig.ClusterName)
+		}
+		if sn := clusterConfig.Cluster.TLSServerName; sn != "" {
+			u, err := url.Parse(clusterConfig.Cluster.Server)
+			if err != nil {
+				return fmt.Errorf("refusing to register cluster %q: endpoint %q is not a valid URL: %w", clusterConfig.ClusterName, clusterConfig.Cluster.Server, err)
+			}
+			host := u.Hostname()
+			if !strings.EqualFold(sn, host) {
+				return fmt.Errorf("refusing to register cluster %q: kubeconfig tls-server-name %q differs from endpoint host %q; cluster-gateway always verifies against the endpoint host", clusterConfig.ClusterName, sn, host)
+			}
+		}
+		data["endpoint"] = []byte(clusterConfig.Cluster.Server)
+		data["ca.crt"] = clusterConfig.Cluster.CertificateAuthorityData
 	}
 	switch {
 	case len(clusterConfig.AuthInfo.Token) > 0:
@@ -653,6 +673,14 @@ func getMutableClusterSecret(ctx context.Context, c client.Client, clusterName s
 		return nil, fmt.Errorf("invalid cluster secret %s: cluster credential type label %s is not set", clusterName, clustercommon.LabelKeyClusterCredentialType)
 	}
 	return clusterSecret, nil
+}
+
+// RemoveClusterFromResourceTrackers removes clusterName from every
+// ResourceTracker's ManagedResources. Exported so the gateway Secret janitor
+// can scrub after reclaiming a force-deleted SpokeCluster's Secret without
+// going through DetachCluster (which would look up the Secret by name again).
+func RemoveClusterFromResourceTrackers(ctx context.Context, cli client.Client, clusterName string) error {
+	return removeClusterFromResourceTrackers(ctx, cli, clusterName)
 }
 
 // removeClusterFromResourceTrackers removes cluster references from all resource trackers.
