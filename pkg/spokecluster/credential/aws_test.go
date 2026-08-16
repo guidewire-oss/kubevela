@@ -168,3 +168,36 @@ var _ = It("AWSProviderIncompleteCluster", func() {
 		t.Fatal("expected error when cluster data is incomplete")
 	}
 })
+
+var _ = It("AssertAWSAuthModeMatchesAmbient", func() {
+	t := GinkgoT()
+
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "")
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")
+	t.Setenv("AWS_ROLE_ARN", "")
+	if err := assertAWSAuthModeMatchesAmbient(v1beta1.AWSAuthModePodIdentity); err != nil {
+		t.Fatalf("no ambient hints should accept either mode: %v", err)
+	}
+	if err := assertAWSAuthModeMatchesAmbient(v1beta1.AWSAuthModeIRSA); err != nil {
+		t.Fatalf("no ambient hints should accept either mode: %v", err)
+	}
+
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
+	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::1:role/hub")
+	if err := assertAWSAuthModeMatchesAmbient(v1beta1.AWSAuthModePodIdentity); err == nil {
+		t.Fatal("podIdentity must fail when ambient identity looks like IRSA")
+	}
+	if err := assertAWSAuthModeMatchesAmbient(v1beta1.AWSAuthModeIRSA); err != nil {
+		t.Fatalf("irsa should accept IRSA ambient hints: %v", err)
+	}
+
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")
+	t.Setenv("AWS_ROLE_ARN", "")
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/v1/credentials")
+	if err := assertAWSAuthModeMatchesAmbient(v1beta1.AWSAuthModeIRSA); err == nil {
+		t.Fatal("irsa must fail when ambient identity looks like Pod Identity")
+	}
+	if err := assertAWSAuthModeMatchesAmbient(v1beta1.AWSAuthModePodIdentity); err != nil {
+		t.Fatalf("podIdentity should accept Pod Identity ambient hints: %v", err)
+	}
+})
