@@ -6,12 +6,11 @@
 # detach spoke never connected while the same object with orphan connected fine.
 #
 # Now the owner reference is skipped when the namespaces differ, and the finalizer
-# carries cleanup on its own.
-#
-# The one accepted cost, verified live: if this object is FORCE-deleted (finalizer
-# patched off, or the controller permanently down) the gateway Secret is left behind,
-# because there is no owner reference for garbage collection to follow. An ordinary
-# `kubectl delete` cleans up correctly.
+# carries cleanup on its own. The controller also stamps
+# spokecluster.core.oam.dev/owner and spokecluster.core.oam.dev/deletion-policy on
+# the gateway Secret so the gateway-secret janitor can reclaim it if the
+# SpokeCluster is FORCE-deleted (finalizer patched off) while deletionPolicy is
+# detach. An ordinary `kubectl delete` still cleans up via the finalizer.
 apiVersion: core.oam.dev/v1beta1
 kind: SpokeCluster
 metadata:
@@ -40,3 +39,7 @@ spec:
 #   kubectl get secret tenant-spoke -n vela-system \
 #     -o jsonpath='{.metadata.annotations.spokecluster\.core\.oam\.dev/owner}'
 #   team-a/tenant-spoke
+#
+#   kubectl get secret tenant-spoke -n vela-system \
+#     -o jsonpath='{.metadata.annotations.spokecluster\.core\.oam\.dev/deletion-policy}'
+#   detach

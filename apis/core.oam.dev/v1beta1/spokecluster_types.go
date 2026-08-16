@@ -46,13 +46,19 @@ const (
 	CredentialTypeGCP CredentialType = "gcp"
 )
 
-// AWSAuthMode is the AWS hub-to-spoke authentication mode.
+// AWSAuthMode is how the hub pod's ambient AWS identity was wired.
+// Both podIdentity and irsa still resolve through the AWS default credential
+// chain (LoadDefaultConfig). The field documents the expected wiring and
+// Materialize fails closed when ambient env vars clearly indicate the other mode.
 type AWSAuthMode string
 
 const (
-	// AWSAuthModePodIdentity uses EKS Pod Identity.
+	// AWSAuthModePodIdentity expects EKS Pod Identity on the hub controller pod
+	// (AWS_CONTAINER_CREDENTIALS_FULL_URI). The code path still uses LoadDefaultConfig.
 	AWSAuthModePodIdentity AWSAuthMode = "podIdentity"
-	// AWSAuthModeIRSA uses IAM Roles for Service Accounts.
+	// AWSAuthModeIRSA expects IAM Roles for Service Accounts on the hub controller
+	// pod (AWS_WEB_IDENTITY_TOKEN_FILE + AWS_ROLE_ARN). The code path still uses
+	// LoadDefaultConfig.
 	AWSAuthModeIRSA AWSAuthMode = "irsa"
 )
 
@@ -231,7 +237,9 @@ type KubeconfigCredential struct {
 
 // AWSCredential connects to an EKS cluster via AWS cloud-native identity.
 type AWSCredential struct {
-	// AuthMode is the AWS authentication mode.
+	// AuthMode records how the hub pod's ambient AWS identity was wired
+	// (podIdentity or irsa). Both values use the same LoadDefaultConfig chain;
+	// Materialize refuses a clear ambient mismatch.
 	// +kubebuilder:validation:Enum=podIdentity;irsa
 	AuthMode AWSAuthMode `json:"authMode"`
 

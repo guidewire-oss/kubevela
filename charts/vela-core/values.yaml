@@ -177,11 +177,11 @@ featureGates:
 ## resources (SpokeCluster, and later Cluster/ClusterBlueprint). It only runs when
 ## featureGates.enableClusterInfrastructure is true.
 clusterCore:
-  ## @param clusterCore.replicaCount Replicas for the vela-cluster-core deployment. Defaults to 2 so leader election and the SpokeCluster admission webhook survive a node drain; set to 1 only for constrained single-node installs (for example local k3d).
+  ## @param clusterCore.replicaCount Replicas for the vela-cluster-core deployment. Defaults to 2 so leader election and the SpokeCluster admission webhook survive a node drain; set to 1 for constrained single-node installs (for example local k3d). When replicaCount > 1 the chart default affinity is required hostname anti-affinity (not preferred), so a second node is needed for both pods to become Ready.
   replicaCount: 2
-  ## @param clusterCore.affinity Affinity for vela-cluster-core pods. When empty, falls back to the top-level affinity value, then to preferred podAntiAffinity on kubernetes.io/hostname (same pattern as vela-core and cluster-gateway).
+  ## @param clusterCore.affinity Affinity for vela-cluster-core pods. When empty, falls back to the top-level affinity value, then to required hostname podAntiAffinity when replicaCount > 1 (preferred when replicaCount is 1).
   affinity: {}
-  ## @param clusterCore.topologySpreadConstraints Topology spread for vela-cluster-core pods. Leave unset for the chart default (soft hostname spread including the release selector). Set to [] to disable, or provide a full list to override.
+  ## @param clusterCore.topologySpreadConstraints Topology spread for vela-cluster-core pods. Leave unset for the chart default (hostname DoNotSchedule plus soft zone spread when replicaCount > 1; soft hostname only when replicaCount is 1). Set to [] to disable, or provide a full list to override.
   topologySpreadConstraints:
   ## @param clusterCore.podDisruptionBudget.enabled Create a PodDisruptionBudget when replicaCount > 1 so voluntary disruptions keep at least one webhook/controller pod.
   ## @param clusterCore.podDisruptionBudget.minAvailable Minimum available pods during voluntary disruptions

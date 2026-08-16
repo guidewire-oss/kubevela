@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -51,14 +52,18 @@ type AWSProvider struct {
 	newClients awsClientFactory
 	// now returns the current time; overridable in tests for deterministic refresh math.
 	now func() time.Time
+	// ambientHints reports whether the hub pod looks like Pod Identity and/or IRSA.
+	// Overridable in tests so Materialize does not depend on the runner's AWS env.
+	ambientHints func() (podIdentity, irsa bool)
 }
 
 // NewAWSProvider builds an AWS provider that uses the ambient base identity (EKS Pod Identity or
 // IRSA on the hub controller pod) and assumes the per-cluster role declared on each SpokeCluster.
 func NewAWSProvider() *AWSProvider {
 	return &AWSProvider{
-		newClients: defaultAWSClientFactory,
-		now:        time.Now,
+		newClients:   defaultAWSClientFactory,
+		now:          time.Now,
+		ambientHints: ambientAWSIdentityHints,
 	}
 }
 
@@ -75,6 +80,9 @@ func (p *AWSProvider) Materialize(ctx context.Context, _ client.Reader, sc *v1be
 	}
 	if cred.ClusterName == "" || cred.Region == "" || cred.RoleARN == "" {
 		return nil, fmt.Errorf("credential.aws requires clusterName, region, and roleArn")
+	}
+	if err := p.assertAuthModeMatchesAmbient(cred.AuthMode); err != nil {
+		return nil, err
 	}
 
 	eksClient, presigner, err := p.newClients(ctx, cred)
@@ -134,4 +142,35 @@ func defaultAWSClientFactory(ctx context.Context, cred *v1beta1.AWSCredential) (
 	scoped.Region = cred.Region
 	scoped.Credentials = aws.NewCredentialsCache(assumed)
 	return eks.NewFromConfig(scoped), signerFromCredentials(cred.Region, scoped.Credentials), nil
+}
+
+// ambientAWSIdentityHints reports which hub workload-identity signals are present.
+// Both authMode values still call LoadDefaultConfig; the enum records how the hub
+// pod was wired. When the ambient env clearly indicates one mode, Materialize
+// refuses a SpokeCluster that claims the other so a mis-labeled CR fails closed.
+func ambientAWSIdentityHints() (podIdentity, irsa bool) {
+	// EKS Pod Identity agent injects the container credentials full URI.
+	podIdentity = os.Getenv("AWS_CONTAINER_CREDENTIALS_FULL_URI") != ""
+	// IRSA injects the web identity token file plus the role ARN to assume.
+	irsa = os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") != "" && os.Getenv("AWS_ROLE_ARN") != ""
+	return podIdentity, irsa
+}
+
+func (p *AWSProvider) assertAuthModeMatchesAmbient(mode v1beta1.AWSAuthMode) error {
+	hints := p.ambientHints
+	if hints == nil {
+		hints = ambientAWSIdentityHints
+	}
+	podIdentity, irsa := hints()
+	switch mode {
+	case v1beta1.AWSAuthModePodIdentity:
+		if irsa && !podIdentity {
+			return fmt.Errorf("credential.aws.authMode is podIdentity but the hub ambient identity looks like IRSA (AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are set)")
+		}
+	case v1beta1.AWSAuthModeIRSA:
+		if podIdentity && !irsa {
+			return fmt.Errorf("credential.aws.authMode is irsa but the hub ambient identity looks like Pod Identity (AWS_CONTAINER_CREDENTIALS_FULL_URI is set)")
+		}
+	}
+	return nil
 }

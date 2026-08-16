@@ -61,6 +61,10 @@ func awsSpoke() *v1beta1.SpokeCluster {
 
 func strptr(s string) *string { return &s }
 
+// noAmbientAWSHints keeps Materialize specs independent of the runner's IRSA /
+// Pod Identity environment.
+func noAmbientAWSHints() (bool, bool) { return false, false }
+
 var _ = It("AWSProviderMaterialize", func() {
 	t := GinkgoT()
 	now := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
@@ -68,7 +72,8 @@ var _ = It("AWSProviderMaterialize", func() {
 	presignedURL := "https://sts.amazonaws.com/?Action=GetCallerIdentity"
 
 	p := &AWSProvider{
-		now: func() time.Time { return now },
+		now:          func() time.Time { return now },
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			ek := &fakeEKS{out: &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{
 				Endpoint:             strptr("https://XYZ.eks.amazonaws.com"),
@@ -103,6 +108,7 @@ var _ = It("AWSProviderMaterialize", func() {
 var _ = It("AWSProviderValidation", func() {
 	t := GinkgoT()
 	p := NewAWSProvider()
+	p.ambientHints = noAmbientAWSHints
 
 	// Missing aws arm.
 	scNoArm := &v1beta1.SpokeCluster{Spec: v1beta1.SpokeClusterSpec{Credential: v1beta1.CredentialSpec{Type: v1beta1.CredentialTypeAWS}}}
@@ -121,7 +127,8 @@ var _ = It("AWSProviderValidation", func() {
 var _ = It("AWSProviderDescribeFailure", func() {
 	t := GinkgoT()
 	p := &AWSProvider{
-		now: time.Now,
+		now:          time.Now,
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			return &fakeEKS{err: errors.New("access denied")}, &fakePresigner{url: "https://x"}, nil
 		},
@@ -135,7 +142,8 @@ var _ = It("AWSProviderRejectsBlockedEndpoint", func() {
 	t := GinkgoT()
 	caB64 := base64.StdEncoding.EncodeToString([]byte("spoke-ca-pem"))
 	p := &AWSProvider{
-		now: time.Now,
+		now:          time.Now,
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			// Defense in depth: even if DescribeCluster returned a metadata IP, refuse it.
 			ek := &fakeEKS{out: &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{
@@ -157,7 +165,8 @@ var _ = It("AWSProviderRejectsBlockedEndpoint", func() {
 var _ = It("AWSProviderIncompleteCluster", func() {
 	t := GinkgoT()
 	p := &AWSProvider{
-		now: time.Now,
+		now:          time.Now,
+		ambientHints: noAmbientAWSHints,
 		newClients: func(_ context.Context, _ *v1beta1.AWSCredential) (eksDescribeAPI, stsPresignAPI, error) {
 			// Endpoint present but CA missing.
 			ek := &fakeEKS{out: &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{Endpoint: strptr("https://x")}}}
@@ -166,5 +175,39 @@ var _ = It("AWSProviderIncompleteCluster", func() {
 	}
 	if _, err := p.Materialize(context.Background(), nil, awsSpoke()); err == nil {
 		t.Fatal("expected error when cluster data is incomplete")
+	}
+})
+
+var _ = It("AssertAWSAuthModeMatchesAmbient", func() {
+	t := GinkgoT()
+	p := &AWSProvider{ambientHints: ambientAWSIdentityHints}
+
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "")
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")
+	t.Setenv("AWS_ROLE_ARN", "")
+	if err := p.assertAuthModeMatchesAmbient(v1beta1.AWSAuthModePodIdentity); err != nil {
+		t.Fatalf("no ambient hints should accept either mode: %v", err)
+	}
+	if err := p.assertAuthModeMatchesAmbient(v1beta1.AWSAuthModeIRSA); err != nil {
+		t.Fatalf("no ambient hints should accept either mode: %v", err)
+	}
+
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/eks.amazonaws.com/serviceaccount/token")
+	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::1:role/hub")
+	if err := p.assertAuthModeMatchesAmbient(v1beta1.AWSAuthModePodIdentity); err == nil {
+		t.Fatal("podIdentity must fail when ambient identity looks like IRSA")
+	}
+	if err := p.assertAuthModeMatchesAmbient(v1beta1.AWSAuthModeIRSA); err != nil {
+		t.Fatalf("irsa should accept IRSA ambient hints: %v", err)
+	}
+
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "")
+	t.Setenv("AWS_ROLE_ARN", "")
+	t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://169.254.170.23/v1/credentials")
+	if err := p.assertAuthModeMatchesAmbient(v1beta1.AWSAuthModeIRSA); err == nil {
+		t.Fatal("irsa must fail when ambient identity looks like Pod Identity")
+	}
+	if err := p.assertAuthModeMatchesAmbient(v1beta1.AWSAuthModePodIdentity); err != nil {
+		t.Fatalf("podIdentity should accept Pod Identity ambient hints: %v", err)
 	}
 })

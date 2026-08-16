@@ -125,7 +125,11 @@ spec:
                     description: AWS holds AWS cloud-native identity configuration.
                     properties:
                       authMode:
-                        description: AuthMode is the AWS authentication mode.
+                        description: |-
+                          AuthMode records how the hub pod's ambient AWS identity was
+                          wired (podIdentity or irsa). Both values use the same
+                          LoadDefaultConfig chain; Materialize refuses a clear ambient
+                          mismatch.
                         enum:
                         - podIdentity
                         - irsa
