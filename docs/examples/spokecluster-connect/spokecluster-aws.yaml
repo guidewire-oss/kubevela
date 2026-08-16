@@ -16,4 +16,5 @@ spec:
       clusterName: prod-us-east-1
       region: us-east-1
       roleArn: arn:aws:iam::123456789012:role/per-cluster-role
-      # externalId: <optional>
+      # Required: must match the Condition sts:ExternalId on the role trust policy.
+      externalId: us-east-1/123456789012/hub-cluster/vela-system/vela-core-cluster-core

@@ -244,9 +244,10 @@ type AWSCredential struct {
 	// RoleARN is the per-cluster IAM role the hub assumes.
 	RoleARN string `json:"roleArn"`
 
-	// ExternalID is an optional STS external id for the role assumption.
-	// +optional
-	ExternalID string `json:"externalId,omitempty"`
+	// ExternalID is the STS external id for the role assumption. Required with
+	// roleArn so the trust policy can demand the same value (confused-deputy
+	// mitigation). Admission rejects AWS spokes that omit it.
+	ExternalID string `json:"externalId"`
 }
 
 // AzureCredential connects to an AKS cluster via Azure cloud-native identity.

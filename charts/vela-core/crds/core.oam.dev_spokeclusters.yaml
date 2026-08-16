@@ -134,8 +134,11 @@ spec:
                         description: ClusterName is the EKS cluster name.
                         type: string
                       externalId:
-                        description: ExternalID is an optional STS external id for
-                          the role assumption.
+                        description: |-
+                          ExternalID is the STS external id for the role assumption.
+                          Required with roleArn so the trust policy can demand the same
+                          value (confused-deputy mitigation). Admission rejects AWS
+                          spokes that omit it.
                         type: string
                       region:
                         description: Region is the AWS region the cluster runs in.
@@ -146,6 +149,7 @@ spec:
                     required:
                     - authMode
                     - clusterName
+                    - externalId
                     - region
                     - roleArn
                     type: object
