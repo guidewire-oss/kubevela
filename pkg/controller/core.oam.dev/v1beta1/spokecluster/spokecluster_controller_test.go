@@ -900,7 +900,13 @@ var _ = It("StatusNeedsWriteIgnoresHeartbeatFields", func() {
 	heartbeat.ClusterInfo.LatencyMillis = 9
 	heartbeat.ClusterInfo.LastSyncedTime = &metav1.Time{Time: time.Unix(130, 0)}
 	if statusNeedsWrite(base, *heartbeat) {
-		t.Fatal("heartbeat-only status change should not write")
+		t.Fatal("sub-heartbeat status change should not write")
+	}
+
+	staleProbe := base.DeepCopy()
+	staleProbe.LastProbeTime = &metav1.Time{Time: time.Unix(100, 0).Add(probeHeartbeatInterval)}
+	if !statusNeedsWrite(base, *staleProbe) {
+		t.Fatal("lastProbeTime past the heartbeat interval must write")
 	}
 
 	versionBump := base.DeepCopy()

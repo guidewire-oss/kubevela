@@ -342,7 +342,10 @@ type SpokeClusterStatus struct {
 	// +optional
 	ClusterInfo *SpokeClusterInfo `json:"clusterInfo,omitempty"`
 
-	// LastProbeTime is when the hub last probed the spoke.
+	// LastProbeTime is when the hub last wrote a probe observation into status.
+	// Healthy passes refresh it at most every five minutes so the LAST PROBE
+	// column stays recent without an etcd write on every probe interval.
+	// Connection flips and probe failures update it immediately.
 	// +optional
 	LastProbeTime *metav1.Time `json:"lastProbeTime,omitempty"`
 
@@ -427,8 +430,8 @@ type SpokeClusterInfo struct {
 	// It advances only on a successful discovery, so it does not move while the spoke is
 	// unreachable (discovery is skipped) or while discovery is failing. That is what makes
 	// it the field to read for staleness: the InfoSynced condition's lastTransitionTime
-	// records when discovery first started succeeding, not when it last did, and
-	// status.lastProbeTime advances even on failed passes.
+	// records when discovery first started succeeding, not when it last did.
+	// status.lastProbeTime is refreshed on a coarser cadence (see probeHeartbeatInterval).
 	// +optional
 	LastSyncedTime *metav1.Time `json:"lastSyncedTime,omitempty"`
 }
