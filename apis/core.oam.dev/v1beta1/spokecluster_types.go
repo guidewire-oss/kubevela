@@ -346,7 +346,9 @@ type SpokeClusterStatus struct {
 	// LastProbeTime is when the hub last wrote a probe observation into status.
 	// Healthy passes refresh it at most every five minutes so the LAST PROBE
 	// column stays recent without an etcd write on every probe interval.
-	// Connection flips and probe failures update it immediately.
+	// Probe failures (Connected=False, ProbeFailed) update it on every observed
+	// probe. Pre-probe failures (credential or register) flip connection via
+	// markConnectionUnobserved without advancing LastProbeTime.
 	// +optional
 	LastProbeTime *metav1.Time `json:"lastProbeTime,omitempty"`
 

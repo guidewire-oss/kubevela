@@ -66,15 +66,11 @@ const (
 	secretKeyProxyURL = "proxy-url"
 )
 
-// secretOwnerAnnotation records which SpokeCluster (namespace/name) last wrote a gateway
-// Secret. It is the only reliable way to tell "a Secret this controller manages" from "a
-// Secret it does not": the gateway Secret's identity is name-only within the fixed gateway
-// namespace, so a SpokeCluster's own namespace plays no part in it, and the owner
-// reference cannot be used for this because orphan deliberately clears it. Without this
-// marker register would silently adopt any pre-existing Secret with a matching name,
-// including one `vela cluster join` wrote by hand, or one written by an entirely different
-// SpokeCluster that happens to share a name across namespaces.
-const secretOwnerAnnotation = "spokecluster.core.oam.dev/owner"
+// secretOwnerAnnotation is the controller-local alias of
+// multicluster.SpokeClusterOwnerAnnotation. Join and rename refuse overwrite
+// using the same key; keep this alias so register/janitor and `vela cluster join`
+// cannot drift onto different annotation strings.
+const secretOwnerAnnotation = multicluster.SpokeClusterOwnerAnnotation
 
 // secretDeletionPolicyAnnotation records the SpokeCluster's deletionPolicy at the time the
 // gateway Secret was last written. Cross-namespace spokes cannot use an OwnerReference
@@ -270,22 +266,22 @@ func (r *Reconciler) secretReader() client.Reader {
 //     (see verifyServerNameCompatible) rather than silently registered and left to fail TLS
 //     verification on every connection.
 //   - An absent ca.crt historically meant an insecure endpoint to cluster-gateway
-	//     (not "verify against the system roots"). Kubeconfig materialization
-	//     rejects insecure-skip-tls-verify and missing certificate-authority-data,
-	//     and register refuses an empty CA bundle so a future provider cannot
-	//     reopen skip-verify by omission.
-	//   - Materialized.ProxyURL is written to data["proxy-url"] so a proxied
-	//     kubeconfig matches what `vela cluster join` already records. Empty means
-	//     the key is omitted (direct dial).
-	//
-	// register refuses to adopt a pre-existing Secret it does not recognize (see
-	// verifyAdoptable): design.md reasoned that the admission webhook already
-	// rejects a name collision with an existing gateway Secret, but that webhook is stateless
-	// by design and does not read Secrets, so no such check exists. Without this guard a
-	// SpokeCluster could silently take over a manually joined cluster's Secret, redirecting
-	// its traffic to a different cluster and, under detach, later deleting its credential
-	// when the SpokeCluster itself is deleted. Confirmed live against a real `vela cluster
-	// join` fixture before this guard existed.
+//     (not "verify against the system roots"). Kubeconfig materialization
+//     rejects insecure-skip-tls-verify and missing certificate-authority-data,
+//     and register refuses an empty CA bundle so a future provider cannot
+//     reopen skip-verify by omission.
+//   - Materialized.ProxyURL is written to data["proxy-url"] so a proxied
+//     kubeconfig matches what `vela cluster join` already records. Empty means
+//     the key is omitted (direct dial).
+//
+// register refuses to adopt a pre-existing Secret it does not recognize (see
+// verifyAdoptable): design.md reasoned that the admission webhook already
+// rejects a name collision with an existing gateway Secret, but that webhook is stateless
+// by design and does not read Secrets, so no such check exists. Without this guard a
+// SpokeCluster could silently take over a manually joined cluster's Secret, redirecting
+// its traffic to a different cluster and, under detach, later deleting its credential
+// when the SpokeCluster itself is deleted. Confirmed live against a real `vela cluster
+// join` fixture before this guard existed.
 func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *credential.Materialized) error {
 	// Reserved name: admission and reconcile SpecInvalid already reject this, but
 	// register is the last write before a gateway Secret named "local" would

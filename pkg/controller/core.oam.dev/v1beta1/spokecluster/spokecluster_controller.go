@@ -310,13 +310,32 @@ func (r *Reconciler) updateStatus(ctx context.Context, sc *v1beta1.SpokeCluster,
 // field. latencyMillis and lastSyncedTime still move on every healthy pass and
 // are stripped from the compare so they do not force a write alone. lastProbeTime
 // is written on the first probe and then at most once per probeHeartbeatInterval
-// so LAST PROBE stays a recent probe time without ~2 etcd writes per spoke per
-// interval. Connection flips and condition changes always write.
+// while Connected stays True, so LAST PROBE stays recent without ~2 etcd writes
+// per spoke per interval. Connection flips always write. Repeated probe failures
+// (Connected=False, ProbeFailed) also write whenever lastProbeTime advances, so
+// a stuck outage keeps LAST PROBE moving even when the error text is unchanged.
 func statusNeedsWrite(prev, next v1beta1.SpokeClusterStatus) bool {
 	if !apiequality.Semantic.DeepEqual(statusForCompare(prev), statusForCompare(next)) {
 		return true
 	}
+	if probeFailedLastProbeAdvanced(prev, next) {
+		return true
+	}
 	return lastProbeNeedsWrite(prev.LastProbeTime, next.LastProbeTime)
+}
+
+func probeFailedLastProbeAdvanced(prev, next v1beta1.SpokeClusterStatus) bool {
+	cond := meta.FindStatusCondition(next.Conditions, v1beta1.SpokeClusterConditionConnected)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonProbeFailed {
+		return false
+	}
+	if next.LastProbeTime == nil {
+		return false
+	}
+	if prev.LastProbeTime == nil {
+		return true
+	}
+	return !next.LastProbeTime.Equal(prev.LastProbeTime)
 }
 
 func statusForCompare(in v1beta1.SpokeClusterStatus) *v1beta1.SpokeClusterStatus {

@@ -1,9 +1,10 @@
 {{- if and .Values.featureGates.enableClusterInfrastructure .Values.clusterCore.networkPolicy.enabled }}
 # Restricts who can scrape :{{ .Values.clusterCore.metricsPort }} /metrics and
 # limits cluster-core egress. Health (:{{ .Values.clusterCore.healthCheck.port }})
-# and webhook (:9445) stay open to-source because kubelet and the API server
-# come from node/control-plane IPs that are install-specific. Pin those with
-# clusterCore.networkPolicy.extraIngress if you know the CIDRs.
+# and webhook (:{{ .Values.clusterCore.webhook.port }}) stay open to-source because
+# kubelet and the API server come from node/control-plane IPs that are
+# install-specific. Pin those with clusterCore.networkPolicy.extraIngress if you
+# know the CIDRs.
 #
 # Enforcement needs a CNI that honors NetworkPolicy (Calico/Cilium/EKS).
 # k3d/flannel often does not; the object still applies for production CNIs.
@@ -29,7 +30,7 @@ spec:
           port: {{ .Values.clusterCore.healthCheck.port }}
     - ports:
         - protocol: TCP
-          port: 9445
+          port: {{ .Values.clusterCore.webhook.port }}
     - from:
         - namespaceSelector: {}
           podSelector:
@@ -62,11 +63,10 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: vela-core-cluster-gateway
-              app.kubernetes.io/instance: vela-core-cluster-gateway
+              {{- include "kubevela-cluster-gateway.selectorLabels" . | nindent 14 }}
       ports:
         - protocol: TCP
-          port: 9443
+          port: {{ .Values.multicluster.clusterGateway.port }}
     {{- with .Values.clusterCore.networkPolicy.extraEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

@@ -452,7 +452,7 @@ func newSpokeClusterCreateCommand(c *common.Args) *cobra.Command {
 	cmd.Flags().StringVar(&secretName, "secret", "",
 		"Existing Secret name, or the name to write when --kubeconfig is also set. Defaults to <name>-kubeconfig.")
 	cmd.Flags().BoolVar(&aws, "aws", false,
-		"Create an AWS/EKS SpokeCluster. No Secret is written. Requires --aws-region and --aws-role-arn.")
+		"Create an AWS/EKS SpokeCluster. No Secret is written. Requires --aws-region, --aws-role-arn, and --aws-external-id.")
 	cmd.Flags().StringVar(&awsRegion, "aws-region", "",
 		"EKS region. Required with --aws.")
 	cmd.Flags().StringVar(&awsRoleARN, "aws-role-arn", "",
@@ -462,7 +462,7 @@ func newSpokeClusterCreateCommand(c *common.Args) *cobra.Command {
 	cmd.Flags().StringVar(&awsAuthMode, "aws-auth-mode", string(v1beta1.AWSAuthModePodIdentity),
 		"AWS auth mode. One of: podIdentity, irsa.")
 	cmd.Flags().StringVar(&awsExternalID, "aws-external-id", "",
-		"Optional STS external ID for the role assumption.")
+		"STS external ID for the role assumption. Required with --aws; must match the role trust policy Condition.")
 	cmd.Flags().StringVar(&deletionPolicy, "deletion-policy", string(v1beta1.SpokeDeletionPolicyDetach),
 		"Fate of the gateway registration on delete. One of: detach, orphan.")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second,
@@ -569,6 +569,9 @@ func buildCreateCredential(opts spokeClusterCreateOpts) (v1beta1.CredentialSpec,
 	}
 	if opts.AWSRegion == "" || opts.AWSRoleARN == "" {
 		return v1beta1.CredentialSpec{}, errors.New("--aws requires --aws-region and --aws-role-arn")
+	}
+	if opts.AWSExternalID == "" {
+		return v1beta1.CredentialSpec{}, errors.New("--aws requires --aws-external-id (must match the role trust policy Condition)")
 	}
 	authMode := v1beta1.AWSAuthMode(opts.AWSAuthMode)
 	if authMode == "" {
