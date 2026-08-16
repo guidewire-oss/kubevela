@@ -30,18 +30,33 @@ import (
 )
 
 func kubeconfigSecretIndexKeys(sc *v1beta1.SpokeCluster) []string {
-	if sc.Spec.Credential.Type != v1beta1.CredentialTypeKubeconfig || sc.Spec.Credential.Kubeconfig == nil {
+	namespace, name, ok := kubeconfigSecretRef(sc)
+	if !ok {
 		return nil
+	}
+	return []string{namespace + "/" + name}
+}
+
+// kubeconfigSecretRef resolves where a kubeconfig spoke reads its credential from, and
+// reports ok=false when it has no source Secret at all: another credential type, a
+// missing kubeconfig arm, or an unnamed Secret.
+//
+// An empty secretRef.namespace means the SpokeCluster's own namespace. That default is
+// resolved here so the watch index and the cache's watched-namespace test cannot disagree
+// about which Secret a spoke actually reads.
+func kubeconfigSecretRef(sc *v1beta1.SpokeCluster) (namespace, name string, ok bool) {
+	if sc == nil || sc.Spec.Credential.Type != v1beta1.CredentialTypeKubeconfig || sc.Spec.Credential.Kubeconfig == nil {
+		return "", "", false
 	}
 	ref := sc.Spec.Credential.Kubeconfig.SecretRef
 	if ref.Name == "" {
-		return nil
+		return "", "", false
 	}
-	ns := ref.Namespace
-	if ns == "" {
-		ns = sc.Namespace
+	namespace = ref.Namespace
+	if namespace == "" {
+		namespace = sc.Namespace
 	}
-	return []string{ns + "/" + ref.Name}
+	return namespace, ref.Name, true
 }
 
 // sourceKubeconfigSecretPredicate drops gateway Secrets this controller writes.

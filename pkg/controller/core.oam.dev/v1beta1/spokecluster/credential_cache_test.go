@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/spokecluster/credential"
 )
 
@@ -335,5 +336,81 @@ var _ = It("CredentialCacheHonoursAShortenedTTL", func() {
 	now = now.Add(time.Minute)
 	if _, hit := c.Get(sc, 0); hit {
 		t.Fatalf("expected a miss past the configured ttl, even though the provider deadline is further out")
+	}
+})
+
+// A kubeconfig credential whose source Secret the controller does not watch must not
+// be cached at all.
+//
+// The controller's Secret informer is scoped to the gateway namespace, and source
+// kubeconfig Secrets in tenant namespaces are read through the uncached API reader,
+// so no event is ever delivered for them. A JWT service-account token carries an exp
+// claim, which gives the credential a non-zero NextRefresh and therefore made it
+// cacheable: rotating such a Secret went unnoticed for up to the full TTL, with
+// nothing in status or logs to say so. Caching only what the watch can invalidate is
+// what closes that window.
+var _ = It("CredentialCacheSkipsUnwatchedSourceSecrets", func() {
+	t := GinkgoT()
+	now := cacheEpoch
+	c := newTestCache(t, &now)
+
+	oldGatewayNS := multicluster.ClusterGatewaySecretNamespace
+	multicluster.ClusterGatewaySecretNamespace = "vela-system"
+	t.Cleanup(func() { multicluster.ClusterGatewaySecretNamespace = oldGatewayNS })
+
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*v1beta1.SpokeCluster)
+		wantCache bool
+		reason    string
+	}{
+		{
+			name:      "kubeconfig in a tenant namespace",
+			mutate:    func(sc *v1beta1.SpokeCluster) { sc.Spec.Credential.Kubeconfig.SecretRef.Namespace = "tenant-a" },
+			wantCache: false,
+			reason:    "no watch reaches a tenant namespace, so a rotate would go unnoticed until the TTL elapsed",
+		},
+		{
+			name: "kubeconfig defaulting to the SpokeCluster's own tenant namespace",
+			mutate: func(sc *v1beta1.SpokeCluster) {
+				sc.Namespace = "tenant-b"
+				sc.Spec.Credential.Kubeconfig.SecretRef.Namespace = ""
+			},
+			wantCache: false,
+			reason:    "an empty secretRef.namespace means the spoke's own namespace, which is still unwatched",
+		},
+		{
+			name: "kubeconfig in the gateway namespace",
+			mutate: func(sc *v1beta1.SpokeCluster) {
+				sc.Spec.Credential.Kubeconfig.SecretRef.Namespace = "vela-system"
+			},
+			wantCache: true,
+			reason:    "the informer covers the gateway namespace, so the watch invalidates on rotate",
+		},
+		{
+			name: "aws, which has no source Secret to go stale",
+			mutate: func(sc *v1beta1.SpokeCluster) {
+				sc.Spec.Credential = v1beta1.CredentialSpec{
+					Type: v1beta1.CredentialTypeAWS,
+					AWS: &v1beta1.AWSCredential{
+						AuthMode: v1beta1.AWSAuthModePodIdentity, ClusterName: "spoke",
+						Region: "us-west-2", RoleARN: "arn:aws:iam::1:role/r", ExternalID: "x",
+					},
+				}
+			},
+			wantCache: true,
+			reason:    "the credential is minted from AWS, so nothing can change it behind the controller",
+		},
+	} {
+		testCase := tc
+		sc := cachedSpoke("unwatched-"+testCase.name, 1, apitypes.UID("uid-"+testCase.name))
+		testCase.mutate(sc)
+		c.Invalidate(client.ObjectKeyFromObject(sc))
+
+		c.Put(sc, cacheableCredential(now.Add(10*time.Minute)))
+		_, hit := c.Get(sc, 0)
+		if hit != testCase.wantCache {
+			t.Fatalf("%s: cached=%v, want %v: %s", testCase.name, hit, testCase.wantCache, testCase.reason)
+		}
 	}
 })

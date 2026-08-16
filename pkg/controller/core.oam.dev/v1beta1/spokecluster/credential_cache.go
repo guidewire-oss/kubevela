@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/spokecluster/credential"
 )
 
@@ -125,12 +126,15 @@ func (c *credentialCache) Get(sc *v1beta1.SpokeCluster, margin time.Duration) (*
 // Put stores a credential, or declines to.
 //
 // A zero NextRefresh means "do not cache", never "cache forever". It marks a credential
-// whose source can change underneath the controller with nothing to signal it, which is
-// every kubeconfig spoke. Those re-read a hub Secret through the cached client and parse
-// it, so there is nothing to save by caching and a rotated Secret would stop being picked
-// up if it were cached.
+// with no expiry the controller can plan around, so there is no deadline to cache against.
+//
+// An unwatched source Secret is the second refusal, and it is the one that is easy to get
+// wrong. See sourceSecretIsWatched.
 func (c *credentialCache) Put(sc *v1beta1.SpokeCluster, m *credential.Materialized) {
 	if c == nil || m == nil || m.NextRefresh.IsZero() {
+		return
+	}
+	if !sourceSecretIsWatched(sc) {
 		return
 	}
 	now := c.now()
@@ -148,6 +152,36 @@ func (c *credentialCache) Put(sc *v1beta1.SpokeCluster, m *credential.Materializ
 		uid:        sc.UID,
 		deadline:   deadline,
 	}, deadline.Sub(now))
+}
+
+// sourceSecretIsWatched reports whether a change to this spoke's credential source
+// would reach the controller as an event, which is the precondition for caching it.
+//
+// Only the gateway namespace is cached by the manager (RBAC-01), so mapKubeconfigSecret
+// only ever fires for Secrets there. A kubeconfig Secret in a tenant namespace is read
+// through the uncached API reader and generates no events at all.
+//
+// Comparing against multicluster.ClusterGatewaySecretNamespace is exactly right rather
+// than approximately right: cmd/cluster-core/app/server.go assigns that variable from the
+// resolved namespace before it scopes the Secret informer to the same value, so the two
+// cannot drift.
+//
+// That mattered once JWT bearer tokens started carrying an exp claim: the resulting
+// non-zero NextRefresh made those credentials cacheable, so rotating a tenant-namespace
+// Secret went unnoticed for up to the full TTL, with nothing in status or logs to say the
+// controller was still serving the pre-rotate material. Re-reading and parsing a hub
+// Secret is cheap next to the sts:AssumeRole and eks:DescribeCluster this cache exists to
+// avoid, so declining to cache it costs almost nothing and removes the stale window.
+//
+// Credentials with no source Secret, the aws arm today, are always cacheable: nothing
+// outside the controller can change them behind its back.
+func sourceSecretIsWatched(sc *v1beta1.SpokeCluster) bool {
+	namespace, _, ok := kubeconfigSecretRef(sc)
+	if !ok {
+		// No source Secret, so there is nothing that can change without an event.
+		return true
+	}
+	return namespace == multicluster.ClusterGatewaySecretNamespace
 }
 
 // Invalidate drops a spoke's entry. It is idempotent, so any path may call it
