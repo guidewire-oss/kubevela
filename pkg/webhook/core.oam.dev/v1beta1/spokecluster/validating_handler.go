@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
 	http://www.apache.org/licenses/LICENSE-2.0
 
-    10|Unless required by applicable law or agreed to in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -34,10 +34,11 @@ import (
 var _ admission.Handler = &ValidatingHandler{}
 
 // ValidatingHandler validates SpokeCluster resources on Create and Update.
-// Client is required for cluster-scoped uniqueness checks (gateway Secret
-// identity is name-only in the gateway namespace).
+// Client is an uncached reader (typically mgr.GetAPIReader()) so uniqueness
+// checks see SpokeClusters that were just admitted and are not yet in the
+// informer cache.
 type ValidatingHandler struct {
-	Client  client.Client
+	Client  client.Reader
 	Decoder admission.Decoder
 }
 
@@ -128,7 +129,7 @@ func checkUniqueAWSRoleARN(sc *v1beta1.SpokeCluster, list *v1beta1.SpokeClusterL
 func RegisterValidatingHandler(mgr manager.Manager) {
 	mgr.GetWebhookServer().Register("/validating-core-oam-dev-v1beta1-spokeclusters", &webhook.Admission{
 		Handler: &ValidatingHandler{
-			Client:  mgr.GetClient(),
+			Client:  mgr.GetAPIReader(),
 			Decoder: admission.NewDecoder(mgr.GetScheme()),
 		},
 	})

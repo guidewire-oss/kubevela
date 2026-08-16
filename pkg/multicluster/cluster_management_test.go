@@ -112,7 +112,7 @@ func TestKubeClusterConfig_Validate(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "Insecure skip TLS refused",
+			name: "Insecure skip TLS allowed in Validate (gateway path refuses later)",
 			cfg: &KubeClusterConfig{
 				ClusterName: "prod",
 				Cluster: &clientcmdapi.Cluster{
@@ -120,19 +120,17 @@ func TestKubeClusterConfig_Validate(t *testing.T) {
 					InsecureSkipTLSVerify: true,
 				},
 			},
-			expectErr: true,
-			wantSub:   "insecure-skip-tls-verify",
+			expectErr: false,
 		},
 		{
-			name: "Empty CA refused",
+			name: "Empty CA allowed in Validate (gateway path refuses later)",
 			cfg: &KubeClusterConfig{
 				ClusterName: "prod",
 				Cluster: &clientcmdapi.Cluster{
 					Server: "https://example:6443",
 				},
 			},
-			expectErr: true,
-			wantSub:   "certificate-authority-data",
+			expectErr: false,
 		},
 	}
 

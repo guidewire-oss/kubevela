@@ -141,6 +141,23 @@ var _ = Describe("ValidatingHandler", func() {
 		gomega.Expect(resp.Result.Message).To(gomega.ContainSubstring("roleArn"))
 	})
 
+	It("denies an AWS create that reuses another namespace's roleArn", func() {
+		existing := validAWSSpoke()
+		existing.Namespace = "team-a"
+		existing.Name = "spoke-a"
+		cli := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(existing).Build()
+		handler = &ValidatingHandler{Decoder: decoder, Client: cli}
+
+		incoming := validAWSSpoke()
+		incoming.Namespace = "team-b"
+		incoming.Name = "spoke-b"
+		incoming.Spec.Credential.AWS.ClusterName = "spoke-b"
+		req := newSpokeClusterRequest(incoming, admissionv1.Create)
+		resp := handler.Handle(context.Background(), req)
+		gomega.Expect(resp.Allowed).To(gomega.BeFalse())
+		gomega.Expect(resp.Result.Message).To(gomega.ContainSubstring("roleArn"))
+	})
+
 	It("allows an AWS create with a distinct roleArn", func() {
 		existing := validAWSSpoke()
 		existing.Name = "spoke-a"

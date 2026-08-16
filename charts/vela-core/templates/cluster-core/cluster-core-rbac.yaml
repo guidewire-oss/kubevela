@@ -124,22 +124,17 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "kubevela.fullname" . }}-cluster-core
     namespace: {{ .Release.Namespace }}
-{{- /* ID-01: namespace-scoped source Secret gets when allowlist is set. Always
-     include the release namespace so same-ns kubeconfig spokes keep working. */}}
+{{- /* ID-01: namespace-scoped source Secret gets when allowlist is set.
+     The release namespace already has secrets get via the Role above. */}}
 {{- if .Values.clusterCore.kubeconfigSecretNamespaces }}
-{{- $nsList := .Values.clusterCore.kubeconfigSecretNamespaces | default list }}
-{{- $releaseNS := .Release.Namespace }}
-{{- $seen := dict $releaseNS true }}
-{{- range $nsList }}
-{{- $_ := set $seen . true }}
-{{- end }}
-{{- range $ns, $_ := $seen }}
+{{- range .Values.clusterCore.kubeconfigSecretNamespaces }}
+{{- if ne . $.Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "kubevela.fullname" $ }}:cluster-core-kubeconfig-read
-  namespace: {{ $ns }}
+  namespace: {{ . }}
   labels:
     {{- include "kubevela.labels" $ | nindent 4 }}
 rules:
@@ -151,7 +146,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "kubevela.fullname" $ }}:cluster-core-kubeconfig-read
-  namespace: {{ $ns }}
+  namespace: {{ . }}
   labels:
     {{- include "kubevela.labels" $ | nindent 4 }}
 roleRef:
@@ -162,6 +157,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "kubevela.fullname" $ }}-cluster-core
     namespace: {{ $.Release.Namespace }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

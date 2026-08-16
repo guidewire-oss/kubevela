@@ -73,7 +73,7 @@ func validateSpokeProxyURL(ctx context.Context, proxy string) error {
 	if host == "" {
 		return fmt.Errorf("spoke proxy-url %q has no host", proxy)
 	}
-	if err := denyHubOrMetadataHost(ctx, host); err != nil {
+	if err := denyHubOrMetadataHost(ctx, host, false); err != nil {
 		return fmt.Errorf("spoke proxy-url %q is not permitted: %w", proxy, err)
 	}
 	return nil
@@ -97,13 +97,13 @@ func validateSpokeEndpoint(ctx context.Context, endpoint string) error {
 	if host == "" {
 		return fmt.Errorf("spoke endpoint %q has no host", endpoint)
 	}
-	if err := denyHubOrMetadataHost(ctx, host); err != nil {
+	if err := denyHubOrMetadataHost(ctx, host, DenyPrivateEndpoints); err != nil {
 		return fmt.Errorf("spoke endpoint %q is not permitted: %w", endpoint, err)
 	}
 	return nil
 }
 
-func denyHubOrMetadataHost(ctx context.Context, host string) error {
+func denyHubOrMetadataHost(ctx context.Context, host string, denyPrivate bool) error {
 	lower := strings.ToLower(strings.TrimSuffix(host, "."))
 
 	if lower == "localhost" {
@@ -130,7 +130,7 @@ func denyHubOrMetadataHost(ctx context.Context, host string) error {
 		}
 	}
 	if ip := net.ParseIP(ipHost); ip != nil {
-		return denyBlockedIP(ip, host)
+		return denyBlockedIPWithPolicy(ip, host, denyPrivate)
 	}
 	if strings.Contains(host, "%") {
 		return fmt.Errorf("host %q has an IPv6 zone identifier and is not permitted", host)
@@ -144,7 +144,7 @@ func denyHubOrMetadataHost(ctx context.Context, host string) error {
 		return fmt.Errorf("host %q resolved to no addresses", host)
 	}
 	for _, ip := range ips {
-		if err := denyBlockedIP(ip, host); err != nil {
+		if err := denyBlockedIPWithPolicy(ip, host, denyPrivate); err != nil {
 			return err
 		}
 	}
@@ -160,6 +160,10 @@ func denyHubOrMetadataHost(ctx context.Context, host string) error {
 var DenyPrivateEndpoints bool
 
 func denyBlockedIP(ip net.IP, host string) error {
+	return denyBlockedIPWithPolicy(ip, host, false)
+}
+
+func denyBlockedIPWithPolicy(ip net.IP, host string, denyPrivate bool) error {
 	if ip.IsUnspecified() {
 		return fmt.Errorf("host %q is an unspecified address", host)
 	}
@@ -173,7 +177,7 @@ func denyBlockedIP(ip net.IP, host string) error {
 			return fmt.Errorf("host %q is a blocked metadata address", host)
 		}
 	}
-	if DenyPrivateEndpoints {
+	if denyPrivate {
 		for _, cidr := range privateCIDRs {
 			if cidr.Contains(ip) {
 				return fmt.Errorf("host %q is in private range %s (spoke-endpoint-deny-private is enabled)", host, cidr)

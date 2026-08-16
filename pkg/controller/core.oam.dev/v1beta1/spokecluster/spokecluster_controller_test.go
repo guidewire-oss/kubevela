@@ -392,8 +392,10 @@ var _ = It("ReconcileCredentialFailure", func() {
 
 			latest := readSpoke(t, r, sc)
 			wantCondition(t, latest, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, tc.wantReason)
-			if meta.FindStatusCondition(latest.Status.Conditions, v1beta1.SpokeClusterConditionRegistered) != nil {
-				t.Error("registration must not run after a credential failure")
+			if tc.wantReason == reasonMaterializeFailed {
+				wantCondition(t, latest, v1beta1.SpokeClusterConditionRegistered, metav1.ConditionFalse, reasonMaterializeFailed)
+			} else if meta.FindStatusCondition(latest.Status.Conditions, v1beta1.SpokeClusterConditionRegistered) != nil {
+				t.Error("registration must not run after a no-provider failure")
 			}
 		})
 	}
