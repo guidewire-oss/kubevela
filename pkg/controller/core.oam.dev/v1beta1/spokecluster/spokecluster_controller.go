@@ -121,10 +121,14 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	// never reached, so its reachability is genuinely unobserved this pass. Disconnected
 	// would claim we looked and found it down, and leaving a previous Connected in place
 	// would keep asserting reachability the controller can no longer see.
+	//
+	// The Connected *condition* must move to Unknown as well. status.connection alone left
+	// kubectl describe showing Connected=True "spoke answered the healthz probe" after a
+	// credential or registration failure.
 	provider, err := r.Providers.For(sc.Spec.Credential.Type)
 	if err != nil {
 		setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonNoProvider, err.Error())
-		status.Connection = v1beta1.ConnectionStateUnknown
+		markConnectionUnobserved(status, reasonNoProvider, err.Error())
 		return r.finish(ctx, sc, status, 0, err)
 	}
 
@@ -145,7 +149,7 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 		materialized, err = provider.Materialize(ctx, r.secretReader(), sc)
 		if err != nil {
 			setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionFalse, reasonMaterializeFailed, err.Error())
-			status.Connection = v1beta1.ConnectionStateUnknown
+			markConnectionUnobserved(status, reasonMaterializeFailed, err.Error())
 			return r.finish(ctx, sc, status, 0, err)
 		}
 		r.credentials.Put(sc, materialized)
@@ -155,7 +159,7 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 
 	if err := r.register(ctx, sc, materialized); err != nil {
 		setCondition(status, v1beta1.SpokeClusterConditionRegistered, metav1.ConditionFalse, reasonRegisterFailed, err.Error())
-		status.Connection = v1beta1.ConnectionStateUnknown
+		markConnectionUnobserved(status, reasonRegisterFailed, err.Error())
 		return r.finish(ctx, sc, status, 0, err)
 	}
 	setCondition(status, v1beta1.SpokeClusterConditionRegistered, metav1.ConditionTrue, reasonSecretMaterialized,
@@ -307,6 +311,14 @@ func setCondition(status *v1beta1.SpokeClusterStatus, condType string, condStatu
 		Reason:  reason,
 		Message: message,
 	})
+}
+
+// markConnectionUnobserved sets status.connection and the Connected condition to Unknown
+// when this pass never reached the probe. reason and message name the earlier failure so
+// describe stays accurate after a previously Connected spoke loses its credential.
+func markConnectionUnobserved(status *v1beta1.SpokeClusterStatus, reason, message string) {
+	status.Connection = v1beta1.ConnectionStateUnknown
+	setCondition(status, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, reason, message)
 }
 
 // probeInterval is how often a spoke is probed when nothing else forces an earlier pass.

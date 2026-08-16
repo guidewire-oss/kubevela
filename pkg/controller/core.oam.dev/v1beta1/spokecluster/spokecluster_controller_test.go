@@ -374,27 +374,45 @@ var _ = It("ReconcileCredentialFailure", func() {
 
 // TestReconcileCredentialFailureMarksConnectionUnknown separates "we never got far enough to
 // know" from "we probed and it was down". It also covers the regression case: a spoke that
-// was Connected and then loses its credential must stop asserting reachability.
+// was Connected and then loses its credential must stop asserting reachability on both
+// status.connection and the Connected condition.
 var _ = It("ReconcileCredentialFailureMarksConnectionUnknown", func() {
 	t := GinkgoT()
-	cases := map[string]credential.Registry{
-		"no provider":        {},
-		"materialize failed": kubeconfigRegistry(nil, errors.New("kubeconfig is malformed")),
+	cases := map[string]struct {
+		registry   credential.Registry
+		wantReason string
+	}{
+		"no provider": {
+			registry:   credential.Registry{},
+			wantReason: reasonNoProvider,
+		},
+		"materialize failed": {
+			registry:   kubeconfigRegistry(nil, errors.New("kubeconfig is malformed")),
+			wantReason: reasonMaterializeFailed,
+		},
 	}
 
-	for name, registry := range cases {
+	for name, tc := range cases {
 		By(name, func() {
 			sc := connectableSpoke("spoke-unknown")
 			sc.Status.Connection = v1beta1.ConnectionStateConnected
+			meta.SetStatusCondition(&sc.Status.Conditions, metav1.Condition{
+				Type:    v1beta1.SpokeClusterConditionConnected,
+				Status:  metav1.ConditionTrue,
+				Reason:  reasonProbeSucceeded,
+				Message: "spoke answered the healthz probe",
+			})
 			r := connectedReconciler(t, sc)
-			r.Providers = registry
+			r.Providers = tc.registry
 
 			if _, err := reconcileOnce(t, r, sc); err == nil {
 				t.Fatal("Reconcile returned nil, want the credential error")
 			}
-			if got := readSpoke(t, r, sc).Status.Connection; got != v1beta1.ConnectionStateUnknown {
+			latest := readSpoke(t, r, sc)
+			if got := latest.Status.Connection; got != v1beta1.ConnectionStateUnknown {
 				t.Errorf("status.connection = %q, want %q", got, v1beta1.ConnectionStateUnknown)
 			}
+			wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, tc.wantReason)
 		})
 	}
 })
@@ -424,6 +442,7 @@ var _ = It("ReconcileRegisterFailure", func() {
 	if latest.Status.Connection != v1beta1.ConnectionStateUnknown {
 		t.Errorf("status.connection = %q, want %q after a registration failure", latest.Status.Connection, v1beta1.ConnectionStateUnknown)
 	}
+	wantCondition(t, latest, v1beta1.SpokeClusterConditionConnected, metav1.ConditionUnknown, reasonRegisterFailed)
 })
 
 // TestReconcileDiscoveryFailurePreservesClusterInfo keeps a transient inventory failure
