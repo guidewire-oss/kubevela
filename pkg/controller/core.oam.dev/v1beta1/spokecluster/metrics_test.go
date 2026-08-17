@@ -111,7 +111,7 @@ var _ = It("ObserveConnectionGauge", func() {
 			resetSpokeMetrics()
 			observeConnection(sc, &v1beta1.SpokeClusterStatus{Connection: tt.state})
 			Expect(testutil.ToFloat64(spokeConnected.With(spokeMetricLabels(sc)))).To(Equal(tt.want),
-				"spokecluster_connected for state %q", tt.state)
+				"vela_cluster_connected for state %q", tt.state)
 		})
 	}
 })

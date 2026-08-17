@@ -186,7 +186,7 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 		// Deliberately not counted as a credential refresh: this is a cache hit that failed
 		// revalidation, so no provider work happened and calling it a refresh would inflate
 		// the counter that exists to measure exactly that. The failure is already reported
-		// through spokecluster_condition_failures_total on CredentialValid.
+		// through vela_cluster_condition_failures_total on CredentialValid.
 		// SSRF-02: DNS can rebind after the point-in-time check inside Materialize.
 		// Re-resolve on every reconcile (including cache hits) and revoke the gateway
 		// Secret so cluster-gateway stops dialing a newly blocked address. cluster-gateway

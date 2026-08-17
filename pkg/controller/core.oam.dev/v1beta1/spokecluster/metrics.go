@@ -48,40 +48,40 @@ const (
 
 var (
 	spokeConnectionTransitions = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "spokecluster_connection_transitions_total",
+		Name: "vela_cluster_connection_transitions_total",
 		Help: "SpokeCluster connection state transitions observed by the controller.",
 	}, []string{metricLabelNamespace, metricLabelName, "to"})
 
 	spokeConditionFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "spokecluster_condition_failures_total",
+		Name: "vela_cluster_condition_failures_total",
 		Help: "SpokeCluster condition transitions to False (credential, register or discovery failures).",
 	}, []string{metricLabelNamespace, metricLabelName, "condition", "reason"})
 
 	spokeDetachTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "spokecluster_detach_total",
+		Name: "vela_cluster_detach_total",
 		Help: "SpokeCluster detach (delete) outcomes.",
 	}, []string{metricLabelNamespace, metricLabelName, "result"})
 
 	spokeConnected = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "spokecluster_connected",
+		Name: "vela_cluster_connected",
 		Help: "1 when the hub last observed the spoke as reachable, 0 otherwise.",
 	}, []string{metricLabelNamespace, metricLabelName})
 
 	spokeNodeCount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "spokecluster_node_count",
+		Name: "vela_cluster_node_count",
 		Help: "Nodes discovered on the spoke at the last successful discovery.",
 	}, []string{metricLabelNamespace, metricLabelName})
 
 	// Buckets span a same-network hop through to the 10s default probe timeout, so a
 	// spoke answering just under its timeout is distinguishable from a healthy one.
 	spokeProbeLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "spokecluster_probe_latency_seconds",
+		Name:    "vela_cluster_probe_latency_seconds",
 		Help:    "Round-trip duration of a successful spoke reachability probe.",
 		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 	}, []string{metricLabelNamespace, metricLabelName})
 
 	spokeCredentialRefresh = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Name: "spokecluster_credential_refresh_total",
+		Name: "vela_cluster_credential_refresh_total",
 		Help: "Credential materializations by the controller, excluding credential cache hits.",
 	}, []string{metricLabelNamespace, metricLabelName, "type", "result"})
 )
@@ -147,7 +147,7 @@ func observeProbeLatency(sc *v1beta1.SpokeCluster, latency time.Duration) {
 //
 // A materialize failure counts as error. An endpoint revalidation failure on a cache hit
 // does not reach here at all: it revokes the gateway Secret too, but no provider was
-// called, and it is reported through spokecluster_condition_failures_total instead.
+// called, and it is reported through vela_cluster_condition_failures_total instead.
 func observeCredentialRefresh(sc *v1beta1.SpokeCluster, err error) {
 	result := metricResultSuccess
 	if err != nil {
