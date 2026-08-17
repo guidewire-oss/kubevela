@@ -1,11 +1,15 @@
-# Cases that SHOULD be rejected. Useful as a webhook regression check.
+# Cases that SHOULD be rejected. Useful as an admission regression check.
 # Each is annotated with where the rejection comes from and what you should see.
+#
+# Cases marked CEL are enforced by the CRD's x-kubernetes-validations, so they are
+# refused by the API server itself and hold on a default install, where the chart
+# ships clusterCore.webhook.enabled=false. Cases marked webhook need it enabled.
 #
 # Apply with: kubectl apply -f 08-invalid-examples.yaml
 # Expect every one to fail. Any that succeeds is a bug.
 
 ---
-# 1. mode: provision is not supported in this release. Rejected by the webhook.
+# 1. mode: provision is not supported in this release. CEL, and the webhook as well.
 apiVersion: core.oam.dev/v1beta1
 kind: SpokeCluster
 metadata:
@@ -21,7 +25,10 @@ spec:
 
 ---
 # 2. Credential arm does not match type. The union is strict: every arm not named by
-#    `type` is forbidden, not merely ignored.
+#    `type` is forbidden, not merely ignored. CEL, and the webhook as well.
+#    The aws arm here is deliberately complete: leave a required field out and
+#    structural validation fails first, so the union rule never gets evaluated and
+#    the case stops proving what it claims to.
 apiVersion: core.oam.dev/v1beta1
 kind: SpokeCluster
 metadata:
@@ -35,9 +42,10 @@ spec:
       clusterName: whatever
       region: us-west-2
       roleArn: arn:aws:iam::111122223333:role/x
+      externalId: external-x
 
 ---
-# 3. Both arms present. Same rule, other direction.
+# 3. Both arms present. Same rule, other direction. CEL, and the webhook as well.
 apiVersion: core.oam.dev/v1beta1
 kind: SpokeCluster
 metadata:
@@ -51,6 +59,7 @@ spec:
       clusterName: c
       region: us-west-2
       roleArn: arn:aws:iam::111122223333:role/x
+      externalId: external-x
     kubeconfig:
       secretRef:
         name: spoke-kubeconfig
@@ -87,6 +96,7 @@ spec:
 
 ---
 # 6. infraProvisioning in connect mode. Provisioning belongs to mode: provision.
+#    CEL, and the webhook as well.
 apiVersion: core.oam.dev/v1beta1
 kind: SpokeCluster
 metadata:

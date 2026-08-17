@@ -256,6 +256,15 @@ spec:
                 required:
                 - type
                 type: object
+                x-kubernetes-validations:
+                - message: when type is 'kubeconfig', the kubeconfig arm is required
+                    and no other arm may be set
+                  rule: self.type != 'kubeconfig' || (has(self.kubeconfig) && !has(self.aws)
+                    && !has(self.azure) && !has(self.gcp))
+                - message: when type is 'aws', the aws arm is required and no other
+                    arm may be set
+                  rule: self.type != 'aws' || (has(self.aws) && !has(self.kubeconfig)
+                    && !has(self.azure) && !has(self.gcp))
               deletionPolicy:
                 default: detach
                 description: DeletionPolicy controls the fate of the hub-side registration
@@ -271,7 +280,10 @@ spec:
                   IAM, DNS, and cluster creation when mode is provision).
 
                   Phase 2 stub: defined so the schema is forward-compatible. No Phase 1
-                  controller reconciles it. The admission webhook rejects it in connect mode.
+                  controller reconciles it. Rejected in connect mode by both the CRD's CEL
+                  rules and the admission webhook, because provisioning infrastructure is
+                  what mode: provision is for, and accepting the field would imply the hub
+                  was going to act on it.
                 properties:
                   blueprintRef:
                     description: |-
@@ -507,6 +519,8 @@ spec:
           rule: self.spec.mode == 'connect'
         - message: credential.type must be kubeconfig or aws in Phase 1
           rule: self.spec.credential.type in ['kubeconfig', 'aws']
+        - message: infraProvisioning is not supported in connect mode (Phase 2)
+          rule: self.spec.mode != 'connect' || !has(self.spec.infraProvisioning)
     served: true
     storage: true
     subresources:

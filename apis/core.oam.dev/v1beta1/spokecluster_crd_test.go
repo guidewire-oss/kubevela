@@ -239,7 +239,7 @@ var _ = It("SpokeClusterCRD Phase1CEL", func() {
 	t := GinkgoT()
 	r := require.New(t)
 	schema := v1beta1Schema(t, loadSpokeClusterCRD(t))
-	r.GreaterOrEqual(len(schema.XValidations), 3)
+	r.GreaterOrEqual(len(schema.XValidations), 4)
 	rules := map[string]string{}
 	for _, v := range schema.XValidations {
 		rules[v.Rule] = v.Message
@@ -247,4 +247,27 @@ var _ = It("SpokeClusterCRD Phase1CEL", func() {
 	r.Contains(rules, "self.metadata.name != 'local'")
 	r.Contains(rules, "self.spec.mode == 'connect'")
 	r.Contains(rules, "self.spec.credential.type in ['kubeconfig', 'aws']")
+	r.Contains(rules, "self.spec.mode != 'connect' || !has(self.spec.infraProvisioning)")
+})
+
+// The credential union is enforced on the credential schema rather than the root,
+// so the error path an operator sees names spec.credential instead of the whole
+// object. These are the rules that make a default install (webhook off) reject a
+// spec whose arm does not match its type, rather than storing it and reporting
+// SpecInvalid from the controller afterwards.
+var _ = It("SpokeClusterCRD CredentialUnionCEL", func() {
+	t := GinkgoT()
+	r := require.New(t)
+	schema := v1beta1Schema(t, loadSpokeClusterCRD(t))
+	credential := schema.Properties["spec"].Properties["credential"]
+	rules := map[string]string{}
+	for _, v := range credential.XValidations {
+		rules[v.Rule] = v.Message
+	}
+	r.Len(rules, 2, "one rule per Phase 1 arm, so a mismatch is a single error")
+	r.Contains(rules, "self.type != 'kubeconfig' || (has(self.kubeconfig) && !has(self.aws) && !has(self.azure) && !has(self.gcp))")
+	r.Contains(rules, "self.type != 'aws' || (has(self.aws) && !has(self.kubeconfig) && !has(self.azure) && !has(self.gcp))")
+	for rule, message := range rules {
+		r.NotEmpty(message, "rule %q must carry a message, it is what kubectl apply prints", rule)
+	}
 })
