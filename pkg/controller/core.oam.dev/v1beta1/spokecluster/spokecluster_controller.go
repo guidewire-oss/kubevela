@@ -164,6 +164,10 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	materialized, cached := r.credentials.Get(sc, probeInterval(sc))
 	if !cached {
 		materialized, err = provider.Materialize(ctx, r.secretReader(), sc)
+		// Counted here and not on the cache-hit path: the counter measures real provider
+		// work (an sts:AssumeRole plus an eks:DescribeCluster on the aws arm), not
+		// reconcile passes.
+		observeCredentialRefresh(sc, err)
 		if err != nil {
 			r.credentials.Invalidate(client.ObjectKeyFromObject(sc))
 			delErr := r.deleteGatewaySecret(ctx, sc)
@@ -179,6 +183,10 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 		}
 		r.credentials.Put(sc, materialized)
 	} else if err := credential.ValidateSpokeEndpoint(materialized.Endpoint); err != nil {
+		// Deliberately not counted as a credential refresh: this is a cache hit that failed
+		// revalidation, so no provider work happened and calling it a refresh would inflate
+		// the counter that exists to measure exactly that. The failure is already reported
+		// through vela_cluster_condition_failures_total on CredentialValid.
 		// SSRF-02: DNS can rebind after the point-in-time check inside Materialize.
 		// Re-resolve on every reconcile (including cache hits) and revoke the gateway
 		// Secret so cluster-gateway stops dialing a newly blocked address. cluster-gateway
@@ -200,11 +208,15 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	setCondition(status, v1beta1.SpokeClusterConditionCredentialValid, metav1.ConditionTrue, reasonMaterialized,
 		"credential materialized for endpoint "+materialized.Endpoint)
 
-	if err := r.register(ctx, sc, materialized); err != nil {
+	outcome, err := r.register(ctx, sc, materialized)
+	if err != nil {
 		setCondition(status, v1beta1.SpokeClusterConditionRegistered, metav1.ConditionFalse, reasonRegisterFailed, err.Error())
 		markConnectionUnobserved(status, reasonRegisterFailed, err.Error())
 		return r.finish(ctx, sc, status, 0, err)
 	}
+	// Emitted from the pass that did the write rather than from finish: this is an event
+	// about the Secret, not about a status transition, and it has no condition to compare.
+	r.emitGatewaySecretEvent(sc, outcome)
 	setCondition(status, v1beta1.SpokeClusterConditionRegistered, metav1.ConditionTrue, reasonSecretMaterialized,
 		"gateway secret is up to date")
 
@@ -249,6 +261,9 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 	setCondition(status, v1beta1.SpokeClusterConditionConnected, metav1.ConditionTrue, reasonProbeSucceeded,
 		"spoke answered the authenticated probe")
 	status.Connection = v1beta1.ConnectionStateConnected
+	// Successful probes only: a failed probe's duration is a timeout, and mixing timeouts
+	// into the same histogram makes a quantile meaningless.
+	observeProbeLatency(sc, latency)
 
 	info, discoverErr := r.discoverSpoke(ctx, sc, materialized, latency)
 	if discoverErr != nil {
@@ -271,6 +286,7 @@ func (r *Reconciler) reconcileConnect(ctx context.Context, sc *v1beta1.SpokeClus
 		setCondition(status, v1beta1.SpokeClusterConditionInfoSynced, metav1.ConditionTrue, reasonDiscoveryOK,
 			"cluster inventory refreshed")
 		status.ClusterInfo = info
+		observeInventory(sc, info)
 	}
 
 	return r.finish(ctx, sc, status, nextRequeue(sc, materialized), nil)
@@ -300,6 +316,11 @@ func (r *Reconciler) discoverSpoke(ctx context.Context, sc *v1beta1.SpokeCluster
 // the pass errors out.
 func (r *Reconciler) finish(ctx context.Context, sc *v1beta1.SpokeCluster, status *v1beta1.SpokeClusterStatus, requeue time.Duration, reconcileErr error) (ctrl.Result, error) {
 	prev := sc.Status
+	// Outside the write guard on purpose. A healthy spoke's status write is suppressed as
+	// a no-op, and a scrape must still see the current connection state. finish is also
+	// the one place every exit converges on, including the pre-probe failures that report
+	// Unknown, which the gauge reads as 0.
+	observeConnection(sc, status)
 	if statusNeedsWrite(prev, *status) {
 		if err := r.updateStatus(ctx, sc, status); err != nil {
 			return ctrl.Result{}, err

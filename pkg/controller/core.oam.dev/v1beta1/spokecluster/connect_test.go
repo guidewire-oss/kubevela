@@ -22,6 +22,7 @@ import (
 
 	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
 	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -173,7 +174,7 @@ var _ = It("RegisterSecretShape", func() {
 			sc := spoke("spoke", v1beta1.SpokeDeletionPolicyDetach)
 			r := newTestReconciler(t, sc)
 
-			if err := r.register(context.Background(), sc, tc.materialized); err != nil {
+			if _, err := r.register(context.Background(), sc, tc.materialized); err != nil {
 				t.Fatalf("register returned an unexpected error: %v", err)
 			}
 
@@ -202,7 +203,7 @@ var _ = It("RegisterRefusesEmptyCAData", func() {
 	t := GinkgoT()
 	sc := spoke("no-ca", v1beta1.SpokeDeletionPolicyDetach)
 	r := newTestReconciler(t, sc)
-	err := r.register(context.Background(), sc, &credential.Materialized{
+	_, err := r.register(context.Background(), sc, &credential.Materialized{
 		Endpoint: "https://spoke.example.com",
 		Token:    "tok",
 	})
@@ -222,7 +223,7 @@ var _ = It("RegisterRefusesReservedLocalName", func() {
 	t := GinkgoT()
 	sc := spoke(multicluster.ClusterLocalName, v1beta1.SpokeDeletionPolicyDetach)
 	r := newTestReconciler(t, sc)
-	err := r.register(context.Background(), sc, tokenCredential())
+	_, err := r.register(context.Background(), sc, tokenCredential())
 	if err == nil {
 		t.Fatal("register must refuse the reserved local cluster name")
 	}
@@ -247,7 +248,7 @@ var _ = It("RegisterOwnershipPerPolicy", func() {
 			sc := spoke("spoke", tc.policy)
 			r := newTestReconciler(t, sc)
 
-			if err := r.register(context.Background(), sc, tokenCredential()); err != nil {
+			if _, err := r.register(context.Background(), sc, tokenCredential()); err != nil {
 				t.Fatalf("register returned an unexpected error: %v", err)
 			}
 
@@ -269,7 +270,7 @@ var _ = It("RegisterOutsideGatewayNamespaceSkipsOwnerRef", func() {
 	sc := spokeIn("spoke", "team-a", v1beta1.SpokeDeletionPolicyDetach)
 	r := newTestReconciler(t, sc)
 
-	if err := r.register(context.Background(), sc, tokenCredential()); err != nil {
+	if _, err := r.register(context.Background(), sc, tokenCredential()); err != nil {
 		t.Fatalf("register returned an unexpected error: %v", err)
 	}
 
@@ -282,19 +283,59 @@ var _ = It("RegisterOutsideGatewayNamespaceSkipsOwnerRef", func() {
 	}
 })
 
+// Requirements 6.2 and 6.3: registration reports what it did, so the caller can emit an
+// event for a real change and stay silent for the identical rewrite a cached credential
+// produces on every pass.
+var _ = It("RegisterReportsWhatItDidToTheSecret", func() {
+	t := GinkgoT()
+	sc := spoke("spoke", v1beta1.SpokeDeletionPolicyDetach)
+	r := newTestReconciler(t, sc)
+	ctx := context.Background()
+
+	outcome, err := r.register(ctx, sc, tokenCredential())
+	Expect(err).NotTo(HaveOccurred())
+	Expect(outcome).To(Equal(registerCreated))
+
+	By("reporting an unchanged rewrite when the credential did not move", func() {
+		outcome, err = r.register(ctx, sc, tokenCredential())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(outcome).To(Equal(registerUnchanged),
+			"a cached credential rewrites identical content and must not look like a change")
+	})
+
+	By("reporting an update when the token is reminted", func() {
+		reminted := tokenCredential()
+		reminted.Token = "tok-2"
+		outcome, err = r.register(ctx, sc, reminted)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(outcome).To(Equal(registerUpdated))
+	})
+
+	By("reporting an update when only the deletion-policy stamp moves", func() {
+		// The stamp lives in an annotation, so a comparison limited to data and labels
+		// would call this unchanged and lose the one event that records the flip.
+		sc.Spec.DeletionPolicy = v1beta1.SpokeDeletionPolicyOrphan
+		reminted := tokenCredential()
+		reminted.Token = "tok-2"
+		outcome, err = r.register(ctx, sc, reminted)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(outcome).To(Equal(registerUpdated))
+	})
+})
+
 var _ = It("RegisterIsIdempotent", func() {
 	t := GinkgoT()
 	sc := spoke("spoke", v1beta1.SpokeDeletionPolicyDetach)
 	r := newTestReconciler(t, sc)
 	ctx := context.Background()
 
-	if err := r.register(ctx, sc, tokenCredential()); err != nil {
+	if _, err := r.register(ctx, sc, tokenCredential()); err != nil {
 		t.Fatalf("first register returned an unexpected error: %v", err)
 	}
 
 	reminted := tokenCredential()
 	reminted.Token = "tok-2"
-	if err := r.register(ctx, sc, reminted); err != nil {
+	if _, err := r.register(ctx, sc, reminted); err != nil {
 		t.Fatalf("second register returned an unexpected error: %v", err)
 	}
 
@@ -312,10 +353,10 @@ var _ = It("RegisterReplacesCredentialKind", func() {
 	r := newTestReconciler(t, sc)
 	ctx := context.Background()
 
-	if err := r.register(ctx, sc, tokenCredential()); err != nil {
+	if _, err := r.register(ctx, sc, tokenCredential()); err != nil {
 		t.Fatalf("token register returned an unexpected error: %v", err)
 	}
-	if err := r.register(ctx, sc, certCredential()); err != nil {
+	if _, err := r.register(ctx, sc, certCredential()); err != nil {
 		t.Fatalf("cert register returned an unexpected error: %v", err)
 	}
 
@@ -341,7 +382,7 @@ var _ = It("RegisterClearsOwnershipOnPolicyFlipToOrphan", func() {
 	r := newTestReconciler(t, sc)
 	ctx := context.Background()
 
-	if err := r.register(ctx, sc, tokenCredential()); err != nil {
+	if _, err := r.register(ctx, sc, tokenCredential()); err != nil {
 		t.Fatalf("detach register returned an unexpected error: %v", err)
 	}
 	if !ownedBySpoke(readGatewaySecret(t, r.Client, sc.Name), sc) {
@@ -349,7 +390,7 @@ var _ = It("RegisterClearsOwnershipOnPolicyFlipToOrphan", func() {
 	}
 
 	sc.Spec.DeletionPolicy = v1beta1.SpokeDeletionPolicyOrphan
-	if err := r.register(ctx, sc, tokenCredential()); err != nil {
+	if _, err := r.register(ctx, sc, tokenCredential()); err != nil {
 		t.Fatalf("orphan register returned an unexpected error: %v", err)
 	}
 
@@ -384,7 +425,7 @@ var _ = It("RegisterKeepsForeignOwnerReference", func() {
 	}
 	r := newTestReconciler(t, sc, existing)
 
-	if err := r.register(context.Background(), sc, tokenCredential()); err != nil {
+	if _, err := r.register(context.Background(), sc, tokenCredential()); err != nil {
 		t.Fatalf("register returned an unexpected error: %v", err)
 	}
 
@@ -410,7 +451,7 @@ var _ = It("RegisterRefusesToAdoptForeignSecret", func() {
 	}
 	r := newTestReconciler(t, sc, manuallyJoined)
 
-	err := r.register(context.Background(), sc, tokenCredential())
+	_, err := r.register(context.Background(), sc, tokenCredential())
 	if err == nil {
 		t.Fatal("register adopted a foreign secret, want a refusal")
 	}
@@ -441,7 +482,7 @@ var _ = It("RegisterRefusesCrossNamespaceNameCollision", func() {
 	}
 	r := newTestReconciler(t, mine, existing)
 
-	err := r.register(context.Background(), mine, tokenCredential())
+	_, err := r.register(context.Background(), mine, tokenCredential())
 	if err == nil {
 		t.Fatal("register took over another SpokeCluster's secret, want a refusal")
 	}
@@ -460,10 +501,10 @@ var _ = It("RegisterOwnAnnotationAllowsReRegister", func() {
 	r := newTestReconciler(t, sc)
 	ctx := context.Background()
 
-	if err := r.register(ctx, sc, tokenCredential()); err != nil {
+	if _, err := r.register(ctx, sc, tokenCredential()); err != nil {
 		t.Fatalf("first register failed: %v", err)
 	}
-	if err := r.register(ctx, sc, tokenCredential()); err != nil {
+	if _, err := r.register(ctx, sc, tokenCredential()); err != nil {
 		t.Fatalf("second register on the same SpokeCluster was refused: %v", err)
 	}
 
@@ -487,7 +528,7 @@ var _ = It("RegisterRejectsIncompatibleServerName", func() {
 		Token:      "tok",
 		ServerName: "api.internal.example.com",
 	}
-	err := r.register(context.Background(), sc, m)
+	_, err := r.register(context.Background(), sc, m)
 	if err == nil {
 		t.Fatal("register accepted a ServerName that differs from the endpoint host, want a refusal")
 	}
@@ -509,7 +550,7 @@ var _ = It("RegisterAllowsServerNameMatchingEndpointHost", func() {
 		Token:      "tok",
 		ServerName: "api.internal.example.com",
 	}
-	if err := r.register(context.Background(), sc, m); err != nil {
+	if _, err := r.register(context.Background(), sc, m); err != nil {
 		t.Fatalf("register refused a ServerName matching the endpoint host: %v", err)
 	}
 })
@@ -527,7 +568,7 @@ var _ = It("RegisterAllowsServerNameMatchingEndpointHostCaseInsensitive", func()
 		Token:      "tok",
 		ServerName: "API.Internal.Example.COM",
 	}
-	if err := r.register(context.Background(), sc, m); err != nil {
+	if _, err := r.register(context.Background(), sc, m); err != nil {
 		t.Fatalf("register refused a case-equivalent ServerName: %v", err)
 	}
 })
@@ -539,7 +580,7 @@ var _ = It("RegisterRejectsBlockedProxyURL", func() {
 
 	m := tokenCredential()
 	m.ProxyURL = "http://169.254.169.254/"
-	err := r.register(context.Background(), sc, m)
+	_, err := r.register(context.Background(), sc, m)
 	if err == nil {
 		t.Fatal("register accepted a blocked proxy-url, want a refusal")
 	}
@@ -559,10 +600,10 @@ var _ = It("RegisterDropsProxyURLWhenCleared", func() {
 
 	withProxy := tokenCredential()
 	withProxy.ProxyURL = "http://10.0.0.1:8080"
-	if err := r.register(ctx, sc, withProxy); err != nil {
+	if _, err := r.register(ctx, sc, withProxy); err != nil {
 		t.Fatalf("register with proxy-url: %v", err)
 	}
-	if err := r.register(ctx, sc, tokenCredential()); err != nil {
+	if _, err := r.register(ctx, sc, tokenCredential()); err != nil {
 		t.Fatalf("register without proxy-url: %v", err)
 	}
 	secret := readGatewaySecret(t, r.Client, sc.Name)

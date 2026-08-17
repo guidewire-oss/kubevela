@@ -92,14 +92,18 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, sc *v1beta1.SpokeClust
 	controllerutil.RemoveFinalizer(sc, FinalizerName)
 	if err := r.Update(ctx, sc); err != nil {
 		if attemptedDetach {
-			spokeDetachTotal.WithLabelValues("error").Inc()
+			spokeDetachTotal.WithLabelValues(sc.Namespace, sc.Name, metricResultError).Inc()
 		}
 		return ctrl.Result{}, err
 	}
 	if attemptedDetach {
 		r.emit(sc, event.Normal(reasonDetached, "spoke cluster detached"))
-		spokeDetachTotal.WithLabelValues("success").Inc()
+		spokeDetachTotal.WithLabelValues(sc.Namespace, sc.Name, metricResultSuccess).Inc()
 	}
+	// After the finalizer is released, so a retried deletion cannot drop a live spoke's
+	// series, and for every deletion path: the series belong to the object, not to whether
+	// a detach was attempted.
+	forgetSpokeMetrics(sc)
 	return ctrl.Result{}, nil
 }
 

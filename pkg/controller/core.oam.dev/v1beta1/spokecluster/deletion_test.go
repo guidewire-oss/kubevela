@@ -22,6 +22,8 @@ import (
 	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -136,6 +138,46 @@ var _ = It("ReconcileDeleteDetachRemovesSecretOutsideGatewayNamespace", func() {
 	}
 	if containsFinalizer(sc) {
 		t.Error("finalizer was not released, the SpokeCluster stays wedged")
+	}
+})
+
+// Requirement 7.1: the series belong to the object, so every deletion path drops them.
+// Orphan and never-registered deletions are the interesting cases: neither is a detach,
+// and both would otherwise leave a gauge reporting a spoke that no longer exists.
+var _ = It("ReconcileDeleteForgetsMetrics", func() {
+	t := GinkgoT()
+	cases := []struct {
+		name    string
+		policy  v1beta1.SpokeDeletionPolicy
+		objects []client.Object
+	}{
+		{name: "detach", policy: v1beta1.SpokeDeletionPolicyDetach},
+		{name: "orphan", policy: v1beta1.SpokeDeletionPolicyOrphan},
+		{name: "never registered", policy: v1beta1.SpokeDeletionPolicyDetach, objects: []client.Object{}},
+	}
+	for _, tc := range cases {
+		By(tc.name, func() {
+			resetSpokeMetrics()
+			sc := deletingSpoke("spoke", tc.policy)
+			objects := []client.Object{sc}
+			if tc.objects == nil {
+				objects = append(objects, gatewaySecret(sc.Name))
+			}
+			r := newTestReconciler(t, objects...)
+
+			observeConnection(sc, &v1beta1.SpokeClusterStatus{Connection: v1beta1.ConnectionStateConnected})
+			observeInventory(sc, &v1beta1.SpokeClusterInfo{NodeCount: 2})
+			Expect(testutil.CollectAndCount(spokeConnected)).To(Equal(1))
+
+			if _, err := r.reconcileDelete(context.Background(), sc); err != nil {
+				t.Fatalf("reconcileDelete returned an unexpected error: %v", err)
+			}
+
+			Expect(testutil.CollectAndCount(spokeConnected)).To(BeZero(),
+				"a deleted spoke must not keep reporting a connection state")
+			Expect(testutil.CollectAndCount(spokeNodeCount)).To(BeZero(),
+				"a deleted spoke must not keep reporting an inventory")
+		})
 	}
 })
 

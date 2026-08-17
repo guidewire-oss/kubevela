@@ -37,6 +37,7 @@ import (
 	clusterv1alpha1 "github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
 	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -280,39 +281,43 @@ func (r *Reconciler) secretReader() client.Reader {
 // metadata.name across namespaces (gateway Secret identity is name-only), but
 // it still does not inspect join-managed Secrets, so this adopt guard remains
 // the backstop against overwriting a manually joined cluster.
-func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *credential.Materialized) error {
+func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *credential.Materialized) (registerOutcome, error) {
 	// Reserved name: admission and reconcile SpecInvalid already reject this, but
 	// register is the last write before a gateway Secret named "local" would
 	// collide with in-process hub routing.
 	if sc.Name == multicluster.ClusterLocalName {
-		return fmt.Errorf("refusing to register reserved cluster name %q", multicluster.ClusterLocalName)
+		return registerUnchanged, fmt.Errorf("refusing to register reserved cluster name %q", multicluster.ClusterLocalName)
 	}
 	secret := &corev1.Secret{}
 	key := gatewaySecretKey(sc)
 	err := r.Get(ctx, key, secret)
 	notFound := apierrors.IsNotFound(err)
 	if err != nil && !notFound {
-		return fmt.Errorf("failed to read gateway secret %s: %w", key, err)
+		return registerUnchanged, fmt.Errorf("failed to read gateway secret %s: %w", key, err)
 	}
 	if !notFound {
 		if err := verifyAdoptable(sc, secret); err != nil {
-			return err
+			return registerUnchanged, err
 		}
 	}
 	if err := verifyServerNameCompatible(m); err != nil {
-		return err
+		return registerUnchanged, err
 	}
 	// Defense in depth: every provider must pass endpoint policy, but register is the
 	// last gate before the gateway Secret is written (covers mocks and future providers).
 	if err := credential.ValidateSpokeEndpoint(m.Endpoint); err != nil {
-		return err
+		return registerUnchanged, err
 	}
 	if err := credential.ValidateSpokeProxyURL(m.ProxyURL); err != nil {
-		return err
+		return registerUnchanged, err
 	}
 	if len(m.CAData) == 0 {
-		return fmt.Errorf("refusing to register spoke %q without a CA bundle; empty ca.crt would make cluster-gateway skip TLS verification", sc.Name)
+		return registerUnchanged, fmt.Errorf("refusing to register spoke %q without a CA bundle; empty ca.crt would make cluster-gateway skip TLS verification", sc.Name)
 	}
+
+	// Snapshot before mutation so the caller can tell a real rewrite from the identical
+	// content a cached credential produces pass after pass.
+	stored := secret.DeepCopy()
 
 	secret.Name = key.Name
 	secret.Namespace = key.Namespace
@@ -340,13 +345,51 @@ func (r *Reconciler) register(ctx context.Context, sc *v1beta1.SpokeCluster, m *
 	markOwner(sc, secret)
 
 	if err := r.reconcileOwnership(sc, secret); err != nil {
-		return err
+		return registerUnchanged, err
 	}
 
 	if notFound {
-		return r.Create(ctx, secret)
+		if err := r.Create(ctx, secret); err != nil {
+			return registerUnchanged, err
+		}
+		return registerCreated, nil
 	}
-	return r.Update(ctx, secret)
+	// The Update is issued either way. Skipping it for identical content would be a
+	// behaviour change beyond this story, and the API server already treats an identical
+	// update as a no-op that does not bump resourceVersion. The comparison decides only
+	// whether the rewrite is worth an event.
+	outcome := registerUpdated
+	if gatewaySecretUnchanged(stored, secret) {
+		outcome = registerUnchanged
+	}
+	if err := r.Update(ctx, secret); err != nil {
+		return registerUnchanged, err
+	}
+	return outcome, nil
+}
+
+// registerOutcome says what registration did to the gateway Secret, so the caller can
+// emit an event for a real change and stay silent otherwise.
+type registerOutcome string
+
+const (
+	registerUnchanged registerOutcome = "unchanged"
+	registerCreated   registerOutcome = "created"
+	registerUpdated   registerOutcome = "updated"
+)
+
+// gatewaySecretUnchanged compares the four fields this controller writes. Annotations are
+// included because the owner and deletion-policy stamps live there, so flipping
+// deletionPolicy is a rewrite worth reporting; annotations another actor added survive
+// into next as well, so they compare equal rather than looking like a change.
+//
+// Type is left out: it is set unconditionally and a Secret's type is immutable, so a
+// mismatch there is a different failure entirely, not a rewrite.
+func gatewaySecretUnchanged(stored, next *corev1.Secret) bool {
+	return apiequality.Semantic.DeepEqual(stored.Data, next.Data) &&
+		apiequality.Semantic.DeepEqual(stored.Labels, next.Labels) &&
+		apiequality.Semantic.DeepEqual(stored.Annotations, next.Annotations) &&
+		apiequality.Semantic.DeepEqual(stored.OwnerReferences, next.OwnerReferences)
 }
 
 // reconcileOwnership brings the gateway Secret's owner reference in line with

@@ -233,7 +233,7 @@ var _ = It("RegisterStampsDeletionPolicyAnnotation", func() {
 	t := GinkgoT()
 	sc := spokeIn("spoke", "team-a", v1beta1.SpokeDeletionPolicyOrphan)
 	r := newTestReconciler(t, sc)
-	if err := r.register(context.Background(), sc, tokenCredential()); err != nil {
+	if _, err := r.register(context.Background(), sc, tokenCredential()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	secret := readGatewaySecret(t, r.Client, sc.Name)
@@ -246,7 +246,7 @@ var _ = It("RegisterStampsDetachWhenPolicyUnset", func() {
 	t := GinkgoT()
 	sc := spokeIn("spoke", "team-a", "")
 	r := newTestReconciler(t, sc)
-	if err := r.register(context.Background(), sc, tokenCredential()); err != nil {
+	if _, err := r.register(context.Background(), sc, tokenCredential()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	secret := readGatewaySecret(t, r.Client, sc.Name)
