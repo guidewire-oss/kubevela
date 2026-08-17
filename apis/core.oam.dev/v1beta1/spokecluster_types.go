@@ -155,7 +155,10 @@ type SpokeClusterSpec struct {
 	// IAM, DNS, and cluster creation when mode is provision).
 	//
 	// Phase 2 stub: defined so the schema is forward-compatible. No Phase 1
-	// controller reconciles it. The admission webhook rejects it in connect mode.
+	// controller reconciles it. Rejected in connect mode by both the CRD's CEL
+	// rules and the admission webhook, because provisioning infrastructure is
+	// what mode: provision is for, and accepting the field would imply the hub
+	// was going to act on it.
 	// +optional
 	InfraProvisioning *InfraProvisioning `json:"infraProvisioning,omitempty"`
 
@@ -207,6 +210,19 @@ type BlueprintReference struct {
 
 // CredentialSpec is a discriminated union of hub-to-spoke credentials keyed by
 // Type. Exactly one arm must be set.
+//
+// The union is enforced here, in the schema, as well as in the validating
+// webhook. That is deliberate rather than redundant: the chart ships the webhook
+// off by default, so without these rules a spec whose arm does not match its
+// type is stored and only reported later by the controller as SpecInvalid, which
+// makes kubectl apply look like it succeeded. Each rule names the arm the type
+// requires and forbids the rest in one expression, so a mismatched or missing
+// arm is one error rather than several.
+//
+// Only the kubeconfig and aws arms are covered, because the root schema already
+// refuses any other type in Phase 1.
+// +kubebuilder:validation:XValidation:rule="self.type != 'kubeconfig' || (has(self.kubeconfig) && !has(self.aws) && !has(self.azure) && !has(self.gcp))",message="when type is 'kubeconfig', the kubeconfig arm is required and no other arm may be set"
+// +kubebuilder:validation:XValidation:rule="self.type != 'aws' || (has(self.aws) && !has(self.kubeconfig) && !has(self.azure) && !has(self.gcp))",message="when type is 'aws', the aws arm is required and no other arm may be set"
 type CredentialSpec struct {
 	// Type selects the credential arm.
 	// +kubebuilder:validation:Enum=kubeconfig;aws;azure;gcp
@@ -467,6 +483,7 @@ type SpokeClusterInfo struct {
 // +kubebuilder:validation:XValidation:rule="self.metadata.name != 'local'",message="name must not be the reserved local cluster name"
 // +kubebuilder:validation:XValidation:rule="self.spec.mode == 'connect'",message="mode must be 'connect' in Phase 1 (provision and adopt are not supported yet)"
 // +kubebuilder:validation:XValidation:rule="self.spec.credential.type in ['kubeconfig', 'aws']",message="credential.type must be kubeconfig or aws in Phase 1"
+// +kubebuilder:validation:XValidation:rule="self.spec.mode != 'connect' || !has(self.spec.infraProvisioning)",message="infraProvisioning is not supported in connect mode (Phase 2)"
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 

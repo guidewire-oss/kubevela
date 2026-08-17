@@ -133,3 +133,112 @@ var _ = It("SpokeClusterCRD InstallAndApply", func() {
 	r.NoError(k8sClient.List(ctx, list, client.InNamespace("vela-system")))
 	r.Len(list.Items, 2)
 })
+
+// The CEL rules have to be exercised against a real API server, because that is
+// the thing evaluating them. No webhook runs here, which is the point: the chart
+// ships the webhook off by default, so these rejections are what a default
+// install actually enforces at apply time.
+var _ = It("SpokeClusterCRD CELRejectsInvalidSpecs", func() {
+	t := GinkgoT()
+	r := require.New(t)
+	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		Skip("KUBEBUILDER_ASSETS not set; skipping envtest CEL rejection spec")
+	}
+
+	testEnv := &envtest.Environment{
+		ControlPlaneStartTimeout: 2 * time.Minute,
+		ControlPlaneStopTimeout:  time.Minute,
+		UseExistingCluster:       ptr.To(false),
+		CRDDirectoryPaths:        []string{spokeClusterCRDPath},
+	}
+	cfg, err := testEnv.Start()
+	r.NoError(err, "envtest environment must start (requires KUBEBUILDER_ASSETS)")
+	t.Cleanup(func() {
+		r.NoError(testEnv.Stop())
+	})
+
+	k8sClient, err := client.New(cfg, client.Options{Scheme: k8sscheme.Scheme})
+	r.NoError(err)
+	ctx := context.Background()
+	r.NoError(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "vela-system"}}))
+
+	kubeconfigArm := func() *KubeconfigCredential {
+		return &KubeconfigCredential{SecretRef: SecretKeyRef{Name: "some-kubeconfig"}}
+	}
+	awsArm := func() *AWSCredential {
+		return &AWSCredential{
+			AuthMode:    AWSAuthModePodIdentity,
+			ClusterName: "spoke",
+			Region:      "us-east-1",
+			RoleARN:     "arn:aws:iam::111122223333:role/spoke",
+			ExternalID:  "external",
+		}
+	}
+
+	cases := []struct {
+		name string
+		want string
+		spec SpokeClusterSpec
+	}{
+		{
+			name: "arm-does-not-match-type",
+			want: "when type is 'kubeconfig'",
+			spec: SpokeClusterSpec{
+				Mode:       SpokeClusterModeConnect,
+				Credential: CredentialSpec{Type: CredentialTypeKubeconfig, AWS: awsArm()},
+			},
+		},
+		{
+			name: "no-arm-at-all",
+			want: "when type is 'aws'",
+			spec: SpokeClusterSpec{
+				Mode:       SpokeClusterModeConnect,
+				Credential: CredentialSpec{Type: CredentialTypeAWS},
+			},
+		},
+		{
+			name: "two-arms-set",
+			want: "no other arm may be set",
+			spec: SpokeClusterSpec{
+				Mode: SpokeClusterModeConnect,
+				Credential: CredentialSpec{
+					Type: CredentialTypeKubeconfig, Kubeconfig: kubeconfigArm(), AWS: awsArm(),
+				},
+			},
+		},
+		{
+			name: "phase-2-provisioning-in-connect-mode",
+			want: "infraProvisioning is not supported in connect mode",
+			spec: SpokeClusterSpec{
+				Mode:              SpokeClusterModeConnect,
+				Credential:        CredentialSpec{Type: CredentialTypeKubeconfig, Kubeconfig: kubeconfigArm()},
+				InfraProvisioning: &InfraProvisioning{BlueprintRef: &BlueprintReference{Name: "infra"}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		By(tc.name, func() {
+			err := k8sClient.Create(ctx, &SpokeCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: tc.name, Namespace: "vela-system"},
+				Spec:       tc.spec,
+			})
+			r.Error(err, "the API server must refuse %s with no webhook running", tc.name)
+			r.Contains(err.Error(), tc.want, "the rejection has to name what is wrong")
+		})
+	}
+
+	By("still admitting the Phase 2 stubs that are deliberately accepted", func() {
+		// blueprintRef and rolloutStrategyRef are inert in Phase 1 but accepted, so
+		// GitOps can land the Phase 2 shape early. Only infraProvisioning is refused.
+		r.NoError(k8sClient.Create(ctx, &SpokeCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: "accepted-stubs", Namespace: "vela-system"},
+			Spec: SpokeClusterSpec{
+				Mode:               SpokeClusterModeConnect,
+				Credential:         CredentialSpec{Type: CredentialTypeKubeconfig, Kubeconfig: kubeconfigArm()},
+				BlueprintRef:       &BlueprintReference{Name: "blueprint"},
+				RolloutStrategyRef: &BlueprintReference{Name: "rollout"},
+			},
+		}))
+	})
+})

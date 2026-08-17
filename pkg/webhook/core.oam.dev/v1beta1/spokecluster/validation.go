@@ -54,6 +54,9 @@ func Validate(sc *v1beta1.SpokeCluster) field.ErrorList {
 	// infraProvisioning belongs to mode: provision. blueprintRef and
 	// rolloutStrategyRef stay accepted and ignored so GitOps can land the
 	// Phase 2 shape early; no Phase 1 controller reads them.
+	//
+	// The CRD carries the same rule in CEL, so this holds with the webhook off.
+	// Both report the same message, so an operator sees one wording either way.
 	if sc.Spec.InfraProvisioning != nil {
 		errs = append(errs, field.Forbidden(field.NewPath("spec", "infraProvisioning"),
 			"infraProvisioning is not supported in connect mode (Phase 2)"))
