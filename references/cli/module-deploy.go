@@ -17,16 +17,28 @@ limitations under the License.
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
+	"time"
 
+	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	oamcommon "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	velatypes "github.com/oam-dev/kubevela/apis/types"
 	pkgmodule "github.com/oam-dev/kubevela/pkg/module"
+	modulesvc "github.com/oam-dev/kubevela/pkg/module/service"
+	"github.com/oam-dev/kubevela/pkg/utils/apply"
+	"github.com/oam-dev/kubevela/pkg/utils/common"
+	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
 // moduleComponentType is the ComponentDefinition the deploy command builds a
@@ -124,4 +136,129 @@ func enabledModuleLines(mod *pkgmodule.Module) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+const (
+	moduleDeployRegistryFlag = "registry"
+	moduleDeployDryRunFlag   = "dry-run"
+	moduleDeployTimeoutFlag  = "timeout"
+
+	// defaultModuleDeployTimeout is how long deploy waits for every tier to
+	// become healthy before giving up.
+	defaultModuleDeployTimeout = 5 * time.Minute
+	// defaultModuleDeployPollInterval is how often deploy re-reads the two
+	// Applications while waiting.
+	defaultModuleDeployPollInterval = 2 * time.Second
+)
+
+// moduleDeployOptions holds one run of the deploy command. fetch and
+// pollInterval are seams: production wires the registry-backed fetch and the
+// default interval, tests inject a stub and a millisecond interval.
+type moduleDeployOptions struct {
+	module       string
+	registry     string
+	namespace    string
+	dryRun       bool
+	timeout      time.Duration
+	pollInterval time.Duration
+	fetch        func(ctx context.Context, registry, moduleName string) (*pkgmodule.Module, error)
+}
+
+// NewModuleDeployCommand returns the vela module deploy command. It builds and
+// applies an Application with a single type: module component, then reports the
+// install tiers as they become healthy.
+func NewModuleDeployCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+	o := &moduleDeployOptions{}
+	cmd := &cobra.Command{
+		Use:   "deploy <module>",
+		Short: "Deploy a module.",
+		Long:  "Build and apply an Application that installs a module's enabled API lines, then report the install tiers as they become healthy.",
+		Example: `  Deploy a module from the default registry:
+	vela module deploy s3
+
+  Deploy from a named registry, into a namespace:
+	vela module deploy s3 --registry catalog -n platform
+
+  Print the Application without applying it, capturing it for GitOps:
+	vela module deploy s3 --dry-run > s3-module.yaml`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cli, err := c.GetClient()
+			if err != nil {
+				return err
+			}
+			o.module = args[0]
+			o.namespace, err = cmd.Flags().GetString("namespace")
+			if err != nil {
+				return err
+			}
+			if o.namespace == "" {
+				o.namespace = velatypes.DefaultKubeVelaNS
+			}
+			return o.run(cmd.Context(), cli, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().StringVar(&o.registry, moduleDeployRegistryFlag, "", "The module registry to deploy from. Empty means the configured default.")
+	cmd.Flags().BoolVar(&o.dryRun, moduleDeployDryRunFlag, false, "Print the Application without applying it.")
+	cmd.Flags().DurationVar(&o.timeout, moduleDeployTimeoutFlag, defaultModuleDeployTimeout, "How long to wait for the module to become healthy.")
+	addNamespaceAndEnvArg(cmd)
+	return cmd
+}
+
+// run validates the registry and the module, builds the Application, and either
+// prints it or applies it and waits.
+func (o *moduleDeployOptions) run(ctx context.Context, cli client.Client, out io.Writer) error {
+	if errs := validation.IsDNS1123Label(o.module); len(errs) > 0 {
+		return fmt.Errorf("invalid module name %q: %s", o.module, errs[0])
+	}
+	if o.namespace == "" {
+		o.namespace = velatypes.DefaultKubeVelaNS
+	}
+	if o.pollInterval <= 0 {
+		o.pollInterval = defaultModuleDeployPollInterval
+	}
+	if o.timeout <= 0 {
+		o.timeout = defaultModuleDeployTimeout
+	}
+
+	store := pkgmodule.NewStore(cli)
+	reg, err := pkgmodule.ResolveRegistry(ctx, store, o.registry)
+	if err != nil {
+		return err
+	}
+
+	fetch := o.fetch
+	if fetch == nil {
+		fetch = modulesvc.NewService(store).FetchModule
+	}
+	mod, err := fetch(ctx, reg.Name, o.module)
+	if err != nil {
+		return err
+	}
+
+	app, err := buildModuleApplication(o.module, reg.Name, o.namespace)
+	if err != nil {
+		return err
+	}
+	if o.dryRun {
+		manifest, err := yaml.Marshal(app)
+		if err != nil {
+			return fmt.Errorf("failed to encode the Application manifest: %w", err)
+		}
+		_, err = out.Write(manifest)
+		return err
+	}
+
+	if err := apply.NewAPIApplicator(cli).Apply(ctx, app); err != nil {
+		return fmt.Errorf("failed to apply Application %s/%s: %w", app.Namespace, app.Name, err)
+	}
+	fmt.Fprintf(out, "Applied Application %s/%s\n", app.Namespace, app.Name)
+
+	return o.waitForModule(ctx, cli, expectedModuleTiers(mod), out)
+}
+
+// waitForModule polls the deploy Application and the owned module Application
+// until every tier is healthy. Task 3 implements it.
+func (o *moduleDeployOptions) waitForModule(_ context.Context, _ client.Client, _ []string, _ io.Writer) error {
+	return nil
 }
