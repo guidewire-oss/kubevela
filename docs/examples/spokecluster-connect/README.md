@@ -87,9 +87,14 @@ vela cluster spokes create prod-east --aws --aws-region us-west-2 \
   --aws-role-arn arn:aws:iam::111122223333:role/spokecluster-prod-east \
   --aws-external-id us-west-2/111122223333/hub-cluster/vela-system/vela-core-cluster-core
 vela cluster spokes list
+vela cluster spokes list -A          # every namespace, needs cluster-wide list permission
 vela cluster spokes show my-spoke
 vela cluster spokes detach my-spoke
 ```
+
+Every verb works in `vela-system` unless `-n` says otherwise. `list` is the only one that can
+span namespaces, with `-A`; it needs cluster-wide list permission on spokeclusters, so a
+namespace-scoped caller should use `-n` instead.
 
 `create --kubeconfig` writes a Secret (`<name>-kubeconfig` by default, or `--secret`) and a SpokeCluster. `create --aws` writes no Secret; pass `--aws-region`, `--aws-role-arn`, and `--aws-external-id` (optional `--aws-cluster-name`, `--aws-auth-mode`). `detach` deletes the SpokeCluster; the controller then removes the gateway Secret unless `deletionPolicy` is `orphan`. A kubeconfig source Secret is left in place. Use `--secret existing-name` when the kubeconfig Secret already exists.
 

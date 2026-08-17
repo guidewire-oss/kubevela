@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -86,16 +87,19 @@ func NewSpokeClusterCommandGroup(c *common.Args) *cobra.Command {
 	return cmd
 }
 
-// newSpokeClusterListCommand lists SpokeCluster resources across namespaces.
+// newSpokeClusterListCommand lists SpokeCluster resources in one namespace, or in every
+// namespace with -A.
 func newSpokeClusterListCommand(c *common.Args) *cobra.Command {
 	var namespace, output string
+	var allNamespaces bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List SpokeCluster resources.",
-		Long:    "List SpokeCluster resources across all namespaces (or one namespace with -n).",
-		Args:    cobra.ExactArgs(0),
+		Long: "List SpokeCluster resources in one namespace (vela-system by default), " +
+			"or across every namespace with -A.",
+		Args: cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			k8sClient, err := c.GetClient()
 			if err != nil {
@@ -103,30 +107,45 @@ func newSpokeClusterListCommand(c *common.Args) *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-			return runSpokeClusterList(ctx, k8sClient, namespace, cmd.OutOrStdout(), output)
+			return runSpokeClusterList(ctx, k8sClient, namespace, allNamespaces, cmd.OutOrStdout(), output)
 		},
 	}
-	cmd.Flags().StringVarP(&namespace, "namespace", "n", "",
-		"Namespace to list SpokeClusters from. Defaults to all namespaces.")
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", defaultSpokeClusterNamespace,
+		"Namespace to list SpokeClusters from.")
+	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", false,
+		"List SpokeClusters across every namespace. Requires cluster-wide list permission.")
 	cmd.Flags().StringVarP(&output, "output", "o", outputTable,
 		"Output format. One of: "+listOutputFormats+".")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second,
 		"Deadline for the API request.")
+	// Silently ignoring one of the two would be worse than refusing both.
+	cmd.MarkFlagsMutuallyExclusive("namespace", "all-namespaces")
 	return cmd
 }
 
-// runSpokeClusterList lists SpokeClusters (all namespaces when namespace is empty)
-// and renders them to out in the requested format.
-func runSpokeClusterList(ctx context.Context, k8sClient client.Client, namespace string, out io.Writer, output string) error {
+// runSpokeClusterList lists SpokeClusters in namespace, or across every namespace when
+// allNamespaces is set, and renders them to out in the requested format. An empty
+// namespace with allNamespaces unset falls back to vela-system rather than listing
+// cluster-wide, so only the explicit flag widens the scope.
+func runSpokeClusterList(ctx context.Context, k8sClient client.Client, namespace string, allNamespaces bool, out io.Writer, output string) error {
 	if err := validateFormat(output, listOutputFormats, true); err != nil {
 		return err
 	}
 	var list v1beta1.SpokeClusterList
 	var opts []client.ListOption
-	if namespace != "" {
+	if !allNamespaces {
+		if namespace == "" {
+			namespace = defaultSpokeClusterNamespace
+		}
 		opts = append(opts, client.InNamespace(namespace))
 	}
 	if err := k8sClient.List(ctx, &list, opts...); err != nil {
+		// A caller with only namespaced rights cannot list cluster-wide, and the
+		// apiserver's message never mentions the flag that would work for them.
+		if allNamespaces && apierrors.IsForbidden(err) {
+			return errors.Wrap(err,
+				"failed to list spokeclusters cluster-wide; you may only have namespaced access, so retry with -n <namespace>")
+		}
 		return spokeClusterAPIError(err, "failed to list spokeclusters")
 	}
 
@@ -202,6 +221,38 @@ func spokeClusterAPIError(err error, wrapMsg string) error {
 			"install or upgrade the vela-core chart, which ships it under crds/")
 	}
 	return errors.Wrap(err, wrapMsg)
+}
+
+// spokeClusterNotFoundError explains a missing SpokeCluster. The usual cause is a name
+// copied out of a listing that spanned namespaces, so it looks the name up cluster-wide
+// and names the namespace that actually holds it. The lookup is a courtesy: a caller
+// without cluster-wide list gets the plain message rather than an error about a request
+// they never made, which is also why this does not simply suggest -A.
+func spokeClusterNotFoundError(ctx context.Context, k8sClient client.Client, namespace, name string) error {
+	plain := errors.Errorf("SpokeCluster %s/%s not found", namespace, name)
+
+	var list v1beta1.SpokeClusterList
+	if err := k8sClient.List(ctx, &list); err != nil {
+		return plain
+	}
+	var elsewhere []string
+	for i := range list.Items {
+		if list.Items[i].Name == name && list.Items[i].Namespace != namespace {
+			elsewhere = append(elsewhere, list.Items[i].Namespace)
+		}
+	}
+	if len(elsewhere) == 0 {
+		return plain
+	}
+	sort.Strings(elsewhere)
+	// Names are meant to be unique cluster-wide, so one hit is the normal case and the
+	// message can name the flag outright. Several means the webhook was off somewhere.
+	if len(elsewhere) == 1 {
+		return errors.Errorf("SpokeCluster %q not found in %s, it is in %s; retry with -n %s",
+			name, namespace, elsewhere[0], elsewhere[0])
+	}
+	return errors.Errorf("SpokeCluster %q not found in %s, it is in these namespaces: %s; retry with -n <namespace>",
+		name, namespace, strings.Join(elsewhere, ", "))
 }
 
 // validateFormat checks output against the supported formats. name is only valid when
@@ -331,7 +382,7 @@ func runSpokeClusterShow(ctx context.Context, k8sClient client.Client, namespace
 	key := apitypes.NamespacedName{Namespace: namespace, Name: name}
 	if err := k8sClient.Get(ctx, key, &sc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return errors.Errorf("SpokeCluster %s/%s not found", namespace, name)
+			return spokeClusterNotFoundError(ctx, k8sClient, namespace, name)
 		}
 		return spokeClusterAPIError(err, "failed to get spokecluster")
 	}
@@ -688,7 +739,7 @@ func runSpokeClusterDetach(ctx context.Context, k8sClient client.Client, namespa
 	var sc v1beta1.SpokeCluster
 	if err := k8sClient.Get(ctx, apitypes.NamespacedName{Namespace: namespace, Name: name}, &sc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return errors.Errorf("SpokeCluster %s/%s not found", namespace, name)
+			return spokeClusterNotFoundError(ctx, k8sClient, namespace, name)
 		}
 		return spokeClusterAPIError(err, "failed to get spokecluster")
 	}

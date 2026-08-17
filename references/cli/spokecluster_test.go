@@ -83,6 +83,34 @@ func noMatchClient() client.Client {
 		}).Build()
 }
 
+// forbiddenListClient returns a fake client whose list is rejected, simulating a caller
+// who holds namespaced rights on spokeclusters but no cluster-wide list permission.
+func forbiddenListClient() client.Client {
+	forbidden := apierrors.NewForbidden(
+		schema.GroupResource{Group: "core.oam.dev", Resource: "spokeclusters"}, "",
+		fmt.Errorf("User %q cannot list resource %q at the cluster scope", "team-a-dev", "spokeclusters"))
+	return fake.NewClientBuilder().WithScheme(spokeClusterScheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(_ context.Context, _ client.WithWatch, _ client.ObjectList, _ ...client.ListOption) error {
+				return forbidden
+			},
+		}).Build()
+}
+
+// forbiddenListGetClient returns a fake client whose get is a plain NotFound and whose
+// list is Forbidden, simulating the namespace-scoped caller that show's cluster-wide
+// courtesy lookup must not fail on.
+func forbiddenListGetClient() client.Client {
+	return fake.NewClientBuilder().WithScheme(spokeClusterScheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(_ context.Context, _ client.WithWatch, _ client.ObjectList, _ ...client.ListOption) error {
+				return apierrors.NewForbidden(
+					schema.GroupResource{Group: "core.oam.dev", Resource: "spokeclusters"}, "",
+					fmt.Errorf("cannot list at the cluster scope"))
+			},
+		}).Build()
+}
+
 // subCommand returns the direct subcommand of cmd with the given Use name, or nil.
 func subCommand(cmd *cobra.Command, use string) *cobra.Command {
 	for _, sub := range cmd.Commands() {
@@ -128,6 +156,35 @@ var _ = Describe("vela cluster spokes command wiring", func() {
 		Expect(flag.DefValue).To(Equal("vela-system"))
 	})
 
+	// list used to default to every namespace while show, create and detach defaulted to
+	// vela-system, so a name copied out of the list often failed the next show. Every verb
+	// now starts in the same place.
+	It("defaults the list namespace to vela-system, matching the other verbs", func() {
+		flag := newSpokeClusterListCommand(&common.Args{}).Flags().Lookup("namespace")
+		Expect(flag).ToNot(BeNil())
+		Expect(flag.DefValue).To(Equal("vela-system"))
+	})
+
+	It("offers -A for the cluster-wide view, off by default", func() {
+		flags := newSpokeClusterListCommand(&common.Args{}).Flags()
+		flag := flags.Lookup("all-namespaces")
+		Expect(flag).ToNot(BeNil())
+		Expect(flag.DefValue).To(Equal("false"))
+		Expect(flag.Shorthand).To(Equal("A"))
+	})
+
+	It("refuses -n together with -A rather than silently ignoring one", func() {
+		cmd := newSpokeClusterListCommand(&common.Args{})
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"-n", "team-a", "-A"})
+		err := cmd.Execute()
+		Expect(err).To(HaveOccurred())
+		// Cobra's own wording for a mutually exclusive flag group; it names both flags.
+		Expect(err.Error()).To(ContainSubstring("namespace all-namespaces"))
+		Expect(err.Error()).To(ContainSubstring("none of the others can be"))
+	})
+
 	It("defaults the timeout flag to 30s on all commands", func() {
 		for _, cmd := range []*cobra.Command{
 			newSpokeClusterListCommand(&common.Args{}),
@@ -158,7 +215,7 @@ var _ = Describe("vela cluster spokes list", func() {
 		// "alpha" is declared second but must sort first.
 		unpopulated := newSpokeCluster("alpha", "default", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
 		var buf bytes.Buffer
-		Expect(runSpokeClusterList(ctx, fakeClientWith(newPopulated(), unpopulated), "", &buf, "table")).To(Succeed())
+		Expect(runSpokeClusterList(ctx, fakeClientWith(newPopulated(), unpopulated), "", true, &buf, "table")).To(Succeed())
 		out := buf.String()
 
 		for _, header := range []string{"NAME", "NAMESPACE", "MODE", "AUTH", "VERSION", "NODES", "PLATFORM", "STATUS"} {
@@ -179,22 +236,65 @@ var _ = Describe("vela cluster spokes list", func() {
 			ClusterInfo: &v1beta1.SpokeClusterInfo{KubernetesVersion: "v1.30.0", NodeCount: 0},
 		}
 		var buf bytes.Buffer
-		Expect(runSpokeClusterList(ctx, fakeClientWith(zeroNodes), "", &buf, "table")).To(Succeed())
+		Expect(runSpokeClusterList(ctx, fakeClientWith(zeroNodes), "vela-system", false, &buf, "table")).To(Succeed())
 		Expect(buf.String()).ToNot(ContainSubstring(" 0 "))
 	})
 
 	It("restricts results when a namespace is given", func() {
 		unpopulated := newSpokeCluster("alpha", "default", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
 		var buf bytes.Buffer
-		Expect(runSpokeClusterList(ctx, fakeClientWith(newPopulated(), unpopulated), "default", &buf, "table")).To(Succeed())
+		Expect(runSpokeClusterList(ctx, fakeClientWith(newPopulated(), unpopulated), "default", false, &buf, "table")).To(Succeed())
 		Expect(buf.String()).To(ContainSubstring("alpha"))
 		Expect(buf.String()).ToNot(ContainSubstring("beta"))
 	})
 
+	It("scopes to the given namespace even though other namespaces hold spokes", func() {
+		elsewhere := newSpokeCluster("alpha", "team-a", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
+		var buf bytes.Buffer
+		Expect(runSpokeClusterList(ctx, fakeClientWith(newPopulated(), elsewhere), "vela-system", false, &buf, "table")).To(Succeed())
+		Expect(buf.String()).To(ContainSubstring("beta"))
+		Expect(buf.String()).ToNot(ContainSubstring("alpha"))
+	})
+
+	It("spans namespaces when allNamespaces is set", func() {
+		elsewhere := newSpokeCluster("alpha", "team-a", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
+		var buf bytes.Buffer
+		Expect(runSpokeClusterList(ctx, fakeClientWith(newPopulated(), elsewhere), "", true, &buf, "table")).To(Succeed())
+		Expect(buf.String()).To(ContainSubstring("beta"))
+		Expect(buf.String()).To(ContainSubstring("alpha"))
+	})
+
+	// Defensive: an empty namespace with allNamespaces unset would otherwise list
+	// cluster-wide, which is the behaviour we just moved behind -A.
+	It("falls back to vela-system when neither a namespace nor -A is given", func() {
+		elsewhere := newSpokeCluster("alpha", "team-a", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
+		var buf bytes.Buffer
+		Expect(runSpokeClusterList(ctx, fakeClientWith(newPopulated(), elsewhere), "", false, &buf, "table")).To(Succeed())
+		Expect(buf.String()).To(ContainSubstring("beta"))
+		Expect(buf.String()).ToNot(ContainSubstring("alpha"))
+	})
+
 	It("prints No SpokeCluster found when empty", func() {
 		var buf bytes.Buffer
-		Expect(runSpokeClusterList(ctx, fakeClientWith(), "", &buf, "table")).To(Succeed())
+		Expect(runSpokeClusterList(ctx, fakeClientWith(), "vela-system", false, &buf, "table")).To(Succeed())
 		Expect(buf.String()).To(ContainSubstring("No SpokeCluster found."))
+	})
+
+	// A namespace-scoped caller has no cluster-wide list, and the raw apiserver message
+	// says nothing about the flag that would work for them.
+	It("suggests -n when a cluster-wide list is forbidden", func() {
+		var buf bytes.Buffer
+		err := runSpokeClusterList(ctx, forbiddenListClient(), "", true, &buf, "table")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("-n"))
+		Expect(err.Error()).To(ContainSubstring("cluster-wide"))
+	})
+
+	It("does not add the -n hint when the namespaced list is the one forbidden", func() {
+		var buf bytes.Buffer
+		err := runSpokeClusterList(ctx, forbiddenListClient(), "team-a", false, &buf, "table")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).ToNot(ContainSubstring("retry with -n"))
 	})
 })
 
@@ -261,11 +361,46 @@ var _ = Describe("vela cluster spokes show", func() {
 		Expect(noBuf.String()).ToNot(ContainSubstring("Conditions"))
 	})
 
+	// A name that exists nowhere gets the plain message. No search advice: suggesting a
+	// cluster-wide list would send a namespace-scoped caller at a request they cannot make.
 	It("returns a namespaced message when the SpokeCluster is not found", func() {
 		var buf bytes.Buffer
 		err := runSpokeClusterShow(ctx, fakeClientWith(), "vela-system", "ghost", &buf, "table")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("SpokeCluster vela-system/ghost not found"))
+		Expect(err.Error()).ToNot(ContainSubstring("-A"))
+	})
+
+	// The common case: a name copied out of a listing that spanned namespaces. Naming the
+	// namespace beats telling the caller to go looking for it.
+	It("names the namespace it actually lives in", func() {
+		elsewhere := newSpokeCluster("tenant-spoke", "team-a", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
+		var buf bytes.Buffer
+		err := runSpokeClusterShow(ctx, fakeClientWith(elsewhere), "vela-system", "tenant-spoke", &buf, "table")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not found in vela-system"))
+		Expect(err.Error()).To(ContainSubstring("it is in team-a"))
+		Expect(err.Error()).To(ContainSubstring("-n team-a"))
+	})
+
+	It("lists every namespace when the name is not unique", func() {
+		a := newSpokeCluster("dup", "team-a", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
+		b := newSpokeCluster("dup", "team-b", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
+		var buf bytes.Buffer
+		err := runSpokeClusterShow(ctx, fakeClientWith(a, b), "vela-system", "dup", &buf, "table")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("team-a"))
+		Expect(err.Error()).To(ContainSubstring("team-b"))
+	})
+
+	// The lookup is a courtesy. A caller without cluster-wide list still gets a clean
+	// answer rather than a wrapped authorization error from a call they did not make.
+	It("falls back to the plain message when the cluster-wide lookup is forbidden", func() {
+		var buf bytes.Buffer
+		err := runSpokeClusterShow(ctx, forbiddenListGetClient(), "vela-system", "tenant-spoke", &buf, "table")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("SpokeCluster vela-system/tenant-spoke not found"))
+		Expect(err.Error()).ToNot(ContainSubstring("forbidden"))
 	})
 })
 
@@ -283,7 +418,7 @@ var _ = Describe("vela cluster spokes output formats", func() {
 
 		It("json round-trips to the list", func() {
 			var buf bytes.Buffer
-			Expect(runSpokeClusterList(ctx, cli, "", &buf, "json")).To(Succeed())
+			Expect(runSpokeClusterList(ctx, cli, "", true, &buf, "json")).To(Succeed())
 			var got v1beta1.SpokeClusterList
 			Expect(json.Unmarshal(buf.Bytes(), &got)).To(Succeed())
 			Expect(got.Items).To(HaveLen(2))
@@ -291,14 +426,14 @@ var _ = Describe("vela cluster spokes output formats", func() {
 
 		It("yaml emits the resources", func() {
 			var buf bytes.Buffer
-			Expect(runSpokeClusterList(ctx, cli, "", &buf, "yaml")).To(Succeed())
+			Expect(runSpokeClusterList(ctx, cli, "", true, &buf, "yaml")).To(Succeed())
 			Expect(buf.String()).To(ContainSubstring("alpha"))
 			Expect(buf.String()).To(ContainSubstring("beta"))
 		})
 
 		It("wide appends the discovered columns", func() {
 			var buf bytes.Buffer
-			Expect(runSpokeClusterList(ctx, cli, "", &buf, "wide")).To(Succeed())
+			Expect(runSpokeClusterList(ctx, cli, "", true, &buf, "wide")).To(Succeed())
 			for _, header := range []string{"REGION", "ENDPOINT", "CPU", "MEMORY", "LATENCY", "LAST PROBE"} {
 				Expect(buf.String()).To(ContainSubstring(header))
 			}
@@ -307,7 +442,7 @@ var _ = Describe("vela cluster spokes output formats", func() {
 
 		It("name prints spokecluster/<name> per row without a header", func() {
 			var buf bytes.Buffer
-			Expect(runSpokeClusterList(ctx, cli, "", &buf, "name")).To(Succeed())
+			Expect(runSpokeClusterList(ctx, cli, "", true, &buf, "name")).To(Succeed())
 			Expect(buf.String()).To(ContainSubstring("spokecluster/alpha"))
 			Expect(buf.String()).To(ContainSubstring("spokecluster/beta"))
 			Expect(buf.String()).ToNot(ContainSubstring("NAME"))
@@ -315,7 +450,7 @@ var _ = Describe("vela cluster spokes output formats", func() {
 
 		It("errors on an unknown format, listing the supported ones", func() {
 			var buf bytes.Buffer
-			err := runSpokeClusterList(ctx, cli, "", &buf, "toml")
+			err := runSpokeClusterList(ctx, cli, "", true, &buf, "toml")
 			Expect(err).To(HaveOccurred())
 			for _, f := range []string{"table", "wide", "json", "yaml", "name"} {
 				Expect(err.Error()).To(ContainSubstring(f))
@@ -358,7 +493,7 @@ var _ = Describe("vela cluster spokes CRD-absent handling", func() {
 
 	It("returns an actionable message for list", func() {
 		var buf bytes.Buffer
-		err := runSpokeClusterList(ctx, noMatchClient(), "", &buf, "table")
+		err := runSpokeClusterList(ctx, noMatchClient(), "vela-system", false, &buf, "table")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("SpokeCluster CRD"))
 		Expect(err.Error()).To(ContainSubstring("vela-core chart"))
@@ -393,7 +528,7 @@ var _ = Describe("vela cluster spokes timeout, latency, and condition age", func
 			}).Build()
 
 		var buf bytes.Buffer
-		err := runSpokeClusterList(ctx, cli, "", &buf, "table")
+		err := runSpokeClusterList(ctx, cli, "vela-system", false, &buf, "table")
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("deadline exceeded"))
 	})
@@ -407,7 +542,7 @@ var _ = Describe("vela cluster spokes timeout, latency, and condition age", func
 		Expect(showBuf.String()).ToNot(ContainSubstring("0ms"))
 
 		var listBuf bytes.Buffer
-		Expect(runSpokeClusterList(context.Background(), fakeClientWith(zero), "", &listBuf, "wide")).To(Succeed())
+		Expect(runSpokeClusterList(context.Background(), fakeClientWith(zero), "vela-system", false, &listBuf, "wide")).To(Succeed())
 		Expect(listBuf.String()).ToNot(ContainSubstring("0ms"))
 	})
 
@@ -759,6 +894,15 @@ var _ = Describe("vela cluster spokes detach", func() {
 	It("returns a clear error when the SpokeCluster is missing", func() {
 		err := runSpokeClusterDetach(ctx, fakeClientWith(), "vela-system", "missing", &bytes.Buffer{})
 		Expect(err).To(MatchError(ContainSubstring("SpokeCluster vela-system/missing not found")))
+	})
+
+	// Detaching the wrong namespace is a no-op that looks like a broken CLI, so it gets
+	// the same namespace lookup show does.
+	It("names the namespace when detaching a spoke that lives elsewhere", func() {
+		elsewhere := newSpokeCluster("tenant-spoke", "team-a", v1beta1.SpokeClusterModeConnect, v1beta1.CredentialTypeKubeconfig)
+		err := runSpokeClusterDetach(ctx, fakeClientWith(elsewhere), "vela-system", "tenant-spoke", &bytes.Buffer{})
+		Expect(err).To(MatchError(ContainSubstring("it is in team-a")))
+		Expect(err).To(MatchError(ContainSubstring("-n team-a")))
 	})
 
 	It("defaults create and detach namespaces to vela-system", func() {
