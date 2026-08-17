@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,8 +31,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/yaml"
 
+	oamcommon "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	velatypes "github.com/oam-dev/kubevela/apis/types"
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
@@ -295,4 +298,161 @@ func TestModuleCommandMountsDeploy(t *testing.T) {
 		names = append(names, strings.Split(sub.Use, " ")[0])
 	}
 	assert.Contains(t, names, "deploy")
+}
+
+// moduleApps returns the deploy Application in the given phase and the owned
+// module Application with the given tier services.
+func moduleApps(phase oamcommon.ApplicationPhase, services []oamcommon.ApplicationComponentStatus) []client.Object {
+	deployApp := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "module-s3-deploy", Namespace: velatypes.DefaultKubeVelaNS},
+		Status:     oamcommon.AppStatus{Phase: phase},
+	}
+	ownedApp := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "module-s3", Namespace: velatypes.DefaultKubeVelaNS},
+		Status:     oamcommon.AppStatus{Services: services},
+	}
+	return []client.Object{deployApp, ownedApp}
+}
+
+func healthyTierServices() []oamcommon.ApplicationComponentStatus {
+	return []oamcommon.ApplicationComponentStatus{
+		{Name: "s3-xrd", Healthy: true, Message: "Established"},
+		{Name: "s3-v1-comp", Healthy: true},
+		{Name: "s3-v1-defs", Healthy: true},
+	}
+}
+
+func TestRenderModuleTierTable(t *testing.T) {
+	table := renderModuleTierTable(
+		[]string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"},
+		[]oamcommon.ApplicationComponentStatus{
+			{Name: "s3-xrd", Healthy: true, Message: "Established"},
+			{Name: "s3-v1-comp", Healthy: false, Message: "waiting"},
+		},
+	)
+
+	assert.Contains(t, table, "s3-xrd")
+	assert.Contains(t, table, "Healthy")
+	assert.Contains(t, table, "Established")
+	assert.Contains(t, table, "s3-v1-comp")
+	assert.Contains(t, table, "waiting")
+	assert.Contains(t, table, "s3-v1-defs", "a tier with no service yet is still listed")
+	assert.Contains(t, table, "Pending")
+}
+
+func TestFirstUnhealthyTier(t *testing.T) {
+	testCases := map[string]struct {
+		services    []oamcommon.ApplicationComponentStatus
+		wantTier    string
+		wantMessage string
+	}{
+		"first tier not reported yet": {
+			services:    nil,
+			wantTier:    "s3-xrd",
+			wantMessage: "not reported yet",
+		},
+		"second tier unhealthy": {
+			services: []oamcommon.ApplicationComponentStatus{
+				{Name: "s3-xrd", Healthy: true},
+				{Name: "s3-v1-comp", Healthy: false, Message: "composition not ready"},
+			},
+			wantTier:    "s3-v1-comp",
+			wantMessage: "composition not ready",
+		},
+		"all healthy": {
+			services: healthyTierServices(),
+			wantTier: "",
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			tier, message := firstUnhealthyTier([]string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}, tc.services)
+			assert.Equal(t, tc.wantTier, tier)
+			if tc.wantMessage != "" {
+				assert.Contains(t, message, tc.wantMessage)
+			}
+		})
+	}
+}
+
+func TestWaitForModuleSucceeds(t *testing.T) {
+	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, healthyTierServices())...).Build()
+	var out bytes.Buffer
+	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: time.Second, pollInterval: time.Millisecond}
+
+	err := o.waitForModule(context.Background(), cli, []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}, &out)
+
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "s3-v1-defs")
+	assert.Contains(t, out.String(), "Healthy")
+}
+
+func TestWaitForModuleBecomesHealthy(t *testing.T) {
+	pending := []oamcommon.ApplicationComponentStatus{
+		{Name: "s3-xrd", Healthy: true, Message: "Established"},
+		{Name: "s3-v1-comp", Healthy: false, Message: "waiting for s3-xrd"},
+	}
+	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, pending)...).Build()
+
+	gets := 0
+	watched := fake.NewClientBuilder().WithScheme(common.Scheme).
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, pending)...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				app, ok := obj.(*v1beta1.Application)
+				if !ok || app.Name != "module-s3" {
+					return nil
+				}
+				gets++
+				if gets > 2 {
+					app.Status.Services = healthyTierServices()
+				}
+				return nil
+			},
+		}).Build()
+	_ = cli
+	var out bytes.Buffer
+	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: 2 * time.Second, pollInterval: time.Millisecond}
+
+	err := o.waitForModule(context.Background(), watched, []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}, &out)
+
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "waiting for s3-xrd", "the intermediate state is reported")
+}
+
+func TestWaitForModuleTimesOut(t *testing.T) {
+	stuck := []oamcommon.ApplicationComponentStatus{
+		{Name: "s3-xrd", Healthy: true, Message: "Established"},
+		{Name: "s3-v1-comp", Healthy: false, Message: "composition not ready"},
+	}
+	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, stuck)...).Build()
+	var out bytes.Buffer
+	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: 30 * time.Millisecond, pollInterval: time.Millisecond}
+
+	err := o.waitForModule(context.Background(), cli, []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}, &out)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "s3-v1-comp")
+	assert.Contains(t, err.Error(), "composition not ready")
+}
+
+func TestWaitForModuleStopsOnFailedWorkflow(t *testing.T) {
+	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
+		WithObjects(moduleApps(oamcommon.ApplicationWorkflowFailed, nil)...).Build()
+	var out bytes.Buffer
+	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: time.Minute, pollInterval: time.Millisecond}
+
+	start := time.Now()
+	err := o.waitForModule(context.Background(), cli, []string{"s3-xrd"}, &out)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), string(oamcommon.ApplicationWorkflowFailed))
+	assert.Less(t, time.Since(start), 5*time.Second, "a terminal phase must not wait out the timeout")
 }
