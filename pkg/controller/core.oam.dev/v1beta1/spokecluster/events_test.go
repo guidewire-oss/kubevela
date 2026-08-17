@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	"github.com/crossplane/crossplane-runtime/pkg/event"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -81,3 +83,56 @@ func TestEmitStatusEventsConditionFailures(t *testing.T) {
 		t.Fatalf("unchanged False condition must not re-emit, got %#v", rec.events)
 	}
 }
+
+// Requirement 6.1. Before this, a discovery failure moved InfoSynced to False with
+// nothing in `kubectl describe` to explain it.
+var _ = It("EmitStatusEventsDiscoveryFailure", func() {
+	resetSpokeMetrics()
+	rec := &recordingRecorder{}
+	r := &Reconciler{record: rec}
+	sc := metricSpoke("tenant-a", "spoke-discovery")
+
+	prev := &v1beta1.SpokeClusterStatus{Connection: v1beta1.ConnectionStateConnected}
+	setCondition(prev, v1beta1.SpokeClusterConditionInfoSynced, metav1.ConditionTrue,
+		reasonDiscoveryOK, "cluster inventory refreshed")
+	next := prev.DeepCopy()
+	setCondition(next, v1beta1.SpokeClusterConditionInfoSynced, metav1.ConditionFalse,
+		reasonDiscoveryFailed, "nodes is forbidden")
+
+	r.emitStatusEvents(sc, prev, next)
+	Expect(rec.events).To(HaveLen(1))
+	Expect(rec.events[0].Type).To(Equal(event.TypeWarning))
+	Expect(string(rec.events[0].Reason)).To(Equal(reasonDiscoveryFailed))
+
+	By("emitting once rather than once per probe interval", func() {
+		// Requirement 6.4: a spoke whose RBAC keeps denying the node list stays quiet
+		// after the first report.
+		rec.events = nil
+		r.emitStatusEvents(sc, next, next)
+		Expect(rec.events).To(BeEmpty())
+	})
+})
+
+// Requirements 6.2 and 6.3.
+var _ = It("EmitGatewaySecretEvent", func() {
+	rec := &recordingRecorder{}
+	r := &Reconciler{record: rec}
+	sc := metricSpoke("vela-system", "spoke-secret")
+
+	r.emitGatewaySecretEvent(sc, registerCreated)
+	Expect(rec.events).To(HaveLen(1))
+	Expect(string(rec.events[0].Reason)).To(Equal(reasonGatewaySecretCreated))
+
+	rec.events = nil
+	r.emitGatewaySecretEvent(sc, registerUpdated)
+	Expect(rec.events).To(HaveLen(1))
+	Expect(string(rec.events[0].Reason)).To(Equal(reasonGatewaySecretUpdated))
+
+	By("staying silent when the rewrite changed nothing", func() {
+		// The steady state for a healthy spoke on a cached credential: identical content
+		// rewritten every pass, and nothing worth telling an operator about.
+		rec.events = nil
+		r.emitGatewaySecretEvent(sc, registerUnchanged)
+		Expect(rec.events).To(BeEmpty())
+	})
+})

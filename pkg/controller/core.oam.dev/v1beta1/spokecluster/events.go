@@ -28,9 +28,11 @@ import (
 )
 
 // Event reasons beyond the condition-reason constants. Detached is delete-path only;
-// CredentialExpiring is reserved for a future remint-before-probe signal.
+// the two gateway-Secret reasons are registration-path only.
 const (
-	reasonDetached = "Detached"
+	reasonDetached             = "Detached"
+	reasonGatewaySecretCreated = "GatewaySecretCreated"
+	reasonGatewaySecretUpdated = "GatewaySecretUpdated"
 )
 
 // emit records an event when a recorder is wired. Unit tests that build a Reconciler
@@ -48,8 +50,13 @@ func (r *Reconciler) emit(obj runtime.Object, e event.Event) {
 // Transition table:
 //   - Connection -> Connected: Normal ProbeSucceeded
 //   - Connection -> Disconnected: Warning ProbeFailed
-//   - CredentialValid False (new): Warning MaterializeFailed / NoProvider
+//   - CredentialValid False (new): Warning MaterializeFailed / NoProvider / SpecInvalid
 //   - Registered False (new): Warning RegisterFailed
+//   - InfoSynced False (new): Warning DiscoveryFailed
+//
+// Connection -> Unknown deliberately has no event of its own. It is always the
+// consequence of a credential or registration failure that already emitted, so a second
+// event would double-report one cause.
 func (r *Reconciler) emitStatusEvents(sc *v1beta1.SpokeCluster, prev, next *v1beta1.SpokeClusterStatus) {
 	if next == nil {
 		return
@@ -62,16 +69,35 @@ func (r *Reconciler) emitStatusEvents(sc *v1beta1.SpokeCluster, prev, next *v1be
 		switch next.Connection {
 		case v1beta1.ConnectionStateConnected:
 			r.emit(sc, event.Normal(reasonProbeSucceeded, conditionMessage(next, v1beta1.SpokeClusterConditionConnected)))
-			spokeConnectionTransitions.WithLabelValues("Connected").Inc()
+			countConnectionTransition(sc, v1beta1.ConnectionStateConnected)
 		case v1beta1.ConnectionStateDisconnected:
 			msg := conditionMessage(next, v1beta1.SpokeClusterConditionConnected)
 			r.emit(sc, event.Warning(reasonProbeFailed, fmt.Errorf("%s", msg)))
-			spokeConnectionTransitions.WithLabelValues("Disconnected").Inc()
+			countConnectionTransition(sc, v1beta1.ConnectionStateDisconnected)
 		}
 	}
 
 	emitWarningOnConditionFalse(r, sc, prev, next, v1beta1.SpokeClusterConditionCredentialValid)
 	emitWarningOnConditionFalse(r, sc, prev, next, v1beta1.SpokeClusterConditionRegistered)
+	emitWarningOnConditionFalse(r, sc, prev, next, v1beta1.SpokeClusterConditionInfoSynced)
+}
+
+func countConnectionTransition(sc *v1beta1.SpokeCluster, to v1beta1.ConnectionState) {
+	spokeConnectionTransitions.WithLabelValues(sc.Namespace, sc.Name, string(to)).Inc()
+}
+
+// emitGatewaySecretEvent reports what registration did to the materialized gateway
+// Secret. An unchanged rewrite stays silent: with the credential cache serving a stable
+// token, identical content is the steady state for a healthy spoke, and an event per pass
+// would bury the transitions that matter.
+func (r *Reconciler) emitGatewaySecretEvent(sc *v1beta1.SpokeCluster, outcome registerOutcome) {
+	switch outcome {
+	case registerCreated:
+		r.emit(sc, event.Normal(reasonGatewaySecretCreated, "gateway credential secret created"))
+	case registerUpdated:
+		r.emit(sc, event.Normal(reasonGatewaySecretUpdated, "gateway credential secret rewritten with new content"))
+	case registerUnchanged:
+	}
 }
 
 func emitWarningOnConditionFalse(r *Reconciler, sc *v1beta1.SpokeCluster, prev, next *v1beta1.SpokeClusterStatus, condType string) {
@@ -87,7 +113,7 @@ func emitWarningOnConditionFalse(r *Reconciler, sc *v1beta1.SpokeCluster, prev, 
 		return
 	}
 	r.emit(sc, event.Warning(event.Reason(nextCond.Reason), fmt.Errorf("%s", nextCond.Message)))
-	spokeConditionFailures.WithLabelValues(condType, nextCond.Reason).Inc()
+	spokeConditionFailures.WithLabelValues(sc.Namespace, sc.Name, condType, nextCond.Reason).Inc()
 }
 
 func conditionMessage(status *v1beta1.SpokeClusterStatus, condType string) string {
