@@ -70,10 +70,13 @@ func NewRenderer() api.Renderer {
 	return &rendererImpl{}
 }
 
-// init registers the default renderer so a blank import of this package
-// (from cmd/core) wires the addon CueX provider, instead of injecting it in
-// server.go.
-func init() { api.SetDefaultRenderer(NewRenderer()) }
+// Register installs the render-only addon service as the process-wide renderer
+// used by the vela/addon CueX provider.
+//
+// Deliberately not an init(): package initialisation runs before cobra parses
+// flags, so an init() could not be gated on the EnableAddonComponent feature
+// gate. cmd/core calls this from run(), once the gates are known.
+func Register() { api.SetDefaultRenderer(NewRenderer()) }
 
 // client returns the injected client (tests) or the shared singleton (production).
 func (r *rendererImpl) client() client.Client {
