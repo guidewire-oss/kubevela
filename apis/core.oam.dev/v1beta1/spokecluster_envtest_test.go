@@ -55,7 +55,11 @@ func splitYAMLDocuments(t GinkgoTInterface, path string) []string {
 // Both envtest specs share one control plane. Starting a kube-apiserver and etcd
 // takes the better part of a minute, and nothing either spec does needs isolation
 // from the other: they use distinct object names inside one namespace.
-var _ = Describe("SpokeClusterCRD envtest", Ordered, func() {
+//
+// ContinueOnFailure because Ordered otherwise skips the remaining specs once one
+// fails, and these two are independent. Without it a changed example document
+// failing InstallAndApply would silently take the CEL rejection coverage with it.
+var _ = Describe("SpokeClusterCRD envtest", Ordered, ContinueOnFailure, func() {
 	var (
 		testEnv   *envtest.Environment
 		cfg       *rest.Config
