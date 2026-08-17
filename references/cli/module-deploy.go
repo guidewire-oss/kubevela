@@ -24,9 +24,12 @@ import (
 	"sort"
 	"time"
 
+	"github.com/gosuri/uitable"
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
@@ -258,7 +261,122 @@ func (o *moduleDeployOptions) run(ctx context.Context, cli client.Client, out io
 }
 
 // waitForModule polls the deploy Application and the owned module Application
-// until every tier is healthy. Task 3 implements it.
-func (o *moduleDeployOptions) waitForModule(_ context.Context, _ client.Client, _ []string, _ io.Writer) error {
-	return nil
+// until every tier is healthy, printing the tier table whenever it changes.
+//
+// It reads both Applications because they carry different halves of the answer:
+// the deploy Application's phase is where a fetch or render failure surfaces,
+// while per-tier health lives only on the owned Application the render service
+// creates.
+func (o *moduleDeployOptions) waitForModule(ctx context.Context, cli client.Client, tiers []string, out io.Writer) error {
+	deadline := time.Now().Add(o.timeout)
+	lastTable := ""
+	var lastServices []oamcommon.ApplicationComponentStatus
+
+	for {
+		var deployApp v1beta1.Application
+		if err := cli.Get(ctx, types.NamespacedName{Name: moduleDeployAppName(o.module), Namespace: o.namespace}, &deployApp); err != nil {
+			return fmt.Errorf("failed to read Application %s/%s: %w", o.namespace, moduleDeployAppName(o.module), err)
+		}
+		switch deployApp.Status.Phase {
+		case oamcommon.ApplicationWorkflowFailed, oamcommon.ApplicationWorkflowTerminated, oamcommon.ApplicationDeleting:
+			return fmt.Errorf("Application %s/%s is in phase %s: %s",
+				o.namespace, deployApp.Name, deployApp.Status.Phase, moduleComponentMessage(&deployApp))
+		}
+
+		var ownedApp v1beta1.Application
+		err := cli.Get(ctx, types.NamespacedName{Name: ownedModuleAppName(o.module), Namespace: o.namespace}, &ownedApp)
+		switch {
+		case apierrors.IsNotFound(err):
+			lastServices = nil
+		case err != nil:
+			return fmt.Errorf("failed to read Application %s/%s: %w", o.namespace, ownedModuleAppName(o.module), err)
+		default:
+			lastServices = ownedApp.Status.Services
+		}
+
+		if table := renderModuleTierTable(tiers, lastServices); table != lastTable {
+			fmt.Fprintln(out, table)
+			lastTable = table
+		}
+
+		tier, message := firstUnhealthyTier(tiers, lastServices)
+		if tier == "" && deployApp.Status.Phase == oamcommon.ApplicationRunning {
+			fmt.Fprintf(out, "Module %q is installed in namespace %q\n", o.module, o.namespace)
+			return nil
+		}
+
+		if time.Now().After(deadline) {
+			if tier == "" {
+				return fmt.Errorf("timed out after %s waiting for module %q: every tier is healthy but Application %s/%s is in phase %s",
+					o.timeout, o.module, o.namespace, deployApp.Name, deployApp.Status.Phase)
+			}
+			return fmt.Errorf("timed out after %s waiting for module %q: tier %q is not ready: %s",
+				o.timeout, o.module, tier, message)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(o.pollInterval):
+		}
+	}
+}
+
+// moduleComponentMessage returns the message of the deploy Application's module
+// component, which is where a server-side fetch or render error surfaces.
+func moduleComponentMessage(app *v1beta1.Application) string {
+	for _, svc := range app.Status.Services {
+		if svc.Message != "" {
+			return svc.Message
+		}
+	}
+	return "no component message reported"
+}
+
+// renderModuleTierTable renders every expected tier with its reported health. A
+// tier the owned Application has not reported yet is Pending, so the operator
+// sees the whole install shape from the first poll.
+func renderModuleTierTable(tiers []string, services []oamcommon.ApplicationComponentStatus) string {
+	byName := make(map[string]oamcommon.ApplicationComponentStatus, len(services))
+	for _, svc := range services {
+		byName[svc.Name] = svc
+	}
+	table := uitable.New()
+	table.AddRow("TIER", "STATUS", "MESSAGE")
+	for _, tier := range tiers {
+		svc, reported := byName[tier]
+		switch {
+		case !reported:
+			table.AddRow(tier, "Pending", "")
+		case svc.Healthy:
+			table.AddRow(tier, "Healthy", svc.Message)
+		default:
+			table.AddRow(tier, "Unhealthy", svc.Message)
+		}
+	}
+	return table.String()
+}
+
+// firstUnhealthyTier returns the first tier that is not healthy and why, or an
+// empty tier name when every tier is healthy. Tiers are checked in install
+// order, so the tier named is the one the install is actually stuck on.
+func firstUnhealthyTier(tiers []string, services []oamcommon.ApplicationComponentStatus) (string, string) {
+	byName := make(map[string]oamcommon.ApplicationComponentStatus, len(services))
+	for _, svc := range services {
+		byName[svc.Name] = svc
+	}
+	for _, tier := range tiers {
+		svc, reported := byName[tier]
+		switch {
+		case !reported:
+			return tier, "not reported yet"
+		case !svc.Healthy:
+			message := svc.Message
+			if message == "" {
+				message = "not healthy"
+			}
+			return tier, message
+		}
+	}
+	return "", ""
 }
