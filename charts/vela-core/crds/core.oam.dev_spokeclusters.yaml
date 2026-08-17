@@ -280,7 +280,10 @@ spec:
                   IAM, DNS, and cluster creation when mode is provision).
 
                   Phase 2 stub: defined so the schema is forward-compatible. No Phase 1
-                  controller reconciles it. The admission webhook rejects it in connect mode.
+                  controller reconciles it. Rejected in connect mode by both the CRD's CEL
+                  rules and the admission webhook, because provisioning infrastructure is
+                  what mode: provision is for, and accepting the field would imply the hub
+                  was going to act on it.
                 properties:
                   blueprintRef:
                     description: |-
