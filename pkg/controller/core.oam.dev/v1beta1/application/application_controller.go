@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
@@ -413,6 +414,11 @@ func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context
 	// The per-source-hash gate in the dispatcher makes this a no-op unless a
 	// consumed value actually changed.
 	seen := map[string]struct{}{}
+	// rendered accumulates what each component renders across every placement, so
+	// a component placed in two clusters is judged on the union rather than on
+	// whichever placement happened to come last.
+	rendered := map[string][]*unstructured.Unstructured{}
+	incomplete := map[string]struct{}{}
 	for _, svc := range app.Status.Services {
 		comp, ok := compByName[svc.Name]
 		if !ok {
@@ -423,9 +429,45 @@ func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context
 			continue
 		}
 		seen[key] = struct{}{}
-		if _, _, _, err := apply(logCtx, comp, nil, svc.Cluster, svc.Namespace); err != nil {
+		workload, traits, _, err := apply(logCtx, comp, nil, svc.Cluster, svc.Namespace)
+		if err != nil {
 			logCtx.Error(err, "failed to refresh source-driven component", "component", comp.Name, "cluster", svc.Cluster)
 			r.Recorder.Event(app, event.Warning(velatypes.ReasonFailedApply, err))
+			incomplete[comp.Name] = struct{}{}
+			continue
+		}
+		if workload != nil {
+			rendered[comp.Name] = append(rendered[comp.Name], workload)
+		}
+		rendered[comp.Name] = append(rendered[comp.Name], traits...)
+	}
+
+	// Reap what a component used to render and no longer does. Garbage collection
+	// cannot: it recycles whole ResourceTrackers, and a tracker is only retired
+	// when a new ApplicationRevision supersedes it. Refresh deliberately mints no
+	// revision, so a component whose rendered set shrank - most visibly when a
+	// source value feeds a resource name - would otherwise leave the difference
+	// running forever.
+	//
+	// All-or-nothing per component. A partial view of what a component renders
+	// would make a transient render error look like a deletion, so a component
+	// with any failed placement is skipped entirely and retried next reconcile.
+	for name, keep := range rendered {
+		if _, partial := incomplete[name]; partial {
+			logCtx.Info("skipping prune, the rendered set is incomplete", "component", name)
+			continue
+		}
+		pruned, err := handler.resourceKeeper.PruneComponentResources(logCtx, name, keep)
+		if err != nil {
+			logCtx.Error(err, "failed to prune resources the component no longer renders", "component", name)
+			r.Recorder.Event(app, event.Warning(velatypes.ReasonFailedGC, err))
+			continue
+		}
+		for _, mr := range pruned {
+			logCtx.Info("pruned a resource the component no longer renders",
+				"component", name, "kind", mr.Kind, "name", mr.Name, "namespace", mr.Namespace, "cluster", mr.Cluster)
+			r.Recorder.Event(app, event.Normal(velatypes.ReasonApplied,
+				fmt.Sprintf("pruned %s %s/%s, no longer rendered by component %s", mr.Kind, mr.Namespace, mr.Name, name)))
 		}
 	}
 }
