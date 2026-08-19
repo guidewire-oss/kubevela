@@ -21,12 +21,14 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/cue/definition"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -171,4 +173,41 @@ func TestSourceAutoUpdateSelectorOptOut(t *testing.T) {
 	assert.True(t, autoUpdateUnset.enabled(true), "silence defers to the controller default")
 	assert.True(t, autoUpdateOn.enabled(false), "an explicit yes overrides a default of off")
 	assert.False(t, autoUpdateOff.enabled(true), "an explicit no overrides a default of on")
+}
+
+func TestSourceRefreshEnabled(t *testing.T) {
+	app := func(annotations map[string]string) *v1beta1.Application {
+		return &v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default", Annotations: annotations},
+			Spec: v1beta1.ApplicationSpec{
+				Sources: []v1beta1.ApplicationSource{{Name: "registry", Type: "configmap"}},
+			},
+		}
+	}
+	optedIn := map[string]string{oam.AnnotationAutoUpdateSources: "true"}
+
+	ok, _ := sourceRefreshEnabled(app(optedIn), false)
+	assert.True(t, ok, "opted in with sources declared")
+
+	ok, reason := sourceRefreshEnabled(app(nil), false)
+	assert.False(t, ok)
+	assert.Contains(t, reason, "opted in")
+
+	// A publishVersion pin is hard. A source value changing must not move what
+	// is deployed until the user bumps the pin, matching the valuesFrom
+	// fingerprint gate in workflow.go.
+	pinned := map[string]string{
+		oam.AnnotationAutoUpdateSources: "true",
+		oam.AnnotationPublishVersion:    "v1",
+	}
+	ok, reason = sourceRefreshEnabled(app(pinned), false)
+	assert.False(t, ok, "publishVersion suppresses source refresh")
+	assert.Contains(t, reason, "publishVersion")
+
+	// The controller-wide default reaches an Application with no opinion, but
+	// the pin still wins over it.
+	ok, _ = sourceRefreshEnabled(app(nil), true)
+	assert.True(t, ok, "default on reaches an Application with no opinion")
+	ok, _ = sourceRefreshEnabled(app(map[string]string{oam.AnnotationPublishVersion: "v1"}), true)
+	assert.False(t, ok, "the pin beats a default of on")
 }
