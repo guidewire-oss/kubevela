@@ -93,8 +93,8 @@ func TestChangedSources(t *testing.T) {
 }
 
 func TestSourceAutoUpdateSelector(t *testing.T) {
-	all := func(m map[string]string) bool { a, _, e := sourceAutoUpdateSelector(m); return a && e }
-	off := func(m map[string]string) bool { _, _, e := sourceAutoUpdateSelector(m); return !e }
+	all := func(m map[string]string) bool { a, _, s := sourceAutoUpdateSelector(m); return a && s.enabled(false) }
+	off := func(m map[string]string) bool { _, _, s := sourceAutoUpdateSelector(m); return !s.enabled(false) }
 
 	assert.True(t, off(map[string]string{}), "no annotations -> disabled")
 	assert.True(t, all(map[string]string{oam.AnnotationAutoUpdate: "true"}), "autoUpdate enables all")
@@ -103,8 +103,8 @@ func TestSourceAutoUpdateSelector(t *testing.T) {
 	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: ""}), "empty -> disabled")
 	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: " , "}), "only separators -> disabled")
 
-	matchAll, set, enabled := sourceAutoUpdateSelector(map[string]string{oam.AnnotationAutoUpdateSources: "rng, tenant"})
-	assert.True(t, enabled)
+	matchAll, set, listed := sourceAutoUpdateSelector(map[string]string{oam.AnnotationAutoUpdateSources: "rng, tenant"})
+	assert.Equal(t, autoUpdateOn, listed)
 	assert.False(t, matchAll)
 	assert.Contains(t, set, "rng")
 	assert.Contains(t, set, "tenant")
@@ -143,4 +143,32 @@ func TestStampAndLiveResolvedSourceHashes(t *testing.T) {
 		desired.SetName("missing")
 		assert.Nil(t, liveResolvedSourceHashes(context.Background(), cli, "", desired))
 	})
+}
+
+func TestSourceAutoUpdateSelectorOptOut(t *testing.T) {
+	off := func(m map[string]string) bool { _, _, s := sourceAutoUpdateSelector(m); return !s.enabled(false) }
+	state := func(m map[string]string) autoUpdateState { _, _, s := sourceAutoUpdateSelector(m); return s }
+
+	// An explicit "no" must not be read as a source binding named "false".
+	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: "false"}))
+	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: "off"}))
+	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: "none"}))
+
+	// The narrower annotation wins over the broad one.
+	assert.True(t, off(map[string]string{
+		oam.AnnotationAutoUpdate:        "true",
+		oam.AnnotationAutoUpdateSources: "false",
+	}))
+
+	// Saying nothing is distinct from saying no, so a controller-wide default
+	// has something to apply to.
+	assert.Equal(t, autoUpdateUnset, state(map[string]string{}))
+	assert.Equal(t, autoUpdateOff, state(map[string]string{oam.AnnotationAutoUpdateSources: "False"}))
+	assert.Equal(t, autoUpdateOff, state(map[string]string{oam.AnnotationAutoUpdateSources: " OFF "}))
+	assert.Equal(t, autoUpdateOn, state(map[string]string{oam.AnnotationAutoUpdate: "true"}))
+
+	assert.False(t, autoUpdateUnset.enabled(false))
+	assert.True(t, autoUpdateUnset.enabled(true), "silence defers to the controller default")
+	assert.True(t, autoUpdateOn.enabled(false), "an explicit yes overrides a default of off")
+	assert.False(t, autoUpdateOff.enabled(true), "an explicit no overrides a default of on")
 }

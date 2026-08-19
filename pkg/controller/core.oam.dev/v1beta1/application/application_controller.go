@@ -382,7 +382,7 @@ func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context
 	if len(app.Spec.Sources) == 0 {
 		return
 	}
-	if _, _, enabled := sourceAutoUpdateSelector(app.GetAnnotations()); !enabled {
+	if _, _, state := sourceAutoUpdateSelector(app.GetAnnotations()); !state.enabled(false) {
 		return
 	}
 	// Which components read a source (by name).

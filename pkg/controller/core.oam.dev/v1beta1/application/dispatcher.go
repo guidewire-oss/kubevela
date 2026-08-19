@@ -173,7 +173,10 @@ func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, pre
 			// per-source hashes against those stamped on the live workload, and
 			// re-dispatch when a selected source changed.
 			resolvedHashes, consumesSource := resolvedSourceHashes(comp)
-			matchAll, selected, sourceUpdateEnabled := sourceAutoUpdateSelector(annotations)
+			// The controller-wide default is wired separately; until then an
+			// Application carrying no opinion stays off, exactly as before.
+			matchAll, selected, sourceUpdateState := sourceAutoUpdateSelector(annotations)
+			sourceUpdateEnabled := sourceUpdateState.enabled(false)
 			sourceValuesChanged := false
 			if isHealth && err == nil && consumesSource && sourceUpdateEnabled && !skipWorkload && options.Workload != nil {
 				live := liveResolvedSourceHashes(ctx, h.Client, clusterName, options.Workload)
@@ -435,33 +438,72 @@ func liveResolvedSourceHashes(ctx context.Context, cli client.Client, clusterNam
 	return hashes
 }
 
+// autoUpdateState is what an Application says about source-driven re-dispatch.
+// It is a tri-state because "says nothing" and "says no" are different answers:
+// the first defers to the controller-wide default, the second overrides it. A
+// plain bool cannot carry that, which is why an Application had no way to opt
+// out of a default that was on.
+type autoUpdateState int
+
+const (
+	autoUpdateUnset autoUpdateState = iota
+	autoUpdateOn
+	autoUpdateOff
+)
+
+// enabled resolves the state against the controller-wide default that applies
+// to Applications carrying no opinion of their own.
+func (s autoUpdateState) enabled(defaultOn bool) bool {
+	switch s {
+	case autoUpdateOn:
+		return true
+	case autoUpdateOff:
+		return false
+	default:
+		return defaultOn
+	}
+}
+
 // sourceAutoUpdateSelector interprets the autoUpdate / autoUpdateSources
-// annotations into a predicate over source names. Returns (matchAll, set,
-// enabled): enabled=false means source-change re-dispatch is off; matchAll=true
-// means any consumed source triggers it; otherwise only names in set do.
-func sourceAutoUpdateSelector(annotations map[string]string) (matchAll bool, set map[string]struct{}, enabled bool) {
-	if annotations[oam.AnnotationAutoUpdate] == "true" {
-		return true, nil, true
-	}
-	raw, ok := annotations[oam.AnnotationAutoUpdateSources]
-	if !ok {
-		return false, nil, false
-	}
-	raw = strings.TrimSpace(raw)
-	switch raw {
-	case "":
-		return false, nil, false
-	case "true", "*":
-		return true, nil, true
-	}
-	set = map[string]struct{}{}
-	for _, name := range strings.Split(raw, ",") {
-		if n := strings.TrimSpace(name); n != "" {
-			set[n] = struct{}{}
+// annotations into a predicate over source names: matchAll=true means any
+// consumed source triggers re-dispatch, otherwise only names in set do. Both
+// are meaningless unless the returned state resolves to enabled.
+//
+// autoUpdateSources wins over autoUpdate when both are present. It is the
+// narrower and therefore the more deliberate statement, so an Application that
+// is autoUpdate: "true" can still turn source-driven re-dispatch off without
+// giving up auto-update everywhere else.
+//
+// The off words are enumerated rather than derived as "not true" because
+// anything unrecognised here is a source binding name, and binding names are
+// arbitrary. A typo like "flase" is therefore a source name that matches
+// nothing rather than an error - the webhook reports a listed name that is not
+// declared in spec.sources. The cost is that a binding literally named "true",
+// "false", "off", "none" or "*" cannot be selected on its own.
+func sourceAutoUpdateSelector(annotations map[string]string) (matchAll bool, set map[string]struct{}, state autoUpdateState) {
+	raw, present := annotations[oam.AnnotationAutoUpdateSources]
+	if present {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "true", "*":
+			return true, nil, autoUpdateOn
+		case "false", "off", "none":
+			return false, nil, autoUpdateOff
 		}
+		set = map[string]struct{}{}
+		for _, name := range strings.Split(raw, ",") {
+			if n := strings.TrimSpace(name); n != "" {
+				set[n] = struct{}{}
+			}
+		}
+		if len(set) > 0 {
+			return false, set, autoUpdateOn
+		}
+		// Present but empty, or nothing but separators. The annotation was
+		// written deliberately, so it is an explicit no rather than silence.
+		return false, nil, autoUpdateOff
 	}
-	if len(set) == 0 {
-		return false, nil, false
+	if annotations[oam.AnnotationAutoUpdate] == "true" {
+		return true, nil, autoUpdateOn
 	}
-	return false, set, true
+	return false, nil, autoUpdateUnset
 }
