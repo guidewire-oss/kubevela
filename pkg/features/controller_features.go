@@ -134,6 +134,14 @@ const (
 	// separately control global policy discovery.
 	EnableApplicationScopedPolicies featuregate.Feature = "EnableApplicationScopedPolicies"
 
+	// EnableSourceAutoUpdate is the controller-wide default for source-driven
+	// re-dispatch: whether a component is re-applied when a value it read from a
+	// SourceDefinition changes. It decides only what happens to an Application
+	// carrying no opinion of its own - the autoUpdate / autoUpdateSources
+	// annotations override it in both directions, and a publishVersion pin
+	// suppresses the refresh regardless.
+	EnableSourceAutoUpdate featuregate.Feature = "EnableSourceAutoUpdate"
+
 	// ValidateUndeclaredParameters enables validation that rejects parameters not declared in the
 	// CUE definition schema. When enabled, any parameter field not present in the template's
 	// parameter stanza will cause a validation error at admission time.
@@ -169,6 +177,7 @@ var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	EnableGlobalPolicies:                          {Default: false, PreRelease: featuregate.Alpha},
 	EnableApplicationScopedPolicies:               {Default: false, PreRelease: featuregate.Alpha},
 	ValidateUndeclaredParameters:                  {Default: false, PreRelease: featuregate.Alpha},
+	EnableSourceAutoUpdate:                        {Default: false, PreRelease: featuregate.Alpha},
 }
 
 func init() {

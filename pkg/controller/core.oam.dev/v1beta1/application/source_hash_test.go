@@ -18,10 +18,12 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -31,6 +33,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/cue/definition"
+	"github.com/oam-dev/kubevela/pkg/features"
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
@@ -210,4 +213,41 @@ func TestSourceRefreshEnabled(t *testing.T) {
 	assert.True(t, ok, "default on reaches an Application with no opinion")
 	ok, _ = sourceRefreshEnabled(app(map[string]string{oam.AnnotationPublishVersion: "v1"}), true)
 	assert.False(t, ok, "the pin beats a default of on")
+}
+
+func TestSourceAutoUpdateDefaultFollowsFeatureGate(t *testing.T) {
+	app := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+		Spec: v1beta1.ApplicationSpec{
+			Sources: []v1beta1.ApplicationSource{{Name: "registry", Type: "configmap"}},
+		},
+	}
+	pinned := app.DeepCopy()
+	pinned.Annotations = map[string]string{oam.AnnotationPublishVersion: "v1"}
+	optedOut := app.DeepCopy()
+	optedOut.Annotations = map[string]string{oam.AnnotationAutoUpdateSources: "false"}
+
+	orig := utilfeature.DefaultMutableFeatureGate.Enabled(features.EnableSourceAutoUpdate)
+	defer func() {
+		_ = utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("EnableSourceAutoUpdate=%v", orig))
+	}()
+
+	assert.NoError(t, utilfeature.DefaultMutableFeatureGate.Set("EnableSourceAutoUpdate=false"))
+	assert.False(t, sourceAutoUpdateDefault())
+	ok, _ := sourceRefreshEnabled(app, sourceAutoUpdateDefault())
+	assert.False(t, ok, "gate off, no opinion -> off")
+
+	assert.NoError(t, utilfeature.DefaultMutableFeatureGate.Set("EnableSourceAutoUpdate=true"))
+	assert.True(t, sourceAutoUpdateDefault())
+	ok, _ = sourceRefreshEnabled(app, sourceAutoUpdateDefault())
+	assert.True(t, ok, "gate on, no opinion -> on")
+
+	// The two overrides must both beat a default of on, or turning the gate on
+	// would be irreversible per Application.
+	ok, reason := sourceRefreshEnabled(optedOut, sourceAutoUpdateDefault())
+	assert.False(t, ok, "an explicit no beats the gate")
+	assert.Contains(t, reason, "opted in")
+	ok, reason = sourceRefreshEnabled(pinned, sourceAutoUpdateDefault())
+	assert.False(t, ok, "a pin beats the gate")
+	assert.Contains(t, reason, "publishVersion")
 }

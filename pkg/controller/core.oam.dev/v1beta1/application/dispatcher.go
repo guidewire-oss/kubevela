@@ -173,10 +173,8 @@ func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, pre
 			// per-source hashes against those stamped on the live workload, and
 			// re-dispatch when a selected source changed.
 			resolvedHashes, consumesSource := resolvedSourceHashes(comp)
-			// The controller-wide default is wired separately; until then an
-			// Application carrying no opinion stays off, exactly as before.
 			matchAll, selected, sourceUpdateState := sourceAutoUpdateSelector(annotations)
-			sourceUpdateEnabled := sourceUpdateState.enabled(false)
+			sourceUpdateEnabled := sourceUpdateState.enabled(sourceAutoUpdateDefault())
 			sourceValuesChanged := false
 			if isHealth && err == nil && consumesSource && sourceUpdateEnabled && !skipWorkload && options.Workload != nil {
 				live := liveResolvedSourceHashes(ctx, h.Client, clusterName, options.Workload)

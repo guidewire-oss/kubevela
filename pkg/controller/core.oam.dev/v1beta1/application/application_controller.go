@@ -379,7 +379,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // autoUpdateSources; the per-source-hash gate inside the component dispatcher
 // then suppresses re-apply when nothing actually changed.
 func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context, handler *AppHandler, appParser *appfile.Parser, af *appfile.Appfile, app *v1beta1.Application) {
-	if ok, reason := sourceRefreshEnabled(app, false); !ok {
+	if ok, reason := sourceRefreshEnabled(app, sourceAutoUpdateDefault()); !ok {
 		klog.V(2).InfoS("skipping source refresh", "app", klog.KObj(app), "reason", reason)
 		return
 	}
@@ -414,6 +414,12 @@ func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context
 			r.Recorder.Event(app, event.Warning(velatypes.ReasonFailedApply, err))
 		}
 	}
+}
+
+// sourceAutoUpdateDefault is the controller-wide default applied to an
+// Application that says nothing about source-driven re-dispatch.
+func sourceAutoUpdateDefault() bool {
+	return feature.DefaultMutableFeatureGate.Enabled(features.EnableSourceAutoUpdate)
 }
 
 // sourceRefreshEnabled reports whether out-of-band source refresh should run for
