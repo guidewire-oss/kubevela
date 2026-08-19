@@ -97,25 +97,6 @@ func TestChangedSources(t *testing.T) {
 	assert.ElementsMatch(t, []string{"rng", "tenant"}, changedSources(current, nil))
 }
 
-func TestSourceAutoUpdateSelector(t *testing.T) {
-	all := func(m map[string]string) bool { a, _, s := sourceAutoUpdateSelector(m); return a && s.enabled(false) }
-	off := func(m map[string]string) bool { _, _, s := sourceAutoUpdateSelector(m); return !s.enabled(false) }
-
-	assert.True(t, off(map[string]string{}), "no annotations -> disabled")
-	assert.True(t, all(map[string]string{oam.AnnotationAutoUpdate: "true"}), "autoUpdate enables all")
-	assert.True(t, all(map[string]string{oam.AnnotationAutoUpdateSources: "true"}))
-	assert.True(t, all(map[string]string{oam.AnnotationAutoUpdateSources: "*"}))
-	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: ""}), "empty -> disabled")
-	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: " , "}), "only separators -> disabled")
-
-	matchAll, set, listed := sourceAutoUpdateSelector(map[string]string{oam.AnnotationAutoUpdateSources: "rng, tenant"})
-	assert.Equal(t, autoUpdateOn, listed)
-	assert.False(t, matchAll)
-	assert.Contains(t, set, "rng")
-	assert.Contains(t, set, "tenant")
-	assert.NotContains(t, set, "cluster")
-}
-
 func TestStampAndLiveResolvedSourceHashes(t *testing.T) {
 	wl := &unstructured.Unstructured{}
 	wl.SetGroupVersionKind(cmGVK)
@@ -150,104 +131,95 @@ func TestStampAndLiveResolvedSourceHashes(t *testing.T) {
 	})
 }
 
-func TestSourceAutoUpdateSelectorOptOut(t *testing.T) {
-	off := func(m map[string]string) bool { _, _, s := sourceAutoUpdateSelector(m); return !s.enabled(false) }
-	state := func(m map[string]string) autoUpdateState { _, _, s := sourceAutoUpdateSelector(m); return s }
+func boolPtr(b bool) *bool { return &b }
 
-	// An explicit "no" must not be read as a source binding named "false".
-	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: "false"}))
-	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: "off"}))
-	assert.True(t, off(map[string]string{oam.AnnotationAutoUpdateSources: "none"}))
+// appWithSources builds an Application whose bindings carry the given autoUpdate
+// settings. A nil entry means the field is unset, so the default applies.
+func appWithSources(annotations map[string]string, autoUpdate ...*bool) *v1beta1.Application {
+	sources := make([]v1beta1.ApplicationSource, 0, len(autoUpdate))
+	for i, au := range autoUpdate {
+		sources = append(sources, v1beta1.ApplicationSource{
+			Name: fmt.Sprintf("src%d", i), Type: "configmap", AutoUpdate: au,
+		})
+	}
+	return &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default", Annotations: annotations},
+		Spec:       v1beta1.ApplicationSpec{Sources: sources},
+	}
+}
 
-	// The narrower annotation wins over the broad one.
-	assert.True(t, off(map[string]string{
-		oam.AnnotationAutoUpdate:        "true",
-		oam.AnnotationAutoUpdateSources: "false",
-	}))
+func TestSourceAutoUpdateEnabled(t *testing.T) {
+	set := v1beta1.ApplicationSource{Name: "a", AutoUpdate: boolPtr(true)}
+	unset := v1beta1.ApplicationSource{Name: "b"}
+	off := v1beta1.ApplicationSource{Name: "c", AutoUpdate: boolPtr(false)}
 
-	// Saying nothing is distinct from saying no, so a controller-wide default
-	// has something to apply to.
-	assert.Equal(t, autoUpdateUnset, state(map[string]string{}))
-	assert.Equal(t, autoUpdateOff, state(map[string]string{oam.AnnotationAutoUpdateSources: "False"}))
-	assert.Equal(t, autoUpdateOff, state(map[string]string{oam.AnnotationAutoUpdateSources: " OFF "}))
-	assert.Equal(t, autoUpdateOn, state(map[string]string{oam.AnnotationAutoUpdate: "true"}))
+	// An explicit value wins over the controller default in both directions,
+	// so a fleet-wide setting is never one-way.
+	assert.True(t, sourceAutoUpdateEnabled(set, false))
+	assert.False(t, sourceAutoUpdateEnabled(off, true))
+	// Unset defers.
+	assert.False(t, sourceAutoUpdateEnabled(unset, false))
+	assert.True(t, sourceAutoUpdateEnabled(unset, true))
+}
 
-	assert.False(t, autoUpdateUnset.enabled(false))
-	assert.True(t, autoUpdateUnset.enabled(true), "silence defers to the controller default")
-	assert.True(t, autoUpdateOn.enabled(false), "an explicit yes overrides a default of off")
-	assert.False(t, autoUpdateOff.enabled(true), "an explicit no overrides a default of on")
+func TestAutoUpdatingSources(t *testing.T) {
+	// A registry worth picking up immediately beside a flag that must wait,
+	// which is the case the per-source field exists for.
+	sources := []v1beta1.ApplicationSource{
+		{Name: "registry", AutoUpdate: boolPtr(true)},
+		{Name: "flags", AutoUpdate: boolPtr(false)},
+		{Name: "cluster"},
+	}
+	on := autoUpdatingSources(sources, false)
+	assert.Contains(t, on, "registry")
+	assert.NotContains(t, on, "flags")
+	assert.NotContains(t, on, "cluster", "unset follows a default of off")
+
+	on = autoUpdatingSources(sources, true)
+	assert.Contains(t, on, "registry")
+	assert.NotContains(t, on, "flags", "an explicit no survives a default of on")
+	assert.Contains(t, on, "cluster")
+
+	assert.Empty(t, autoUpdatingSources(nil, true))
 }
 
 func TestSourceRefreshEnabled(t *testing.T) {
-	app := func(annotations map[string]string) *v1beta1.Application {
-		return &v1beta1.Application{
-			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default", Annotations: annotations},
-			Spec: v1beta1.ApplicationSpec{
-				Sources: []v1beta1.ApplicationSource{{Name: "registry", Type: "configmap"}},
-			},
-		}
-	}
-	optedIn := map[string]string{oam.AnnotationAutoUpdateSources: "true"}
+	ok, _ := sourceRefreshEnabled(appWithSources(nil, boolPtr(true)), false)
+	assert.True(t, ok)
 
-	ok, _ := sourceRefreshEnabled(app(optedIn), false)
-	assert.True(t, ok, "opted in with sources declared")
+	ok, reason := sourceRefreshEnabled(appWithSources(nil, boolPtr(false)), true)
+	assert.False(t, ok, "every binding opted out, so there is nothing to refresh")
+	assert.Contains(t, reason, "autoUpdate")
 
-	ok, reason := sourceRefreshEnabled(app(nil), false)
+	ok, reason = sourceRefreshEnabled(appWithSources(nil), false)
 	assert.False(t, ok)
-	assert.Contains(t, reason, "opted in")
+	assert.Contains(t, reason, "no sources declared")
 
-	// A publishVersion pin is hard. A source value changing must not move what
-	// is deployed until the user bumps the pin, matching the valuesFrom
-	// fingerprint gate in workflow.go.
-	pinned := map[string]string{
-		oam.AnnotationAutoUpdateSources: "true",
-		oam.AnnotationPublishVersion:    "v1",
-	}
-	ok, reason = sourceRefreshEnabled(app(pinned), false)
-	assert.False(t, ok, "publishVersion suppresses source refresh")
+	// A pin freezes the Application regardless of what its bindings ask for.
+	pinned := appWithSources(map[string]string{oam.AnnotationPublishVersion: "v1"}, boolPtr(true))
+	ok, reason = sourceRefreshEnabled(pinned, true)
+	assert.False(t, ok)
 	assert.Contains(t, reason, "publishVersion")
-
-	// The controller-wide default reaches an Application with no opinion, but
-	// the pin still wins over it.
-	ok, _ = sourceRefreshEnabled(app(nil), true)
-	assert.True(t, ok, "default on reaches an Application with no opinion")
-	ok, _ = sourceRefreshEnabled(app(map[string]string{oam.AnnotationPublishVersion: "v1"}), true)
-	assert.False(t, ok, "the pin beats a default of on")
 }
 
 func TestSourceAutoUpdateDefaultFollowsFeatureGate(t *testing.T) {
-	app := &v1beta1.Application{
-		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
-		Spec: v1beta1.ApplicationSpec{
-			Sources: []v1beta1.ApplicationSource{{Name: "registry", Type: "configmap"}},
-		},
-	}
-	pinned := app.DeepCopy()
-	pinned.Annotations = map[string]string{oam.AnnotationPublishVersion: "v1"}
-	optedOut := app.DeepCopy()
-	optedOut.Annotations = map[string]string{oam.AnnotationAutoUpdateSources: "false"}
-
 	orig := utilfeature.DefaultMutableFeatureGate.Enabled(features.EnableSourceAutoUpdate)
 	defer func() {
 		_ = utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("EnableSourceAutoUpdate=%v", orig))
 	}()
 
+	unset := appWithSources(nil, nil)
+
 	assert.NoError(t, utilfeature.DefaultMutableFeatureGate.Set("EnableSourceAutoUpdate=false"))
 	assert.False(t, sourceAutoUpdateDefault())
-	ok, _ := sourceRefreshEnabled(app, sourceAutoUpdateDefault())
-	assert.False(t, ok, "gate off, no opinion -> off")
+	ok, _ := sourceRefreshEnabled(unset, sourceAutoUpdateDefault())
+	assert.False(t, ok, "gate off, binding unset -> off")
 
 	assert.NoError(t, utilfeature.DefaultMutableFeatureGate.Set("EnableSourceAutoUpdate=true"))
 	assert.True(t, sourceAutoUpdateDefault())
-	ok, _ = sourceRefreshEnabled(app, sourceAutoUpdateDefault())
-	assert.True(t, ok, "gate on, no opinion -> on")
+	ok, _ = sourceRefreshEnabled(unset, sourceAutoUpdateDefault())
+	assert.True(t, ok, "gate on, binding unset -> on")
 
-	// The two overrides must both beat a default of on, or turning the gate on
-	// would be irreversible per Application.
-	ok, reason := sourceRefreshEnabled(optedOut, sourceAutoUpdateDefault())
-	assert.False(t, ok, "an explicit no beats the gate")
-	assert.Contains(t, reason, "opted in")
-	ok, reason = sourceRefreshEnabled(pinned, sourceAutoUpdateDefault())
-	assert.False(t, ok, "a pin beats the gate")
-	assert.Contains(t, reason, "publishVersion")
+	ok, _ = sourceRefreshEnabled(appWithSources(nil, boolPtr(false)), sourceAutoUpdateDefault())
+	assert.False(t, ok, "an explicit no beats a gate that is on")
 }

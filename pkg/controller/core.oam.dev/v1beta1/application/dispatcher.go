@@ -117,7 +117,8 @@ type manifestDispatcher struct {
 	healthCheck func(ctx context.Context, c *appfile.Component, appRev *v1beta1.ApplicationRevision) (bool, error)
 }
 
-func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, previousAppRev *v1beta1.ApplicationRevision, readyWorkload *unstructured.Unstructured, readyTraits []*unstructured.Unstructured, overrideNamespace string, annotations map[string]string) ([]*manifestDispatcher, error) {
+func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, previousAppRev *v1beta1.ApplicationRevision, readyWorkload *unstructured.Unstructured, readyTraits []*unstructured.Unstructured, overrideNamespace string, annotations map[string]string,
+	autoUpdating map[string]struct{}) ([]*manifestDispatcher, error) {
 	dispatcherGenerator := func(options DispatchOptions) *manifestDispatcher {
 		assembleManifestFn := func(skipApplyWorkload bool) (bool, []*unstructured.Unstructured) {
 			manifests := options.Traits
@@ -166,24 +167,22 @@ func (h *AppHandler) generateDispatcher(appRev *v1beta1.ApplicationRevision, pre
 				propertiesChanged = componentPropertiesChanged(comp, comparisonRev)
 			}
 
-			// source values are resolved at render time and are invisible to
-			// the raw spec comparison above (comp.Params still holds the
-			// unresolved directive). When opted in via autoUpdate /
-			// autoUpdateSources, detect a re-resolved value by comparing
-			// per-source hashes against those stamped on the live workload, and
-			// re-dispatch when a selected source changed.
+			// Source values are resolved at render time and are invisible to the
+			// raw spec comparison above, which still sees only the unresolved
+			// expression. Detect a re-resolved value by comparing per-source
+			// hashes against those stamped on the live workload, and re-dispatch
+			// when a binding that opted in changed.
+			//
+			// No publishVersion check here, deliberately. The pin suppresses the
+			// out-of-band refresh, not this: the workflow only reaches here
+			// because the pin was bumped, and a bump that did not pick up current
+			// source values would be a pin that freezes the wrong thing.
 			resolvedHashes, consumesSource := resolvedSourceHashes(comp)
-			matchAll, selected, sourceUpdateState := sourceAutoUpdateSelector(annotations)
-			sourceUpdateEnabled := sourceUpdateState.enabled(sourceAutoUpdateDefault())
 			sourceValuesChanged := false
-			if isHealth && err == nil && consumesSource && sourceUpdateEnabled && !skipWorkload && options.Workload != nil {
+			if isHealth && err == nil && consumesSource && len(autoUpdating) > 0 && !skipWorkload && options.Workload != nil {
 				live := liveResolvedSourceHashes(ctx, h.Client, clusterName, options.Workload)
 				for _, name := range changedSources(resolvedHashes, live) {
-					if matchAll {
-						sourceValuesChanged = true
-						break
-					}
-					if _, ok := selected[name]; ok {
+					if _, ok := autoUpdating[name]; ok {
 						sourceValuesChanged = true
 						break
 					}
@@ -436,72 +435,30 @@ func liveResolvedSourceHashes(ctx context.Context, cli client.Client, clusterNam
 	return hashes
 }
 
-// autoUpdateState is what an Application says about source-driven re-dispatch.
-// It is a tri-state because "says nothing" and "says no" are different answers:
-// the first defers to the controller-wide default, the second overrides it. A
-// plain bool cannot carry that, which is why an Application had no way to opt
-// out of a default that was on.
-type autoUpdateState int
-
-const (
-	autoUpdateUnset autoUpdateState = iota
-	autoUpdateOn
-	autoUpdateOff
-)
-
-// enabled resolves the state against the controller-wide default that applies
-// to Applications carrying no opinion of their own.
-func (s autoUpdateState) enabled(defaultOn bool) bool {
-	switch s {
-	case autoUpdateOn:
-		return true
-	case autoUpdateOff:
-		return false
-	default:
-		return defaultOn
+// sourceAutoUpdateEnabled reports whether a change to this binding re-dispatches
+// the components and traits that read it.
+//
+// The decision lives on the binding rather than on the Application because it is
+// a property of the data, not of the app: a registry address is worth picking up
+// the moment it moves, a feature flag should wait for a deliberate rollout, and
+// one Application routinely reads both. An unset field defers to the
+// controller-wide default so a platform can choose the fleet's posture without
+// editing every Application.
+func sourceAutoUpdateEnabled(src v1beta1.ApplicationSource, defaultOn bool) bool {
+	if src.AutoUpdate != nil {
+		return *src.AutoUpdate
 	}
+	return defaultOn
 }
 
-// sourceAutoUpdateSelector interprets the autoUpdate / autoUpdateSources
-// annotations into a predicate over source names: matchAll=true means any
-// consumed source triggers re-dispatch, otherwise only names in set do. Both
-// are meaningless unless the returned state resolves to enabled.
-//
-// autoUpdateSources wins over autoUpdate when both are present. It is the
-// narrower and therefore the more deliberate statement, so an Application that
-// is autoUpdate: "true" can still turn source-driven re-dispatch off without
-// giving up auto-update everywhere else.
-//
-// The off words are enumerated rather than derived as "not true" because
-// anything unrecognised here is a source binding name, and binding names are
-// arbitrary. A typo like "flase" is therefore a source name that matches
-// nothing rather than an error - the webhook reports a listed name that is not
-// declared in spec.sources. The cost is that a binding literally named "true",
-// "false", "off", "none" or "*" cannot be selected on its own.
-func sourceAutoUpdateSelector(annotations map[string]string) (matchAll bool, set map[string]struct{}, state autoUpdateState) {
-	raw, present := annotations[oam.AnnotationAutoUpdateSources]
-	if present {
-		switch strings.ToLower(strings.TrimSpace(raw)) {
-		case "true", "*":
-			return true, nil, autoUpdateOn
-		case "false", "off", "none":
-			return false, nil, autoUpdateOff
+// autoUpdatingSources is the set of binding names whose changes re-dispatch.
+// Empty means no refresh work is worth doing for this Application at all.
+func autoUpdatingSources(sources []v1beta1.ApplicationSource, defaultOn bool) map[string]struct{} {
+	out := make(map[string]struct{}, len(sources))
+	for _, src := range sources {
+		if sourceAutoUpdateEnabled(src, defaultOn) {
+			out[src.Name] = struct{}{}
 		}
-		set = map[string]struct{}{}
-		for _, name := range strings.Split(raw, ",") {
-			if n := strings.TrimSpace(name); n != "" {
-				set[n] = struct{}{}
-			}
-		}
-		if len(set) > 0 {
-			return false, set, autoUpdateOn
-		}
-		// Present but empty, or nothing but separators. The annotation was
-		// written deliberately, so it is an explicit no rather than silence.
-		return false, nil, autoUpdateOff
 	}
-	if annotations[oam.AnnotationAutoUpdate] == "true" {
-		return true, nil, autoUpdateOn
-	}
-	return false, nil, autoUpdateUnset
+	return out
 }

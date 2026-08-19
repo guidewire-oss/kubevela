@@ -173,12 +173,6 @@ const (
 	// comparison cannot see) and re-dispatch.
 	AnnotationSourceResolvedHash = "source.oam.dev/resolved-hash"
 
-	// AnnotationAutoUpdateSources opts a component in to being re-dispatched when
-	// a consumed source value re-resolves to a different value. Accepted
-	// values: "true" or "*" (any consumed source), or a comma-separated list of
-	// spec.sources[].name to scope re-dispatch to specific sources. Absent/empty
-	// disables it. app.oam.dev/autoUpdate: "true" also enables it (superset).
-	AnnotationAutoUpdateSources = "app.oam.dev/autoUpdateSources"
 
 	// AnnotationSkipGlobalPolicies controls whether global (vela-system) policies are skipped for an Application.
 	// When set to "true", only explicitly declared spec.policies are evaluated.

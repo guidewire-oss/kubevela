@@ -184,15 +184,18 @@ kubectl get deploy -n source-demo -l example.com/tenant=acme \
   vela config delete get-random-1-5
   ```
 
-- **Re-resolved values are picked up (opt-in).** The app sets
-  `app.oam.dev/autoUpdateSources: "true"`. With it, when a source re-resolves to
-  a new value the component is re-dispatched even though its raw spec is
+- **Re-resolved values are picked up (opt-in, per source).** Each binding sets
+  `autoUpdate: true`. With it, when that source re-resolves to a new value the
+  components reading it are re-dispatched even though their raw spec is
   unchanged: the controller stamps per-source hashes of the consumed values on
-  the workload (`source.oam.dev/resolved-hash`) and re-dispatches when a selected
-  source's hash differs from the live one. Values: `"true"`/`"*"` for any source,
-  or a comma list of source names (e.g. `"rng"`) to scope it. `app.oam.dev/autoUpdate: "true"`
-  also enables it. Without any of these, a healthy component keeps its
-  last-applied resolved values.
+  the workload (`source.oam.dev/resolved-hash`) and re-dispatches when an
+  opted-in source's hash differs from the live one.
+
+  Leaving `autoUpdate` unset defers to the `EnableSourceAutoUpdate` feature gate,
+  so a platform sets the fleet default and an Application disagrees per binding.
+  A `app.oam.dev/publishVersion` pin suppresses the refresh whatever the bindings
+  say, matching how a pin freezes helmchart `valuesFrom`. Without any of this, a
+  healthy component keeps its last-applied resolved values.
 - **Reconcile cadence still applies.** Re-dispatch only happens when the
   Application reconciles — every ~5m by default (the controller's resync
   period), unless nudged (e.g. re-apply, or

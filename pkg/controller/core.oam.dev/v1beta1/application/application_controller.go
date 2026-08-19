@@ -374,10 +374,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // refreshSourceDrivenComponents re-resolves source values and re-dispatches
 // components whose consumed source values changed, so the ResourceTracker holds
-// the current desired state before StateKeep enforces it. This is a no-op unless
-// the Application declares sources AND is opted in via autoUpdate /
-// autoUpdateSources; the per-source-hash gate inside the component dispatcher
-// then suppresses re-apply when nothing actually changed.
+// the current desired state before StateKeep enforces it.
+//
+// It exists because a succeeded workflow short-circuits: the apply-component
+// step does not run again, so nothing re-dispatches and StateKeep keeps pushing
+// the manifest that was stored when the workflow last ran. Note that the
+// component is nonetheless re-rendered on every reconcile - evalStatus above
+// runs checkComponentHealth, which renders through the same
+// prepareWorkloadAndManifests and resolves the same sources. What is missing is
+// the dispatch, not the render, so this repeats a render already performed a
+// few lines earlier. Reusing that result would make the refresh close to free
+// and is worth doing; the one case it would not cover is an Application whose
+// policy manages its own health checks, where evalStatus returns early and
+// renders nothing at all.
+//
+// A no-op unless the Application declares sources, at least one binding has
+// autoUpdate on, and no publishVersion pin freezes it. The per-source-hash gate
+// inside the component dispatcher then suppresses the re-apply when nothing
+// actually changed.
 func (r *Reconciler) refreshSourceDrivenComponents(logCtx monitorContext.Context, handler *AppHandler, appParser *appfile.Parser, af *appfile.Appfile, app *v1beta1.Application) {
 	if ok, reason := sourceRefreshEnabled(app, sourceAutoUpdateDefault()); !ok {
 		klog.V(2).InfoS("skipping source refresh", "app", klog.KObj(app), "reason", reason)
@@ -431,8 +445,8 @@ func sourceRefreshEnabled(app *v1beta1.Application, defaultOn bool) (bool, strin
 	if len(app.Spec.Sources) == 0 {
 		return false, "no sources declared"
 	}
-	if _, _, state := sourceAutoUpdateSelector(app.GetAnnotations()); !state.enabled(defaultOn) {
-		return false, "not opted in to source auto-update"
+	if len(autoUpdatingSources(app.Spec.Sources, defaultOn)) == 0 {
+		return false, "no source has autoUpdate enabled"
 	}
 	// A publishVersion pin is hard. A source value changing must not move what
 	// is deployed until the user bumps the pin, exactly as an edit to a

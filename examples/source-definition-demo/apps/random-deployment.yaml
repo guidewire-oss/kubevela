@@ -3,18 +3,19 @@ kind: Application
 metadata:
   name: random-deployment
   namespace: source-demo
-  annotations:
-    # Opt in to re-dispatch when a consumed source re-resolves to a new value.
-    # "true"/"*" = any source; or a comma list of source names, e.g. "random-deployment-replicas".
-    # Without this, a healthy component keeps its last-applied resolved values.
-    app.oam.dev/autoUpdateSources: "true"
 spec:
   sources:
+    # autoUpdate re-dispatches the components reading this binding when its
+    # resolved value changes, without waiting for the workflow to run again.
+    # Unset defers to the EnableSourceAutoUpdate feature gate; a publishVersion
+    # pin suppresses it either way.
     - name: random-deployment-replicas
       type: get-random
+      autoUpdate: true
 
     - name: cluster
       type: cluster-lookup
+      autoUpdate: true
 
     - name: tenant
       type: tenant-data

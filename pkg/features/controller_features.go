@@ -137,9 +137,8 @@ const (
 	// EnableSourceAutoUpdate is the controller-wide default for source-driven
 	// re-dispatch: whether a component is re-applied when a value it read from a
 	// SourceDefinition changes. It decides only what happens to an Application
-	// carrying no opinion of its own - the autoUpdate / autoUpdateSources
-	// annotations override it in both directions, and a publishVersion pin
-	// suppresses the refresh regardless.
+	// carrying no opinion of its own - spec.sources[].autoUpdate overrides it in
+	// both directions, and a publishVersion pin suppresses the refresh regardless.
 	EnableSourceAutoUpdate featuregate.Feature = "EnableSourceAutoUpdate"
 
 	// ValidateUndeclaredParameters enables validation that rejects parameters not declared in the
