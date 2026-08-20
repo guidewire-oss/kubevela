@@ -66,7 +66,7 @@ func listPortableOCICatalog(ctx context.Context, registryURL, username, password
 		return nil, errors.Wrap(err, "portable OCI addon catalog is unavailable")
 	}
 	if len(tags) == 0 {
-		return nil, errors.New("portable OCI addon catalog has no semver tags")
+		return nil, errors.Wrap(ErrOCICatalogAbsent, "portable OCI addon catalog has no semver tags")
 	}
 	archive, err := pullOCIChart(ctx, repoRef+":"+tags[0], host, username, password)
 	if err != nil {
@@ -135,7 +135,13 @@ func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source 
 	existing, err := reader.ListAddon()
 	if err != nil {
 		// A registry with no portable catalog and no repository enumeration can
-		// still bootstrap a catalog with the addon currently being pushed.
+		// still bootstrap a catalog with the addon currently being pushed. Any
+		// other failure means a catalog may well exist and simply could not be
+		// read; rebuilding from an empty list would publish a catalog containing
+		// only this addon and silently drop every other entry.
+		if !errors.Is(err, ErrOCICatalogAbsent) {
+			return errors.Wrap(err, "refusing to rewrite the OCI addon catalog: cannot read the existing catalog")
+		}
 		existing = nil
 	}
 

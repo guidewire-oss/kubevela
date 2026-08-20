@@ -1881,3 +1881,25 @@ func TestFilterAndSetAnnotationsKeepsTheFieldAbsent(t *testing.T) {
 		assert.Empty(t, got)
 	})
 }
+
+// TestFilterAndSetAnnotationsOwnValueBeatsInheritedSentinel covers the case where
+// a component records its own configuration while the parent Application carries
+// the "-"/"skip" opt-out. The parent's value overwrites the component's during the
+// merge, and dropping the inherited sentinel must not take the component's own
+// recorded configuration with it.
+func TestFilterAndSetAnnotationsOwnValueBeatsInheritedSentinel(t *testing.T) {
+	const ownRecorded = `{"apiVersion":"v1","kind":"ConfigMap"}`
+
+	for _, parent := range []string{"skip", "-"} {
+		t.Run("parent="+parent, func(t *testing.T) {
+			af := &Appfile{AppAnnotations: map[string]string{oam.AnnotationLastAppliedConfig: parent}}
+			obj := &unstructured.Unstructured{}
+			obj.SetAnnotations(map[string]string{oam.AnnotationLastAppliedConfig: ownRecorded})
+
+			af.filterAndSetAnnotations(obj)
+
+			assert.Equal(t, ownRecorded, obj.GetAnnotations()[oam.AnnotationLastAppliedConfig],
+				"the component's own recorded configuration must survive the parent's sentinel")
+		})
+	}
+}

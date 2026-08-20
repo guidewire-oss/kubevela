@@ -18,6 +18,7 @@ package addon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/kubevela/pkg/util/singleton"
@@ -80,6 +81,16 @@ func (h *ValidatingHandler) defaultCompatChecker(ctx context.Context, addonName,
 	}
 
 	if err := pkgaddon.ValidateSystemRequirements(ctx, require, cli, dc); err != nil {
+		// ValidateSystemRequirements reports two very different things through one
+		// error: a requirement that was evaluated and not met, and a lookup that
+		// could not be performed at all (reading the vela-core image tag, querying
+		// the discovery API, or parsing a malformed constraint). Only the former is
+		// a reason to deny; denying on the latter would let an API blip block
+		// applies, and this webhook runs with failurePolicy: Fail.
+		if !errors.Is(err, pkgaddon.ErrVersionMismatch) {
+			klog.Infof("skip addon %q compatibility check (fail-open): requirement lookup failed: %v", addonName, err)
+			return nil
+		}
 		return field.Invalid(field.NewPath("spec", "components"), addonName,
 			fmt.Sprintf("addon %q is incompatible with the current environment: %v", addonName, err))
 	}

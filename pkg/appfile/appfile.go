@@ -434,8 +434,11 @@ func (af *Appfile) filterAndSetAnnotations(obj *unstructured.Unstructured) {
 	}
 
 	switch {
-	case oam.IsSkipLastAppliedConfig(own):
-		// the component opted out on its own output; honor it
+	case own != "":
+		// The component set this key on its own output. Whatever it says, it is a
+		// statement about the component's own resource, so it wins over the copy
+		// inherited from the Application above -- including a recorded
+		// configuration, not just the "-"/"skip" opt-out.
 		ann[oam.AnnotationLastAppliedConfig] = own
 	case oam.IsSkipLastAppliedConfig(ann[oam.AnnotationLastAppliedConfig]):
 		// inherited from the parent Application; drop it

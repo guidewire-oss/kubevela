@@ -25,6 +25,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+
+	"github.com/pkg/errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -263,4 +266,190 @@ func TestOCIRegistryNoTags(t *testing.T) {
 	_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no")
+}
+
+// TestListOCIRepositoriesRefusesForeignPaginationLink covers the credential-leak
+// path: the Link header is registry-supplied, url.Parse resolves an absolute URL
+// by replacing scheme and host outright, and every request in the pagination loop
+// attaches the configured BasicAuth. Following a foreign link would hand the
+// registry's credentials to a host we were never configured to talk to.
+func TestListOCIRepositoriesRefusesForeignPaginationLink(t *testing.T) {
+	var attackerHits int32
+	attacker := httptest.NewTLSServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		atomic.AddInt32(&attackerHits, 1)
+		_, _ = rw.Write([]byte(`{"repositories":["addon/pwned"]}`))
+	}))
+	defer attacker.Close()
+
+	registry := httptest.NewTLSServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Link", fmt.Sprintf(`<%s/v2/_catalog?n=1000&last=x>; rel="next"`, attacker.URL))
+		_, _ = rw.Write([]byte(`{"repositories":["addon/fluxcd"]}`))
+	}))
+	defer registry.Close()
+
+	originalClient := http.DefaultClient
+	http.DefaultClient = registry.Client()
+	defer func() { http.DefaultClient = originalClient }()
+
+	registryURL := "oci://" + strings.TrimPrefix(registry.URL, "https://") + "/addon"
+	_, err := listOCIRepositories(context.Background(), registryURL, "AWS", "secret")
+
+	require.Error(t, err, "a pagination link pointing at another host must be refused")
+	assert.Contains(t, err.Error(), "refusing OCI catalog pagination link")
+	assert.Zero(t, atomic.LoadInt32(&attackerHits), "credentials must never be sent to the foreign host")
+}
+
+// TestListOCIRepositoriesRefusesPlaintextPaginationLink covers the downgrade
+// variant: a link that keeps the host but drops to http would send BasicAuth in
+// the clear.
+func TestListOCIRepositoriesRefusesPlaintextPaginationLink(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		host := strings.TrimPrefix(server.URL, "https://")
+		rw.Header().Set("Link", fmt.Sprintf(`<http://%s/v2/_catalog?n=1000&last=x>; rel="next"`, host))
+		_, _ = rw.Write([]byte(`{"repositories":["addon/fluxcd"]}`))
+	}))
+	defer server.Close()
+
+	originalClient := http.DefaultClient
+	http.DefaultClient = server.Client()
+	defer func() { http.DefaultClient = originalClient }()
+
+	registryURL := "oci://" + strings.TrimPrefix(server.URL, "https://") + "/addon"
+	_, err := listOCIRepositories(context.Background(), registryURL, "AWS", "secret")
+
+	require.Error(t, err, "an http downgrade in the pagination link must be refused")
+	assert.Contains(t, err.Error(), "expected an https link")
+}
+
+// TestOCILoadFailuresAreSkippable pins the contract installDependency relies on:
+// isSkippableRegistryError must recognise OCI failures, otherwise a dependency
+// missing from an OCI registry aborts resolution instead of falling through to
+// the remaining registries.
+func TestOCILoadFailuresAreSkippable(t *testing.T) {
+	t.Run("a pull failure is a fetch error", func(t *testing.T) {
+		reg := &ociRegistry{
+			name: "ecr",
+			url:  "oci://registry.example.com/addon",
+			pullFn: func(context.Context, string, string, string, string) ([]byte, error) {
+				return nil, errors.New("unauthorized: authentication required")
+			},
+			tagsFn: func(context.Context, string, string, string, string) ([]string, error) {
+				return []string{"1.0.0"}, nil
+			},
+		}
+		_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+		require.Error(t, err)
+		assert.True(t, isSkippableRegistryError(err), "got %v", err)
+		assert.Contains(t, err.Error(), "unauthorized", "the underlying cause must stay visible")
+	})
+
+	t.Run("no semver tags means the addon does not exist here", func(t *testing.T) {
+		reg := &ociRegistry{
+			name: "ecr",
+			url:  "oci://registry.example.com/addon",
+			tagsFn: func(context.Context, string, string, string, string) ([]string, error) {
+				return nil, nil
+			},
+		}
+		_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotExist)
+		assert.True(t, isSkippableRegistryError(err))
+	})
+
+	t.Run("a tag listing failure is a fetch error", func(t *testing.T) {
+		reg := &ociRegistry{
+			name: "ecr",
+			url:  "oci://registry.example.com/addon",
+			tagsFn: func(context.Context, string, string, string, string) ([]string, error) {
+				return nil, errors.New("dial tcp: i/o timeout")
+			},
+		}
+		_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+		require.Error(t, err)
+		assert.True(t, isSkippableRegistryError(err), "got %v", err)
+	})
+}
+
+// TestOCICatalogAbsenceIsDistinguishable pins the discriminator updateOCIAddonCatalog
+// depends on. Rebuilding the catalog from an empty list is only safe when there is
+// genuinely no catalog; doing it after a transient read failure would publish a
+// catalog containing one addon and silently drop every other entry.
+func TestOCICatalogAbsenceIsDistinguishable(t *testing.T) {
+	newServer := func(status int, body string) *httptest.Server {
+		return httptest.NewTLSServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+			rw.WriteHeader(status)
+			_, _ = rw.Write([]byte(body))
+		}))
+	}
+
+	cases := map[string]struct {
+		status     int
+		wantAbsent bool
+	}{
+		"404 means enumeration is unsupported":         {status: http.StatusNotFound, wantAbsent: true},
+		"405 means enumeration is unsupported":         {status: http.StatusMethodNotAllowed, wantAbsent: true},
+		"501 means enumeration is unsupported":         {status: http.StatusNotImplemented, wantAbsent: true},
+		"401 is a read failure, not an absent catalog": {status: http.StatusUnauthorized, wantAbsent: false},
+		"500 is a read failure, not an absent catalog": {status: http.StatusInternalServerError, wantAbsent: false},
+		"503 is a read failure, not an absent catalog": {status: http.StatusServiceUnavailable, wantAbsent: false},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := newServer(tc.status, `{}`)
+			defer server.Close()
+
+			originalClient := http.DefaultClient
+			http.DefaultClient = server.Client()
+			defer func() { http.DefaultClient = originalClient }()
+
+			registryURL := "oci://" + strings.TrimPrefix(server.URL, "https://") + "/addon"
+			_, err := listOCIRepositories(context.Background(), registryURL, "AWS", "secret")
+			require.Error(t, err)
+			assert.Equal(t, tc.wantAbsent, errors.Is(err, ErrOCICatalogAbsent), "got %v", err)
+		})
+	}
+}
+
+// TestOCIListAddonKeepsReadFailuresDistinct covers the combined path: ListAddon
+// may report an absent catalog only when both sources agree it is absent.
+func TestOCIListAddonKeepsReadFailuresDistinct(t *testing.T) {
+	absent := errors.Wrap(ErrOCICatalogAbsent, "no tags")
+	readFail := errors.New("dial tcp: i/o timeout")
+
+	t.Run("both absent reports absent", func(t *testing.T) {
+		reg := &ociRegistry{
+			name:           "ecr",
+			url:            "oci://registry.example.com/addon",
+			catalogIndexFn: func(context.Context, string, string, string) ([]*UIData, error) { return nil, absent },
+			catalogFn:      func(context.Context, string, string, string) ([]string, error) { return nil, absent },
+		}
+		_, err := reg.ListAddon()
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrOCICatalogAbsent)
+	})
+
+	t.Run("a read failure on either side is not absent", func(t *testing.T) {
+		for name, pair := range map[string][2]error{
+			"index read failure":   {readFail, absent},
+			"catalog read failure": {absent, readFail},
+			"both read failures":   {readFail, readFail},
+		} {
+			t.Run(name, func(t *testing.T) {
+				idxErr, catErr := pair[0], pair[1]
+				reg := &ociRegistry{
+					name:           "ecr",
+					url:            "oci://registry.example.com/addon",
+					catalogIndexFn: func(context.Context, string, string, string) ([]*UIData, error) { return nil, idxErr },
+					catalogFn:      func(context.Context, string, string, string) ([]string, error) { return nil, catErr },
+				}
+				_, err := reg.ListAddon()
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, ErrOCICatalogAbsent,
+					"a read failure must never be reported as an absent catalog")
+			})
+		}
+	})
 }
