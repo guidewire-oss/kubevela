@@ -45,6 +45,7 @@ import (
 	core "github.com/oam-dev/kubevela/apis/core.oam.dev"
 	commontypes "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	// +kubebuilder:scaffold:imports
 )
@@ -71,6 +72,8 @@ var _ = BeforeSuite(func() {
 	err = crdv1.AddToScheme(scheme)
 	Expect(err).Should(BeNil())
 	err = kruise.AddToScheme(scheme)
+	Expect(err).Should(BeNil())
+	err = v2alpha1.AddToScheme(scheme)
 	Expect(err).Should(BeNil())
 	depExample := &unstructured.Unstructured{}
 	depExample.SetGroupVersionKind(schema.GroupVersionKind{

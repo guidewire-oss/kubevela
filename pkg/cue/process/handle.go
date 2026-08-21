@@ -52,6 +52,27 @@ type ContextData struct {
 
 	ClusterVersion types.ClusterVersion
 	Output         interface{}
+	// Outputs holds the auxiliary (trait-produced) resources for
+	// context.outputs, populated the same way Output populates
+	// context.output.
+	Outputs []interface{}
+
+	// The fields below are populated for an Operation-driven workflow (see
+	// KEP 2.15, "Operations"); they are left zero-valued for an
+	// Application-driven workflow.
+
+	// OperationName is the name of the currently executing Operation.
+	OperationName string
+	// OperationParams is the resolved spec.parameters of the currently
+	// executing Operation.
+	OperationParams map[string]interface{}
+	// OperationScope is the attach.scope of the invoked OperationTemplate.
+	OperationScope string
+	// StartTime is the Operation's start time, RFC3339-formatted.
+	StartTime string
+	// Status is the health status of the Operation's target, evaluated the
+	// same way a healthPolicy evaluates a component's status.
+	Status *common.ApplicationComponentStatus
 }
 
 // policyAdditionalContextKey is the shared Go context key for policy output.ctx data
@@ -105,6 +126,28 @@ func NewContext(data ContextData) process.Context {
 	ctx.PushData(ContextClusterVersion, parseClusterVersion(data.ClusterVersion))
 	if data.Output != nil {
 		ctx.PushData(OutputFieldName, data.Output)
+	}
+	if len(data.Outputs) > 0 {
+		ctx.PushData(OutputsFieldName, data.Outputs)
+	}
+	if data.OperationName != "" {
+		ctx.PushData(ContextOperationName, data.OperationName)
+	}
+	if data.OperationParams != nil {
+		ctx.PushData(ContextOperationParams, data.OperationParams)
+	}
+	if data.OperationScope != "" {
+		ctx.PushData(ContextOperationScope, data.OperationScope)
+	}
+	if data.StartTime != "" {
+		ctx.PushData(ContextStartTime, data.StartTime)
+	}
+	if data.Status != nil {
+		ctx.PushData(ContextStatus, map[string]interface{}{
+			"healthy": data.Status.Healthy,
+			"message": data.Status.Message,
+			"details": data.Status.Details,
+		})
 	}
 	return ctx
 }
