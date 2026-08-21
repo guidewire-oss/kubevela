@@ -1234,7 +1234,10 @@ type ItemInfoLister interface {
 // as opposed to a fatal, addon-specific failure that should stop dependency
 // resolution outright.
 func isSkippableRegistryError(err error) bool {
-	return errors.Is(err, ErrNotExist) || errors.Is(err, ErrFetch)
+	// ErrOCICatalogAbsent belongs here: an OCI registry that has not had its first
+	// addon pushed yet simply has nothing to offer, which is the same situation as
+	// ErrNotExist for the other registry kinds.
+	return errors.Is(err, ErrNotExist) || errors.Is(err, ErrFetch) || errors.Is(err, ErrOCICatalogAbsent)
 }
 
 // listAvailableAddons aggregates addon info across registries, grouped by addon

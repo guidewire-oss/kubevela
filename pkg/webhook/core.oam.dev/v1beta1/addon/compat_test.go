@@ -22,7 +22,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/kubevela/pkg/util/singleton"
 	"github.com/stretchr/testify/assert"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 )
@@ -67,11 +70,20 @@ func TestVersionMismatchIsDistinguishable(t *testing.T) {
 	}
 }
 
-// TestDefaultCompatCheckerFailsOpenWithoutCluster covers the production checker
-// with no Kubernetes client wired up: every resolve path fails, and the result
-// must be nil (allow) rather than a denial.
-func TestDefaultCompatCheckerFailsOpenWithoutCluster(t *testing.T) {
+// TestDefaultCompatCheckerFailsOpenWithoutRegistry covers the production checker
+// when the addon cannot be resolved: the result must be nil (allow) rather than a
+// denial.
+//
+// The client is injected rather than left to the singleton's lazy loader. That
+// loader builds a client from whatever kubeconfig happens to be on the machine,
+// so the outcome would otherwise depend on ambient state -- and on a machine with
+// a reachable cluster the checker would take a different path than the one under
+// test.
+func TestDefaultCompatCheckerFailsOpenWithoutRegistry(t *testing.T) {
+	singleton.KubeClient.Set(fake.NewClientBuilder().WithScheme(scheme.Scheme).Build())
+	defer singleton.KubeClient.Reload()
+
 	h := &ValidatingHandler{}
 	assert.Nil(t, h.defaultCompatChecker(context.Background(), "some-addon", "", ""),
-		"an unreachable registry or cluster must never produce a denial")
+		"an addon that cannot be resolved must never produce a denial")
 }

@@ -63,6 +63,12 @@ func listPortableOCICatalog(ctx context.Context, registryURL, username, password
 	repoRef, host := ociRepoRef(registryURL, ociCatalogChartName)
 	tags, err := listOCITags(ctx, repoRef, host, username, password)
 	if err != nil {
+		// A registry that has never had a catalog pushed answers "repository does
+		// not exist". That is an absence, not a read failure, so the first push to
+		// such a registry can still bootstrap the catalog.
+		if isOCIRepositoryAbsentError(err) {
+			return nil, errors.Wrapf(ErrOCICatalogAbsent, "portable OCI addon catalog repository %s does not exist: %v", repoRef, err)
+		}
 		return nil, errors.Wrap(err, "portable OCI addon catalog is unavailable")
 	}
 	if len(tags) == 0 {
@@ -105,10 +111,15 @@ func decodeOCIAddonCatalog(archive []byte) ([]*UIData, error) {
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, errors.New("portable OCI addon catalog contains an addon without a name")
 		}
+		// Version has to carry the newest version, not stay empty: the shared addon
+		// cache keys versioned UIData by it (Cache.listVersionRegistryUIDataAndCache),
+		// so an empty value writes a dead "<name>-" entry and leaves `vela addon
+		// list` showing a blank version for cached OCI registries.
 		addons = append(addons, &UIData{
 			Meta: Meta{
 				Name:        entry.Name,
 				Description: entry.Description,
+				Version:     newestOCICatalogVersion(entry.Versions),
 			},
 			AvailableVersions: entry.Versions,
 		})
@@ -117,6 +128,30 @@ func decodeOCIAddonCatalog(archive []byte) ([]*UIData, error) {
 		return addons[a].Name < addons[b].Name
 	})
 	return addons, nil
+}
+
+// newestOCICatalogVersion returns the highest semver in versions, falling back to
+// the first entry when none of them parse. Catalog entries are written sorted by
+// listOCITags, but a hand-edited catalog need not be.
+func newestOCICatalogVersion(versions []string) string {
+	var newest *semver.Version
+	var newestRaw string
+	for _, v := range versions {
+		parsed, err := semver.NewVersion(v)
+		if err != nil {
+			continue
+		}
+		if newest == nil || parsed.GreaterThan(newest) {
+			newest, newestRaw = parsed, v
+		}
+	}
+	if newestRaw != "" {
+		return newestRaw
+	}
+	if len(versions) > 0 {
+		return versions[0]
+	}
+	return ""
 }
 
 // updateOCIAddonCatalog upserts an addon after it has been pushed and publishes

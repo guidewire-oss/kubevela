@@ -165,6 +165,23 @@ func listOCITags(_ context.Context, repoRef, host, username, password string) ([
 	return client.Tags(repoRef)
 }
 
+// isOCIRepositoryAbsentError reports whether err is a registry answer meaning
+// "this repository does not exist" rather than "this repository could not be
+// read". The distinction matters on the first push to a registry: there is no
+// catalog to preserve yet, so publishing one is safe.
+//
+// oras-go v1.2.5 builds these errors with fmt.Errorf and keeps its error types
+// in pkg/registry/remote/internal/errutil, so the status code is only reachable
+// through the message. A miss is safe -- callers fall back to their
+// conservative branch and refuse to rewrite the catalog.
+func isOCIRepositoryAbsentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "status code 404") || strings.Contains(msg, "name unknown")
+}
+
 // listOCIRepositories enumerates the OCI distribution catalog and returns
 // repository names relative to the configured registry prefix. The catalog API
 // is paginated through RFC 5988 Link headers.

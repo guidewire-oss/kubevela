@@ -1524,6 +1524,10 @@ func TestIsSkippableRegistryError(t *testing.T) {
 	assert.True(t, isSkippableRegistryError(ErrNotExist))
 	assert.True(t, isSkippableRegistryError(ErrFetch))
 	assert.True(t, isSkippableRegistryError(fmt.Errorf("wrapped: %w", ErrFetch)))
+	// An OCI registry with no catalog yet has nothing to offer, which is the same
+	// situation as ErrNotExist elsewhere: skip it and try the next registry.
+	assert.True(t, isSkippableRegistryError(ErrOCICatalogAbsent))
+	assert.True(t, isSkippableRegistryError(fmt.Errorf("wrapped: %w", ErrOCICatalogAbsent)))
 	assert.False(t, isSkippableRegistryError(errors.New("some addon-specific failure")))
 	assert.False(t, isSkippableRegistryError(nil))
 }

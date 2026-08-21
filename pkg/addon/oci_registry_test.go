@@ -155,6 +155,46 @@ func TestDecodeOCIAddonCatalog(t *testing.T) {
 	assert.Equal(t, "Flux", addons[0].Description)
 	assert.Equal(t, []string{"3.0.2", "3.0.1"}, addons[0].AvailableVersions)
 	assert.Equal(t, "velaux", addons[1].Name)
+
+	// Version has to carry the newest version. The shared addon cache keys
+	// versioned UIData by it, so an empty value writes a dead "<name>-" entry.
+	assert.Equal(t, "3.0.2", addons[0].Version)
+	assert.Equal(t, "1.0.0", addons[1].Version)
+}
+
+func TestNewestOCICatalogVersion(t *testing.T) {
+	assert.Equal(t, "3.0.2", newestOCICatalogVersion([]string{"3.0.2", "3.0.1"}))
+	// Order in the catalog is not trusted.
+	assert.Equal(t, "3.0.10", newestOCICatalogVersion([]string{"3.0.2", "3.0.10"}))
+	// A release outranks its own prerelease.
+	assert.Equal(t, "1.0.0", newestOCICatalogVersion([]string{"1.0.0-rc.1", "1.0.0"}))
+	// Nothing parses: fall back rather than reporting no version at all.
+	assert.Equal(t, "nightly", newestOCICatalogVersion([]string{"nightly", "edge"}))
+	assert.Equal(t, "", newestOCICatalogVersion(nil))
+}
+
+// TestIsOCIRepositoryAbsentError pins the classifier that decides whether the
+// first push to a registry may bootstrap a catalog. oras-go v1.2.5 keeps its
+// error types in an internal package, so the status code is only reachable
+// through the message -- these are the shapes it actually produces.
+func TestIsOCIRepositoryAbsentError(t *testing.T) {
+	absent := []error{
+		errors.New(`GET "https://reg.example.com/v2/addon/kubevela-addon-catalog/tags/list": unexpected status code 404: name unknown: repository name not known to registry`),
+		fmt.Errorf("wrapped: %w", errors.New(`unexpected status code 404: Not Found`)),
+	}
+	for _, err := range absent {
+		assert.True(t, isOCIRepositoryAbsentError(err), "expected absent for: %v", err)
+	}
+
+	present := []error{
+		nil,
+		errors.New(`unexpected status code 401: unauthorized: authentication required`),
+		errors.New(`unexpected status code 403: denied`),
+		errors.New(`dial tcp: i/o timeout`),
+	}
+	for _, err := range present {
+		assert.False(t, isOCIRepositoryAbsentError(err), "expected not-absent for: %v", err)
+	}
 }
 
 func TestOCIRegistryPrefersPortableCatalog(t *testing.T) {
