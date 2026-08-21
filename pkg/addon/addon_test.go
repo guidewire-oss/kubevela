@@ -1533,10 +1533,14 @@ func TestIsSkippableRegistryError(t *testing.T) {
 }
 
 func TestGetAddonMetaClassifiesBrokenRegistryAsFetchError(t *testing.T) {
+	// Port 1 on loopback refuses immediately, so the classification is exercised
+	// without reaching the network. Pointing this at github.com made a unit test
+	// depend on live connectivity, and a slow or blocked fetch would still have
+	// satisfied the assertion -- for the wrong reason.
 	h := &Installer{
 		r: &Registry{
 			Name: "mygit",
-			Git:  &GitAddonSource{URL: "https://github.com/", Path: ""},
+			Git:  &GitAddonSource{URL: "http://127.0.0.1:1/owner/repo", Path: ""},
 		},
 	}
 	_, err := h.getAddonMeta()

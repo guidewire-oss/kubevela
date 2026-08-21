@@ -165,21 +165,31 @@ func listOCITags(_ context.Context, repoRef, host, username, password string) ([
 	return client.Tags(repoRef)
 }
 
-// isOCIRepositoryAbsentError reports whether err is a registry answer meaning
-// "this repository does not exist" rather than "this repository could not be
-// read". The distinction matters on the first push to a registry: there is no
-// catalog to preserve yet, so publishing one is safe.
+// ociErrCodeNameUnknown is how the OCI distribution spec reports a repository
+// that does not exist. oras-go renders the code by lowercasing it and turning
+// underscores into spaces (NAME_UNKNOWN -> "name unknown").
+const ociErrCodeNameUnknown = "name unknown"
+
+// isOCIRepositoryAbsentError reports whether err is a registry answer confirming
+// "this repository does not exist", as opposed to "this repository could not be
+// read". Only the first lets the caller publish a catalog, because there is
+// nothing to preserve; misreading the second rebuilds the catalog from an empty
+// list and drops every addon already published.
 //
-// oras-go v1.2.5 builds these errors with fmt.Errorf and keeps its error types
-// in pkg/registry/remote/internal/errutil, so the status code is only reachable
-// through the message. A miss is safe -- callers fall back to their
-// conservative branch and refuse to rewrite the catalog.
+// The test is the NAME_UNKNOWN error code, not the 404 status. A bare 404 is
+// ambiguous -- a proxy, a gateway, or a registry that does not serve the
+// tag-list route answers the same way for a repository that does exist -- so it
+// stays on the conservative branch.
+//
+// The code has to be read out of the message: oras-go v1.2.5 builds these errors
+// with fmt.Errorf and keeps its error types in the unexported
+// pkg/registry/remote/internal/errutil. A miss is safe in the same direction --
+// callers refuse to rewrite the catalog.
 func isOCIRepositoryAbsentError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "status code 404") || strings.Contains(msg, "name unknown")
+	return strings.Contains(err.Error(), ociErrCodeNameUnknown)
 }
 
 // listOCIRepositories enumerates the OCI distribution catalog and returns

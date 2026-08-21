@@ -180,19 +180,24 @@ func TestNewestOCICatalogVersion(t *testing.T) {
 func TestIsOCIRepositoryAbsentError(t *testing.T) {
 	absent := []error{
 		errors.New(`GET "https://reg.example.com/v2/addon/kubevela-addon-catalog/tags/list": unexpected status code 404: name unknown: repository name not known to registry`),
-		fmt.Errorf("wrapped: %w", errors.New(`unexpected status code 404: Not Found`)),
+		fmt.Errorf("wrapped: %w", errors.New(`unexpected status code 404: name unknown: The repository with name 'addon/kubevela-addon-catalog' does not exist in the registry`)),
 	}
 	for _, err := range absent {
 		assert.True(t, isOCIRepositoryAbsentError(err), "expected absent for: %v", err)
 	}
 
-	present := []error{
+	notAbsent := []error{
 		nil,
 		errors.New(`unexpected status code 401: unauthorized: authentication required`),
 		errors.New(`unexpected status code 403: denied`),
 		errors.New(`dial tcp: i/o timeout`),
+		// A bare 404 carries no error code, so it cannot be told apart from a
+		// proxy or a registry that does not serve the tag-list route. Reading it
+		// as an absence would rebuild the catalog from empty and drop every
+		// addon already published, so it stays on the conservative branch.
+		errors.New(`unexpected status code 404: Not Found`),
 	}
-	for _, err := range present {
+	for _, err := range notAbsent {
 		assert.False(t, isOCIRepositoryAbsentError(err), "expected not-absent for: %v", err)
 	}
 }

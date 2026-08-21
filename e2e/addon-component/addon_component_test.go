@@ -120,11 +120,25 @@ var _ = Describe("Addon as component e2e", func() {
 			if reg.OSS == nil {
 				return fmt.Errorf("registry %q is not OSS-backed (got %+v); expected the e2e/addon/mock server", addonRegistry, reg)
 			}
-			resp, err := http.Get(reg.OSS.Endpoint) //nolint:gosec // G107: fixed local mock endpoint read from the registry config, not user input
+			// An explicit timeout matters here: Eventually cannot preempt a
+			// function that is already running, so a hung dial on the default
+			// client would block past the 30s deadline and stall the suite
+			// instead of failing it.
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, reg.OSS.Endpoint, nil)
+			if err != nil {
+				return err
+			}
+			resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 			if err != nil {
 				return fmt.Errorf("mock addon server at %q is not reachable: %w (has `make e2e-setup-core` run yet?)", reg.OSS.Endpoint, err)
 			}
 			defer resp.Body.Close()
+			// A completed connection is not a working server: without this the
+			// probe passes against anything that answers, including a 404 from an
+			// unrelated service on the port.
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("mock addon server at %q answered %s; expected 200", reg.OSS.Endpoint, resp.Status)
+			}
 			return nil
 		}, 30*time.Second, time.Second).Should(Succeed())
 	})

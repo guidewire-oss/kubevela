@@ -72,8 +72,12 @@ func hostGatewayAddress() string {
 		if gateway == "" {
 			continue
 		}
+		// Return the parsed form, not the raw string: To4 also accepts the
+		// IPv4-mapped IPv6 spelling (::ffff:172.18.0.1), and splicing that into
+		// http://host:port yields a malformed URL. To4().String() normalizes it to
+		// dotted-quad and leaves a plain IPv4 gateway unchanged.
 		if ip := net.ParseIP(gateway); ip != nil && ip.To4() != nil {
-			return gateway
+			return ip.To4().String()
 		}
 	}
 	log.Printf("kind network inspect returned no IPv4 gateway (raw config: %q), falling back to 127.0.0.1", strings.TrimSpace(string(out)))
