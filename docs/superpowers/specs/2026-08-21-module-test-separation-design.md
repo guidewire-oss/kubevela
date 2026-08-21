@@ -5,10 +5,10 @@
 This refactor is limited to `pkg/module` and its `service` subpackage. Other
 packages under `pkg` are intentionally left unchanged.
 
-The goal is to leave `pkg/module` with business logic, isolated unit tests,
-and only the smallest checked-in fixture directly required by those unit
-tests. Tests that communicate with an OCI registry or Kubernetes cluster,
-and the data supporting those tests, belong under `test/e2e-test`.
+The goal is to leave `pkg/module` with business logic and isolated unit tests,
+without checked-in testdata. Tests that communicate with an OCI registry or
+Kubernetes cluster, and the data supporting those tests, belong under
+`test/e2e-test`.
 
 ## Current State
 
@@ -35,8 +35,8 @@ validates fetching through the module service.
 
 The following remain unit tests in `pkg/module`:
 
-- parsing and validation against `fs.FS`, temporary directories, or the
-  minimal fixture;
+- parsing and validation against `fs.FS` or temporary directories populated
+  by a small test helper;
 - packaging and archive-shape behavior performed entirely in process;
 - registry selection using the controller-runtime fake client;
 - service fetch behavior with injected readers, pullers, and stores;
@@ -53,17 +53,16 @@ The following belong in `test/e2e-test`:
 
 ## Repository Changes
 
-Package tests that currently use `testdata/modules/s3` for generic valid-module
-behavior will use `testdata/modules/minimal` instead. Expected module names and
-archive paths will be updated accordingly. Tests that need a deliberately
-special tree will continue creating it in `t.TempDir`, keeping each scenario
-local and explicit.
+Package tests that need a valid module directory will call one shared test
+helper. The helper writes a minimal five-file module into `t.TempDir`: module
+metadata, version metadata, one XRD, one composition, and one definition.
+Tests that need a deliberately special tree continue creating their own
+temporary data, keeping each scenario local and explicit.
 
-After all package references are removed, delete
-`pkg/module/testdata/modules/s3`. Keep
-`pkg/module/testdata/modules/minimal` unchanged because all five files are
-directly exercised: the valid parse checks all resources, and the optional
-resource tests remove the XRD or composition from private copies.
+Delete both `pkg/module/testdata/modules/s3` and
+`pkg/module/testdata/modules/minimal`. The realistic `s3` data belongs outside
+the package, while the tiny valid-module data is clearer as test-only Go input
+created independently for each unit test.
 
 Delete the two integration test files from `pkg/module`. Their live-registry
 coverage will live in `test/e2e-test` and reuse the existing `e2e-widget`
@@ -79,8 +78,7 @@ the full module workflow against Kubernetes.
 ## Path and Dependency Rules
 
 No test under `pkg/module` may reference `test/e2e-test` or another package's
-fixture tree. Package unit tests may reference only the local minimal fixture
-or data created during the test.
+fixture tree. Package unit tests may use only data created during the test.
 
 E2E tests resolve their fixture paths from the repository root rather than
 depending on the process working directory. The two registry tests share the
@@ -93,14 +91,13 @@ Unrelated tracked and untracked worktree changes must remain untouched.
 Verification will cover:
 
 1. A repository-wide reference scan proving no path still names the removed
-   integration files or `pkg/module/testdata/modules/s3`.
+   integration files or anything under `pkg/module/testdata`.
 2. `go test ./pkg/module/... -count=1` for all retained unit tests.
 3. Targeted live-registry tests under `test/e2e-test` against a local OCI
    registry.
 4. The focused module publish/deploy Ginkgo scenario against the supplied
    Kubernetes cluster.
-5. A final diff and fixture inventory confirming `pkg/module/testdata`
-   contains only the minimal module fixture.
+5. A final layout check confirming `pkg/module/testdata` no longer exists.
 
 If cluster access is unavailable from the execution sandbox, the exact failed
 command and connectivity error will be reported rather than treating the E2E
