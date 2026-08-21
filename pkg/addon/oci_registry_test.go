@@ -498,3 +498,79 @@ func TestOCIListAddonKeepsReadFailuresDistinct(t *testing.T) {
 		}
 	})
 }
+
+// TestClassifyCatalogAbsenceProbe pins the gate that authorises overwriting a
+// published catalog. Only a registry stating that the repository does not exist
+// may pass; every other answer is a refusal, because a wrong "absent" silently
+// drops every addon already published while a wrong "present" only refuses a
+// push with a message the operator can act on.
+func TestClassifyCatalogAbsenceProbe(t *testing.T) {
+	const repo = "reg.example.com/addon/kubevela-addon-catalog"
+
+	t.Run("a confirmed missing repository is the only pass", func(t *testing.T) {
+		err := classifyCatalogAbsenceProbe(repo, nil,
+			errors.New(`unexpected status code 404: name unknown: repository name not known to registry`))
+		assert.NoError(t, err)
+	})
+
+	t.Run("a bare 404 is refused", func(t *testing.T) {
+		// A proxy, a gateway, or a registry that does not serve the tag-list
+		// route answers this way for a repository that does exist.
+		err := classifyCatalogAbsenceProbe(repo, nil, errors.New(`unexpected status code 404: Not Found`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot confirm whether")
+	})
+
+	t.Run("a transient failure is refused", func(t *testing.T) {
+		err := classifyCatalogAbsenceProbe(repo, nil, errors.New("dial tcp: i/o timeout"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot confirm whether")
+	})
+
+	t.Run("an auth failure is refused", func(t *testing.T) {
+		err := classifyCatalogAbsenceProbe(repo, nil,
+			errors.New(`unexpected status code 401: unauthorized: authentication required`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cannot confirm whether")
+	})
+
+	t.Run("a published tag that could not be read is refused", func(t *testing.T) {
+		err := classifyCatalogAbsenceProbe(repo, []string{"0.0.4", "0.0.3"}, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `holds catalog tag "0.0.4"`)
+	})
+
+	t.Run("an existing repository with no semver tag is refused", func(t *testing.T) {
+		// helm's tag listing drops anything that is not strict semver, so an
+		// empty result does not mean the repository is empty -- a catalog tagged
+		// "latest" or "v0.0.1" is invisible here.
+		err := classifyCatalogAbsenceProbe(repo, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exposes no semver-tagged catalog")
+	})
+}
+
+// TestOCIRegistryGetAddonUIDataCarriesAvailableVersions covers the field the UI
+// and the shared addon cache read to offer version choices. loadAddon builds the
+// package from the chart archive alone, which carries no notion of sibling tags,
+// so the tag list it already fetched to resolve "latest" has to be attached.
+func TestOCIRegistryGetAddonUIDataCarriesAvailableVersions(t *testing.T) {
+	data, err := os.ReadFile("./testdata/helm-repo/fluxcd-1.0.0.tgz")
+	require.NoError(t, err)
+
+	reg := &ociRegistry{
+		name: "ecr", url: "oci://reg.example.com/addon",
+		tagsFn: func(_ context.Context, _, _, _, _ string) ([]string, error) {
+			return []string{"3.0.1", "2.0.0", "1.0.0"}, nil
+		},
+		pullFn: func(_ context.Context, _, _, _, _ string) ([]byte, error) { return data, nil },
+	}
+
+	ui, err := reg.GetAddonUIData(context.Background(), "fluxcd", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"3.0.1", "2.0.0", "1.0.0"}, ui.AvailableVersions)
+
+	whole, err := reg.GetDetailedAddon(context.Background(), "fluxcd", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"3.0.1", "2.0.0", "1.0.0"}, whole.AvailableVersions)
+}

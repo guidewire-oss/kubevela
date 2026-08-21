@@ -154,6 +154,42 @@ func newestOCICatalogVersion(versions []string) string {
 	return ""
 }
 
+// confirmPortableCatalogAbsent re-probes the catalog repository to confirm that
+// there is genuinely no catalog to preserve, and returns an error describing why
+// it could not be confirmed otherwise.
+func confirmPortableCatalogAbsent(ctx context.Context, source *OCIAddonSource) error {
+	repoRef, host := ociRepoRef(source.URL, ociCatalogChartName)
+	tags, err := listOCITags(ctx, repoRef, host, source.Username, source.Token)
+	return classifyCatalogAbsenceProbe(repoRef, tags, err)
+}
+
+// classifyCatalogAbsenceProbe decides whether a tag-list probe of the catalog
+// repository confirms that no catalog exists. It returns nil only for a
+// confirmed absence.
+//
+// The asymmetry is deliberate. Wrongly concluding "absent" republishes the
+// catalog with a single addon and silently drops every other entry, with no
+// signal to the operator. Wrongly concluding "present" refuses a push and says
+// why, which the operator can act on. So anything short of the registry stating
+// that the repository does not exist is a refusal.
+func classifyCatalogAbsenceProbe(repoRef string, tags []string, probeErr error) error {
+	switch {
+	case probeErr != nil && isOCIRepositoryAbsentError(probeErr):
+		// The registry states the repository does not exist. Nothing to lose.
+		return nil
+	case probeErr != nil:
+		return errors.Wrapf(probeErr, "refusing to rewrite the OCI addon catalog: cannot confirm whether %s already holds a catalog", repoRef)
+	case len(tags) > 0:
+		return errors.Errorf("refusing to rewrite the OCI addon catalog: %s holds catalog tag %q, which could not be read; publishing now would drop every addon already listed there", repoRef, tags[0])
+	default:
+		// The repository answered without stating that it does not exist, yet
+		// exposes no semver tag. helm's tag listing drops anything that is not
+		// strict semver ("latest", "v0.0.1", "1.0"), so a catalog may well be
+		// published here under a tag this code cannot see.
+		return errors.Errorf("refusing to rewrite the OCI addon catalog: %s did not report a missing repository but exposes no semver-tagged catalog, so its contents cannot be confirmed; delete the repository to start a fresh catalog", repoRef)
+	}
+}
+
 // updateOCIAddonCatalog upserts an addon after it has been pushed and publishes
 // a new catalog chart version. The fixed catalog repository makes discovery
 // portable across OCI registries.
@@ -176,6 +212,15 @@ func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source 
 		// only this addon and silently drop every other entry.
 		if !errors.Is(err, ErrOCICatalogAbsent) {
 			return errors.Wrap(err, "refusing to rewrite the OCI addon catalog: cannot read the existing catalog")
+		}
+		// ErrOCICatalogAbsent is the right answer for readers -- there is nothing
+		// to list -- but it is too weak to authorise an overwrite. Several
+		// non-absences reach it: a tag list that survives helm's strict-semver
+		// filter empty, a 404 from a proxy or gateway, and a registry that does
+		// not serve /v2/_catalog. Confirm the absence against the catalog
+		// repository itself before replacing what is published there.
+		if err := confirmPortableCatalogAbsent(ctx, source); err != nil {
+			return err
 		}
 		existing = nil
 	}

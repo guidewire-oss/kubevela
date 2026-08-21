@@ -127,7 +127,11 @@ func (r registryImpl) ListRegistries(ctx context.Context) ([]Registry, error) {
 	// registry holding an addon wins in FindAddonPackagesDetailFromRegistry, and
 	// mergeAddonInfoMaps folds later registries onto earlier ones -- so an addon
 	// present in two registries would otherwise resolve differently call to call.
-	// Sorting by name is arbitrary but stable.
+	//
+	// By name, because that is the order the data is already stored in: the
+	// registries live in a JSON object, which loses insertion order, and
+	// encoding/json sorts map keys when AddRegistry marshals it back. So this
+	// reproduces the ConfigMap's own order rather than inventing a priority.
 	names := make([]string, 0, len(registries))
 	for name := range registries {
 		names = append(names, name)

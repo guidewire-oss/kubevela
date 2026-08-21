@@ -105,9 +105,12 @@ func ociRepoRef(url, addon string) (repoRef, host string) {
 
 // resolveVersion returns the tag to pull. A pinned version is used as-is; an
 // empty version is resolved to the highest semver tag published in the repo.
-func (i *ociRegistry) resolveVersion(ctx context.Context, repoRef, host, version string) (string, error) {
+// resolveVersion picks the tag to pull and also reports the tags it saw getting
+// there, so callers can fill in AvailableVersions without a second round trip.
+// A pinned version needs no listing and returns no tag list.
+func (i *ociRegistry) resolveVersion(ctx context.Context, repoRef, host, version string) (string, []string, error) {
 	if version != "" {
-		return version, nil
+		return version, nil, nil
 	}
 	list := i.tagsFn
 	if list == nil {
@@ -115,13 +118,13 @@ func (i *ociRegistry) resolveVersion(ctx context.Context, repoRef, host, version
 	}
 	tags, err := list(ctx, repoRef, host, i.username, i.token)
 	if err != nil {
-		return "", errors.Wrapf(err, "failed to list tags for OCI addon %s", repoRef)
+		return "", nil, errors.Wrapf(err, "failed to list tags for OCI addon %s", repoRef)
 	}
 	if len(tags) == 0 {
-		return "", errors.Wrapf(ErrNotExist, "no semver tags found for OCI addon %s; push a versioned tag or pin an explicit version", repoRef)
+		return "", nil, errors.Wrapf(ErrNotExist, "no semver tags found for OCI addon %s; push a versioned tag or pin an explicit version", repoRef)
 	}
 	// helm's Tags returns semver-filtered, highest-first.
-	return tags[0], nil
+	return tags[0], tags, nil
 }
 
 // newOCIClient builds an authenticated Helm OCI registry client.
@@ -295,7 +298,7 @@ func (i *ociRegistry) loadAddon(ctx context.Context, name, version string) (pkg 
 	}()
 
 	repoRef, host := ociRepoRef(i.url, name)
-	resolved, err := i.resolveVersion(ctx, repoRef, host, version)
+	resolved, available, err := i.resolveVersion(ctx, repoRef, host, version)
 	if err != nil {
 		return nil, err
 	}
@@ -317,6 +320,12 @@ func (i *ociRegistry) loadAddon(ctx context.Context, name, version string) (pkg 
 		return nil, err
 	}
 	pkg.RegistryName = i.name
+	// loadAddonPackage builds the package from the chart archive, which knows
+	// nothing about sibling tags, so AvailableVersions would otherwise stay empty
+	// and the UI would show the addon as having a single version. versionedRegistry
+	// attaches its version list the same way. A pinned request lists no tags and
+	// so carries no list -- the caller asked about one version.
+	pkg.AvailableVersions = available
 	klog.V(5).Infof("Addon '%s' loaded from OCI registry '%s' (%s)", name, i.name, ref)
 	return pkg, nil
 }

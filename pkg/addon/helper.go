@@ -281,6 +281,10 @@ func FindAddonPackagesDetailFromRegistry(ctx context.Context, k8sClient client.C
 	// Appending a second copy from a later registry would leave callers that take
 	// addons[0] resolving against one registry while the duplicate advertises
 	// another.
+	//
+	// That makes the result only as stable as the registry order, which is why
+	// RegistryDataStore.ListRegistries sorts rather than iterating its decoded
+	// map -- otherwise addons[0] would switch registries between calls.
 	foundAddons := make(map[string]bool)
 	merge := func(addon *WholeAddonPackage) {
 		if foundAddons[addon.Name] {
