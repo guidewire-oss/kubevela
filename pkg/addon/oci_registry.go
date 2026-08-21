@@ -78,9 +78,19 @@ func BuildOCIRegistry(name, url, username, token string) VersionedRegistry {
 	}
 }
 
-// ociRegistryLocation returns the registry host and repository prefix.
+// ociRegistryLocation returns the registry host and repository prefix. Any of
+// the schemes a registry URL is written with is stripped first: without that,
+// an "http://" URL splits at the scheme's own slash and yields the host
+// "http:".
 func ociRegistryLocation(rawURL string) (host, prefix string) {
-	base := strings.Trim(strings.TrimPrefix(rawURL, "oci://"), "/")
+	base := rawURL
+	for _, scheme := range []string{"oci://", "https://", "http://"} {
+		if len(base) >= len(scheme) && strings.EqualFold(base[:len(scheme)], scheme) {
+			base = base[len(scheme):]
+			break
+		}
+	}
+	base = strings.Trim(base, "/")
 	host = base
 	if i := strings.Index(base, "/"); i >= 0 {
 		host = base[:i]
