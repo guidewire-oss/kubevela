@@ -29,6 +29,7 @@
 > - `KEP-2.20`: Module & API Line Versioning — module identity model, definition naming convention, API line coexistence and deprecation lifecycle; extends KEP-2.13
 > - `KEP-2.21`: `from*` family resolution model — render-time resolution pass, admission schema validation, and shorthand syntax shared by `fromParameter`, `fromSource`, and `fromDependency`
 > - `KEP-2.22`: Multi-Instance Addons — `instance` field in `_module.cue`, per-instance Addon CR naming, namespace-scoped definition isolation
+> - `KEP-2.25`: `@uses` CUE Imports: a resolution pass that fetches CUE from a configured addon registry and builds it into real imports for one compilation, cached in ConfigMaps and pinned into the ApplicationRevision lock
 
 ---
 
@@ -353,3 +354,4 @@ This subsumes the current workaround of maintaining manual RBAC groups per defin
 | KEP-2.20 | Module & API Line Versioning | High | [2.20-module-versioning/README.md](2.20-module-versioning/README.md) |
 | KEP-2.21 | `from*` family resolution model | High | [2.21-from-resolution/README.md](2.21-from-resolution/README.md) |
 | KEP-2.22 | Multi-Instance Addons | Medium | [2.22-multi-instance-addons/README.md](2.22-multi-instance-addons/README.md) |
+| KEP-2.25 | `@uses` CUE Imports from a Registry | High | [2.25-cue-imports/README.md](2.25-cue-imports/README.md) |
