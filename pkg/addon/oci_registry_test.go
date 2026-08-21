@@ -69,6 +69,7 @@ func TestOCIRepoRef(t *testing.T) {
 	cases := map[string]struct {
 		url, addon         string
 		wantRepo, wantHost string
+		wantPlainHTTP      bool
 	}{
 		"with scheme": {
 			url: "oci://reg.example.com/addon", addon: "fluxcd",
@@ -82,12 +83,18 @@ func TestOCIRepoRef(t *testing.T) {
 			url: "oci://reg.example.com/addon/", addon: "velaux",
 			wantRepo: "reg.example.com/addon/velaux", wantHost: "reg.example.com",
 		},
+		"plain http scheme": {
+			url: "http://reg.example.com/addon", addon: "fluxcd",
+			wantRepo: "reg.example.com/addon/fluxcd", wantHost: "reg.example.com",
+			wantPlainHTTP: true,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			repo, host := ociRepoRef(tc.url, tc.addon)
+			repo, host, plainHTTP := ociRepoRef(tc.url, tc.addon)
 			assert.Equal(t, tc.wantRepo, repo)
 			assert.Equal(t, tc.wantHost, host)
+			assert.Equal(t, tc.wantPlainHTTP, plainHTTP)
 		})
 	}
 }
@@ -191,13 +198,13 @@ func TestOCIRegistryLoadAddon(t *testing.T) {
 		url:      "oci://reg.example.com/addon",
 		username: "AWS",
 		token:    "secret",
-		tagsFn: func(_ context.Context, repoRef, host, user, pass string) ([]string, error) {
+		tagsFn: func(_ context.Context, repoRef, host string, _ bool, user, pass string) ([]string, error) {
 			assert.Equal(t, "reg.example.com/addon/fluxcd", repoRef)
 			assert.Equal(t, "reg.example.com", host)
 			// helm's Tags returns semver-sorted, highest first.
 			return []string{"3.0.1", "2.0.0", "1.0.0"}, nil
 		},
-		pullFn: func(_ context.Context, ref, host, user, pass string) ([]byte, error) {
+		pullFn: func(_ context.Context, ref, host string, _ bool, user, pass string) ([]byte, error) {
 			assert.Equal(t, "reg.example.com/addon/fluxcd:3.0.1", ref)
 			assert.Equal(t, "reg.example.com", host)
 			assert.Equal(t, "AWS", user)
@@ -242,10 +249,10 @@ func TestOCIRegistryLoadFiles(t *testing.T) {
 		url:      "oci://reg.example.com/addon",
 		username: "AWS",
 		token:    "secret",
-		tagsFn: func(_ context.Context, _, _, _, _ string) ([]string, error) {
+		tagsFn: func(_ context.Context, _, _ string, _ bool, _, _ string) ([]string, error) {
 			return []string{"1.0.0"}, nil
 		},
-		pullFn: func(_ context.Context, ref, _, _, _ string) ([]byte, error) {
+		pullFn: func(_ context.Context, ref, _ string, _ bool, _, _ string) ([]byte, error) {
 			assert.Equal(t, "reg.example.com/addon/fluxcd:1.0.0", ref)
 			return data, nil
 		},
@@ -281,11 +288,11 @@ func TestOCIRegistryExplicitVersion(t *testing.T) {
 
 	reg := &ociRegistry{
 		name: "ecr", url: "oci://reg.example.com/addon", username: "AWS", token: "secret",
-		tagsFn: func(_ context.Context, _, _, _, _ string) ([]string, error) {
+		tagsFn: func(_ context.Context, _, _ string, _ bool, _, _ string) ([]string, error) {
 			t.Fatalf("tag listing must not be called when a version is pinned")
 			return nil, nil
 		},
-		pullFn: func(_ context.Context, ref, _, _, _ string) ([]byte, error) {
+		pullFn: func(_ context.Context, ref, _ string, _ bool, _, _ string) ([]byte, error) {
 			assert.Equal(t, "reg.example.com/addon/fluxcd:3.0.1", ref)
 			return data, nil
 		},
@@ -299,7 +306,7 @@ func TestOCIRegistryExplicitVersion(t *testing.T) {
 func TestOCIRegistryNoTags(t *testing.T) {
 	reg := &ociRegistry{
 		name: "ecr", url: "oci://reg.example.com/addon",
-		tagsFn: func(_ context.Context, _, _, _, _ string) ([]string, error) {
+		tagsFn: func(_ context.Context, _, _ string, _ bool, _, _ string) ([]string, error) {
 			return []string{}, nil
 		},
 	}

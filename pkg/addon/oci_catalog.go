@@ -60,15 +60,15 @@ type ociCatalogIndexLister func(ctx context.Context, registryURL, username, pass
 // its repository name is fixed, it only uses portable OCI operations: list tags
 // for a known repository and pull a known manifest.
 func listPortableOCICatalog(ctx context.Context, registryURL, username, password string) ([]*UIData, error) {
-	repoRef, host := ociRepoRef(registryURL, ociCatalogChartName)
-	tags, err := listOCITags(ctx, repoRef, host, username, password)
+	repoRef, host, plainHTTP := ociRepoRef(registryURL, ociCatalogChartName)
+	tags, err := listOCITags(ctx, repoRef, host, plainHTTP, username, password)
 	if err != nil {
 		return nil, errors.Wrap(err, "portable OCI addon catalog is unavailable")
 	}
 	if len(tags) == 0 {
 		return nil, errors.New("portable OCI addon catalog has no semver tags")
 	}
-	archive, err := pullOCIChart(ctx, repoRef+":"+tags[0], host, username, password)
+	archive, err := pullOCIChart(ctx, repoRef+":"+tags[0], host, plainHTTP, username, password)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to pull portable OCI addon catalog")
 	}
@@ -139,8 +139,8 @@ func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source 
 		existing = nil
 	}
 
-	addonRepo, host := ociRepoRef(source.URL, addonMeta.Name)
-	versions, err := listOCITags(ctx, addonRepo, host, source.Username, source.Token)
+	addonRepo, host, plainHTTP := ociRepoRef(source.URL, addonMeta.Name)
+	versions, err := listOCITags(ctx, addonRepo, host, plainHTTP, source.Username, source.Token)
 	if err != nil {
 		return errors.Wrapf(err, "failed to list versions for OCI addon %s", addonMeta.Name)
 	}
@@ -171,9 +171,9 @@ func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source 
 		return errors.Wrap(err, "failed to encode portable OCI addon catalog")
 	}
 
-	catalogRepo, _ := ociRepoRef(source.URL, ociCatalogChartName)
+	catalogRepo, _, _ := ociRepoRef(source.URL, ociCatalogChartName)
 	catalogVersion := "0.0.1"
-	catalogTags, tagErr := listOCITags(ctx, catalogRepo, host, source.Username, source.Token)
+	catalogTags, tagErr := listOCITags(ctx, catalogRepo, host, plainHTTP, source.Username, source.Token)
 	if tagErr == nil && len(catalogTags) > 0 {
 		current, parseErr := semver.NewVersion(catalogTags[0])
 		if parseErr != nil {

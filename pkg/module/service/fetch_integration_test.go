@@ -20,6 +20,7 @@ limitations under the License.
 package service
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -30,42 +31,60 @@ import (
 )
 
 // TestFetchModule_RoundTrip publishes the s3 testdata module to a real git and a
-// real OCI registry, then fetches each back and asserts an equal Module. It skips
-// cleanly when the registries or the publish command are unavailable, so the
-// default `go test` run (no integration tag) never touches it.
+// real OCI registry, then fetches each back. Each leg runs in its own t.Run so a
+// skip in one (t.Skip calls runtime.Goexit, which would otherwise abort the whole
+// test function on its single goroutine) cannot prevent the other from running.
+// It skips cleanly when a registry is unavailable, so the default `go test` run
+// (no integration tag) never touches it.
+//
+// There is no cross-registry assertion comparing the git and OCI results: git
+// catalog publish is out of scope for GWCP-106685, so nothing here can publish to
+// a git registry yet. Restore that comparison once a story adds it.
 func TestFetchModule_RoundTrip(t *testing.T) {
-	gitURL := os.Getenv("MODULE_GIT_REGISTRY")
-	ociURL := os.Getenv("MODULE_OCI_REGISTRY")
-	if gitURL == "" || ociURL == "" {
-		t.Skip("set MODULE_GIT_REGISTRY and MODULE_OCI_REGISTRY to run the round-trip")
-	}
-
-	gitMod := publishAndFetch(t, gitURL, addon.Registry{
-		Name: "git-live", Git: &addon.GitAddonSource{URL: gitURL, Path: "module"},
-	})
-	ociMod := publishAndFetch(t, ociURL, addon.Registry{
-		Name: "oci-live", OCI: &addon.OCIAddonSource{URL: ociURL},
+	t.Run("git", func(t *testing.T) {
+		gitURL := os.Getenv("MODULE_GIT_REGISTRY")
+		if gitURL == "" {
+			t.Skip("set MODULE_GIT_REGISTRY to run the round-trip")
+		}
+		publishAndFetch(t, gitURL, addon.Registry{
+			Name: "git-live", Git: &addon.GitAddonSource{URL: gitURL, Path: "module"},
+		})
 	})
 
-	require.Equal(t, gitMod.Name, ociMod.Name)
-	require.Equal(t, gitMod.Version, ociMod.Version)
-	require.Equal(t, len(gitMod.Lines), len(ociMod.Lines))
-	require.Contains(t, gitMod.Lines, "v1")
-	require.Contains(t, ociMod.Lines, "v1")
+	t.Run("oci", func(t *testing.T) {
+		ociURL := os.Getenv("MODULE_OCI_REGISTRY")
+		if ociURL == "" {
+			t.Skip("set MODULE_OCI_REGISTRY to run the round-trip")
+		}
+		source, err := module.ParseModuleDir("../testdata/modules/s3")
+		require.NoError(t, err)
+
+		mod := publishAndFetch(t, ociURL, addon.Registry{
+			Name: "oci-live", OCI: &addon.OCIAddonSource{URL: ociURL},
+		})
+		require.Equal(t, source.Name, mod.Name)
+		require.Equal(t, source.Version, mod.Version)
+		require.Contains(t, mod.Lines, "v1")
+	})
 }
 
-// publishAndFetch publishes the s3 testdata module to target via
-// `vela module publish` (GWCP-106685), then fetches it back through a Service
-// pointed at reg and returns the parsed Module. It is a t.Skip until publish has
-// landed; the file compiles under `-tags integration` and the default suite
-// ignores it entirely.
-func publishAndFetch(t *testing.T, target string, reg addon.Registry) *module.Module {
+// publishAndFetch packages and publishes the s3 testdata module through the
+// pkg/module packages (the same code `vela module publish` (GWCP-106685)
+// drives), then fetches it back through a Service pointed at reg and returns
+// the parsed Module. Git-registry targets are out of scope for this story and
+// skip cleanly; only the OCI path publishes and fetches for real.
+func publishAndFetch(t *testing.T, _ string, reg addon.Registry) *module.Module {
 	t.Helper()
-	t.Skip("implement once vela module publish (GWCP-106685) has landed")
-	// 1. run `vela module publish pkg/module/testdata/modules/s3 --registry <target>`
-	//    (skip if the binary/command is unavailable)
-	// 2. store := <a ModuleRegistryStore returning reg>; s := NewService(store)
-	// 3. mod, err := s.FetchModule(context.Background(), reg.Name, "s3"); require.NoError
-	// 4. return mod
-	return nil
+	ctx := context.Background()
+
+	art, err := module.PackageModule("../testdata/modules/s3", "")
+	require.NoError(t, err)
+	if reg.OCI == nil {
+		t.Skip("publish supports OCI/ECR only; git catalog publish is out of scope (GWCP-106685)")
+	}
+	require.NoError(t, addon.PushOCIChart(ctx, reg, art.Module.Name, art.Tag, art.Archive))
+
+	mod, err := NewService(fakeStore{regs: []addon.Registry{reg}}).FetchModule(ctx, reg.Name, art.Module.Name)
+	require.NoError(t, err)
+	return mod
 }

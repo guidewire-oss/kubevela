@@ -259,8 +259,8 @@ func (p *PushCmd) pushOCI(ctx context.Context, source *OCIAddonSource) error {
 		return err
 	}
 
-	repoRef, host := ociRepoRef(source.URL, loadedChart.Metadata.Name)
-	ociClient, err := newOCIClient(host, source.Username, source.Token)
+	repoRef, host, plainHTTP := ociRepoRef(source.URL, loadedChart.Metadata.Name)
+	ociClient, err := newOCIClient(host, plainHTTP, source.Username, source.Token)
 	if err != nil {
 		return err
 	}

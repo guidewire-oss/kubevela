@@ -36,11 +36,11 @@ import (
 
 // ociPuller pulls a Helm-chart artifact from an OCI registry and returns the raw
 // chart archive bytes. It is a seam so unit tests can avoid the network.
-type ociPuller func(ctx context.Context, ref, host, username, password string) ([]byte, error)
+type ociPuller func(ctx context.Context, ref, host string, plainHTTP bool, username, password string) ([]byte, error)
 
 // ociTagLister lists the semver tags of an OCI repository, highest first. It is
 // a seam so unit tests can avoid the network.
-type ociTagLister func(ctx context.Context, repoRef, host, username, password string) ([]string, error)
+type ociTagLister func(ctx context.Context, repoRef, host string, plainHTTP bool, username, password string) ([]string, error)
 
 // ociCatalogLister lists addon repository names below an OCI registry prefix.
 // It is a seam so unit tests can avoid the network.
@@ -78,34 +78,48 @@ func BuildOCIRegistry(name, url, username, token string) VersionedRegistry {
 	}
 }
 
-// ociRegistryLocation returns the registry host and repository prefix.
-func ociRegistryLocation(rawURL string) (host, prefix string) {
-	base := strings.Trim(strings.TrimPrefix(rawURL, "oci://"), "/")
+// ociRegistryLocation returns the registry host, repository prefix, and
+// whether rawURL carried an explicit "http://" scheme. https:// and oci://
+// are stripped the same way they always were; only http:// is also reported,
+// so a caller can ask for plain HTTP transport without guessing from the host.
+func ociRegistryLocation(rawURL string) (host, prefix string, plainHTTP bool) {
+	trimmed := rawURL
+	switch {
+	case strings.HasPrefix(trimmed, "http://"):
+		plainHTTP = true
+		trimmed = strings.TrimPrefix(trimmed, "http://")
+	case strings.HasPrefix(trimmed, "https://"):
+		trimmed = strings.TrimPrefix(trimmed, "https://")
+	case strings.HasPrefix(trimmed, "oci://"):
+		trimmed = strings.TrimPrefix(trimmed, "oci://")
+	}
+	base := strings.Trim(trimmed, "/")
 	host = base
 	if i := strings.Index(base, "/"); i >= 0 {
 		host = base[:i]
 		prefix = strings.Trim(base[i+1:], "/")
 	}
-	return host, prefix
+	return host, prefix, plainHTTP
 }
 
-// ociRepoRef builds the OCI repository reference (no tag) and host from a
-// registry URL and addon name. The URL may carry an "oci://" scheme and/or a
-// trailing slash. The host is the registry authority (everything before the
-// first path separator), used for login.
-func ociRepoRef(url, addon string) (repoRef, host string) {
-	host, prefix := ociRegistryLocation(url)
+// ociRepoRef builds the OCI repository reference (no tag), host, and
+// plain-HTTP flag from a registry URL and addon name. The URL may carry an
+// "oci://" or "http://" scheme and/or a trailing slash. The host is the
+// registry authority (everything before the first path separator), used for
+// login; plainHTTP reports whether the URL said "http://" explicitly.
+func ociRepoRef(url, addon string) (repoRef, host string, plainHTTP bool) {
+	host, prefix, plainHTTP := ociRegistryLocation(url)
 	repoRef = host
 	if prefix != "" {
 		repoRef += "/" + prefix
 	}
 	repoRef += "/" + strings.TrimPrefix(addon, "/")
-	return repoRef, host
+	return repoRef, host, plainHTTP
 }
 
 // resolveVersion returns the tag to pull. A pinned version is used as-is; an
 // empty version is resolved to the highest semver tag published in the repo.
-func (i *ociRegistry) resolveVersion(ctx context.Context, repoRef, host, version string) (string, error) {
+func (i *ociRegistry) resolveVersion(ctx context.Context, repoRef, host string, plainHTTP bool, version string) (string, error) {
 	if version != "" {
 		return version, nil
 	}
@@ -113,7 +127,7 @@ func (i *ociRegistry) resolveVersion(ctx context.Context, repoRef, host, version
 	if list == nil {
 		list = listOCITags
 	}
-	tags, err := list(ctx, repoRef, host, i.username, i.token)
+	tags, err := list(ctx, repoRef, host, plainHTTP, i.username, i.token)
 	if err != nil {
 		return "", errors.Wrapf(err, "failed to list tags for OCI addon %s", repoRef)
 	}
@@ -124,14 +138,26 @@ func (i *ociRegistry) resolveVersion(ctx context.Context, repoRef, host, version
 	return tags[0], nil
 }
 
-// newOCIClient builds an authenticated Helm OCI registry client.
-func newOCIClient(host, username, password string) (*registry.Client, error) {
-	client, err := registry.NewClient()
+// newOCIClient builds an authenticated Helm OCI registry client. plainHTTP
+// forces plain HTTP transport, driven by the registry URL's own scheme
+// (e.g. an in-process test registry configured with "http://") rather than
+// guessed from the host, so a TLS registry port-forwarded to localhost is
+// never silently downgraded.
+func newOCIClient(host string, plainHTTP bool, username, password string) (*registry.Client, error) {
+	var opts []registry.ClientOption
+	if plainHTTP {
+		opts = append(opts, registry.ClientOptPlainHTTP())
+	}
+	client, err := registry.NewClient(opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create OCI registry client")
 	}
 	if username != "" || password != "" {
-		if err := client.Login(host, registry.LoginOptBasicAuth(username, password)); err != nil {
+		loginOpts := []registry.LoginOption{registry.LoginOptBasicAuth(username, password)}
+		if plainHTTP {
+			loginOpts = append(loginOpts, registry.LoginOptInsecure(true))
+		}
+		if err := client.Login(host, loginOpts...); err != nil {
 			return nil, errors.Wrapf(err, "failed to login to OCI registry %s", host)
 		}
 	}
@@ -140,8 +166,8 @@ func newOCIClient(host, username, password string) (*registry.Client, error) {
 
 // pullOCIChart is the production puller: it logs in (when credentials are set)
 // and pulls the chart layer from the OCI registry via the Helm registry client.
-func pullOCIChart(_ context.Context, ref, host, username, password string) ([]byte, error) {
-	client, err := newOCIClient(host, username, password)
+func pullOCIChart(_ context.Context, ref, host string, plainHTTP bool, username, password string) ([]byte, error) {
+	client, err := newOCIClient(host, plainHTTP, username, password)
 	if err != nil {
 		return nil, err
 	}
@@ -157,8 +183,8 @@ func pullOCIChart(_ context.Context, ref, host, username, password string) ([]by
 
 // listOCITags lists the repository's semver tags (highest first) via the Helm
 // registry client, which filters non-semver tags and sorts descending.
-func listOCITags(_ context.Context, repoRef, host, username, password string) ([]string, error) {
-	client, err := newOCIClient(host, username, password)
+func listOCITags(_ context.Context, repoRef, host string, plainHTTP bool, username, password string) ([]string, error) {
+	client, err := newOCIClient(host, plainHTTP, username, password)
 	if err != nil {
 		return nil, err
 	}
@@ -169,9 +195,13 @@ func listOCITags(_ context.Context, repoRef, host, username, password string) ([
 // repository names relative to the configured registry prefix. The catalog API
 // is paginated through RFC 5988 Link headers.
 func listOCIRepositories(ctx context.Context, registryURL, username, password string) ([]string, error) {
-	host, prefix := ociRegistryLocation(registryURL)
+	host, prefix, plainHTTP := ociRegistryLocation(registryURL)
+	scheme := "https"
+	if plainHTTP {
+		scheme = "http"
+	}
 	next := &url.URL{
-		Scheme:   "https",
+		Scheme:   scheme,
 		Host:     host,
 		Path:     "/v2/_catalog",
 		RawQuery: "n=1000",
@@ -242,8 +272,8 @@ func listOCIRepositories(ctx context.Context, registryURL, username, password st
 // the first half of loadAddon, factored out so module fetch can reuse the exact
 // pull + version-resolution + archive-loading without the addon-specific parse.
 func (i *ociRegistry) loadFiles(ctx context.Context, name, version string) ([]*loader.BufferedFile, error) {
-	repoRef, host := ociRepoRef(i.url, name)
-	resolved, err := i.resolveVersion(ctx, repoRef, host, version)
+	repoRef, host, plainHTTP := ociRepoRef(i.url, name)
+	resolved, err := i.resolveVersion(ctx, repoRef, host, plainHTTP, version)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +282,7 @@ func (i *ociRegistry) loadFiles(ctx context.Context, name, version string) ([]*l
 	if pull == nil {
 		pull = pullOCIChart
 	}
-	archive, err := pull(ctx, ref, host, i.username, i.token)
+	archive, err := pull(ctx, ref, host, plainHTTP, i.username, i.token)
 	if err != nil {
 		return nil, err
 	}
@@ -347,12 +377,12 @@ func (i *ociRegistry) ListAddon() ([]*UIData, error) {
 
 	var addons []*UIData
 	for _, name := range names {
-		repoRef, host := ociRepoRef(i.url, name)
+		repoRef, host, plainHTTP := ociRepoRef(i.url, name)
 		tags := i.tagsFn
 		if tags == nil {
 			tags = listOCITags
 		}
-		versions, err := tags(ctx, repoRef, host, i.username, i.token)
+		versions, err := tags(ctx, repoRef, host, plainHTTP, i.username, i.token)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to list versions for OCI addon %s", name)
 		}
@@ -372,12 +402,12 @@ func (i *ociRegistry) ListAddon() ([]*UIData, error) {
 
 // GetAddonAvailableVersion lists semver tags for an OCI addon.
 func (i *ociRegistry) GetAddonAvailableVersion(addonName string) ([]*repo.ChartVersion, error) {
-	repoRef, host := ociRepoRef(i.url, addonName)
+	repoRef, host, plainHTTP := ociRepoRef(i.url, addonName)
 	list := i.tagsFn
 	if list == nil {
 		list = listOCITags
 	}
-	tags, err := list(context.Background(), repoRef, host, i.username, i.token)
+	tags, err := list(context.Background(), repoRef, host, plainHTTP, i.username, i.token)
 	if err != nil {
 		return nil, err
 	}
