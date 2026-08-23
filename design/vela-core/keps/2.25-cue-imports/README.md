@@ -91,6 +91,7 @@ The syntax below is not a guess. It was probed against the `cuelang.org/go` vers
 | A library importing an unregistered package | **Build error:** `builtin package "vela/nope" undefined`. Caught at admission, not at render. |
 | A library calling a provider with **no** import, a literal `#do`/`#provider` struct | Executes. So an import list is not a complete account of what a library needs. |
 | An `*ast.ImportDecl` inserted into a parsed file before `AddSyntax` | Resolves. No `astutil.Sanitize` needed, and it coexists with import declarations the author wrote. |
+| Reading `@uses` with the public API | `Value.Attributes(cue.ValueAttr)` returns file-level attributes with `Name()`, `NumArgs()` and `String(i)`, unquoting for you and handling the bare-identifier alias. No hand-rolled body parser, and no reach into cuelang's `internal/attrs`. Reading them before the real build is a throwaway `ast.File` of only the attribute decls, which has nothing to resolve. |
 | The same, with two aliases pointing at two builds of one library | Both bind. `a: old.#Ingress` and `b: new.#Ingress` evaluate independently. |
 | A reference to an alias with no import | **Error:** `output: reference "ingress" not found`, naming the alias. |
 
