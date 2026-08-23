@@ -86,6 +86,7 @@ The syntax below is not a guess. It was probed against the `cuelang.org/go` vers
 | One file with a clause, one without, in the same package | Both resolve. A clauseless file joins the package rather than being dropped. |
 | A fetched library importing `vela/base64` | **Error:** `builtin package "vela/base64" undefined`, unless the fetched instance's own `Imports` are populated too. |
 | A provider call inside a library, reached as a sub-expression | Never executes, and does not error. The value simply stays non-concrete. |
+| A template's own provider calls, alongside an injected `@uses` import | Unaffected. Pure-CUE helper, own `vela/base64` call and a library-provided one all render concrete in a single compilation. |
 | An `*ast.ImportDecl` inserted into a parsed file before `AddSyntax` | Resolves. No `astutil.Sanitize` needed, and it coexists with import declarations the author wrote. |
 | The same, with two aliases pointing at two builds of one library | Both bind. `a: old.#Ingress` and `b: new.#Ingress` evaluate independently. |
 | A reference to an alias with no import | **Error:** `output: reference "ingress" not found`, naming the alias. |
@@ -475,6 +476,28 @@ It can be made to work. By default it does not work at all, and when it half wor
 Two conditions, both necessary: the library must bind the call to a field rather than leave it in an expression, and the consumer must bind the instantiated struct to a field rather than select a sub-path out of it. The second is a constraint on the consumer imposed by the library's internals, which the library author cannot enforce and the consumer has no way to know about.
 
 The failure is not an error. It is an unresolved value, `concrete=false`, which surfaces much later as an incomplete-value complaint about a field with no obvious connection to the cause.
+
+**A definition's own provider calls are unaffected.** Worth confirming rather than assuming, since it is the first question anyone asks. Probed with a template that does all three at once: a pure-CUE helper from a library, its own inline `base64.#Encode`, and a `#B64` helper whose provider call lives in the library. All three render concrete in one compilation:
+
+```cue
+@uses("catalog:helpers.cue@v1.0.0")
+
+import "vela/base64"
+
+svcName: helpers.#Name & {prefix: "svc", suffix: parameter.app}
+mine:    base64.#Encode & {$params: parameter.app}   // the template's own
+theirs:  helpers.#B64 & {plain: parameter.app}       // the library's
+
+outputs: cm: {
+	metadata: name: svcName.out            // "svc-frontend"
+	data: {
+		inline:  mine.$returns             // "ZnJvbnRlbmQ="
+		library: theirs.enc                // "ZnJvbnRlbmQ="
+	}
+}
+```
+
+The injected import adds no fields, so it cannot interfere with the resolve walk. Existing definitions that use CueX and gain a `@uses` keep working exactly as they did.
 
 **The provider set is an implicit, unversioned contract.** A library is compiled by whichever binary pulls it, with whatever packages that binary registered. `WorkloadCompiler` carries `helm`, `registry` and `velaconfig`; `providers.DefaultCompiler` does not. So a library calling `vela/registry` would resolve under the controller and fail under `vela def vet`, which is precisely the split this KEP set out to close, reintroduced one level down.
 
