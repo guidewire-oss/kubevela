@@ -378,17 +378,55 @@ The call sites that compile a definition template, and would silently not resolv
 | Parameter schema | `pkg/schema/schema.go`, `ParsePropertiesToSchema` | UI and `vela def doc-gen` schemas wrong |
 | Docs generation | `references/docgen/parser.go` | Reference docs wrong |
 
-**So resolution belongs inside the compiler, not at the call sites.** `CompileStringWithOptions` runs the `@uses` pass itself whenever the compiler it is called on has a resolver configured; a resolver is set once, where the compiler is constructed. Every caller of every cuex compiler then gets it without knowing it exists, and adding a new call site cannot forget.
+**So resolution belongs inside the compiler, not at the call sites.** The alternative, a `CompileOption` each caller passes, was the first sketch and it is wrong at this scale. Eight call sites across four packages, three binaries and two repos, each of which compiles today and would keep compiling if it forgot, is a defect waiting on whoever adds the ninth. It is the same failure CLAUDE.md already records for provider packages registered with one compiler and not the other, which has bitten `vela/helm`, `vela/registry` and `vela/velaconfig` in turn. That was two compilers. This is four.
 
-The alternative, a `CompileOption` each caller passes, was the first sketch and it is wrong at this scale. Eight call sites across four packages, three binaries and two repos, each of which compiles today and would keep compiling if it forgot, is a defect waiting on whoever adds the ninth. It is the same failure CLAUDE.md already records for provider packages registered with one compiler and not the other, which has bitten `vela/helm`, `vela/registry` and `vela/velaconfig` in turn. That was two compilers. This is four.
+#### Exactly where the pass runs
 
-Per binary, then, there is exactly one thing to wire:
+One function, in `kubevela/pkg`: `cue/cuex/compiler.go`, `Compiler.CompileStringWithOptions`. It already parses the template and builds an instance; the pass sits between those two steps.
 
-| Binary | Resolver |
+```go
+bi := build.NewContext().NewInstance("", nil)
+// bi.Imports = in.PackageManager.GetImports()   <- moves down, so resolved
+//                                                  instances can be appended
+for _, mutator := range cfg.PreResolveMutators { ... }
+
+f, err := parser.ParseFile("-", src, parser.ParseComments)
+
+// ── the @uses pass ──────────────────────────────────────────────
+//   1. walk f.Decls for *ast.Attribute with key "uses"
+//   2. resolve each: cache, else fetch, then BuildImport(digestPath, files)
+//   3. give each resolved instance the compiler's own packages, so a
+//      library may import vela/* at all
+//   4. inject one *ast.ImportDecl after the file-level attributes
+// ────────────────────────────────────────────────────────────────
+
+bi.Imports = append(in.PackageManager.GetImports(), resolved...)
+if err = bi.AddSyntax(f); err != nil { ... }
+val := cuecontext.New().BuildInstance(bi)
+```
+
+Step 3 is the one that is easy to leave out and hard to notice: without it a library containing `import "vela/kube"` fails with `builtin package "vela/kube" undefined`, as covered under [CueX providers inside a library](#cuex-providers-inside-a-library).
+
+#### How the resolver reaches it
+
+Not as a field on `Compiler`. There are four compilers, so a field is four wiring points and four chances to forget, which is the failure being designed out. A process has one resolver, so it is process-scoped:
+
+```go
+// kubevela/pkg, cue/cuex
+var UsesResolver = singleton.NewSingleton[Resolver](func() Resolver { return unconfigured{} })
+```
+
+`util/singleton` is already how that repo carries process-wide dependencies: `singleton.KubeClient` and `singleton.DynamicClient` work exactly this way, with `.Set()` called once at startup (`references/cli/env.go` does it for the CLI). One `Set` per binary, and every compiler in that process picks it up, including any added later.
+
+| Binary | What it sets |
 |---|---|
-| `vela-core` | Registry-backed, registered at startup through `pkg/registry` the way `FileReader` already is, with the ConfigMap cache |
-| `vela` CLI | Registry-backed when it has a kubeconfig, falling back to a local cache under `~/.vela/uses/` |
-| CLI, no cluster | Cache-only. A reference that is not cached is an error naming it, not a silent skip |
+| `vela-core` | Registry-backed with the ConfigMap cache, in `cmd/core/app/bootstrap.go`, beside the `cuexregistry.FileReader` registration that is already there |
+| `vela` CLI | Registry-backed when there is a kubeconfig, falling back to a local cache under `~/.vela/uses/` |
+| CLI, no cluster | Cache-only. A reference that is not cached is an error naming it, never a silent skip |
+
+**The default must fail loudly.** A binary that links the library and never calls `Set` gets `unconfigured{}`, which returns an error naming the fix, in the manner the registry provider already uses (`no registry file reader is registered; cmd/core/app/bootstrap.go should register one`). Silently ignoring `@uses` would compile the template without the import and surface as `reference "ingress" not found`, which points at the template rather than at the missing wiring.
+
+**Opting out is per compilation, not per compiler**, via a `DisableUsesResolution{}` option mirroring the `DisableResolveProviderFunctions{}` that already exists. That is what settles the open question about VelaQL views and Config templates without needing a second resolver or a second compiler.
 
 ### What `@uses` deliberately does not reach
 
