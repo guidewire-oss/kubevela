@@ -87,6 +87,9 @@ The syntax below is not a guess. It was probed against the `cuelang.org/go` vers
 | A fetched library importing `vela/base64` | **Error:** `builtin package "vela/base64" undefined`, unless the fetched instance's own `Imports` are populated too. |
 | A provider call inside a library, reached as a sub-expression | Never executes, and does not error. The value simply stays non-concrete. |
 | A template's own provider calls, alongside an injected `@uses` import | Unaffected. Pure-CUE helper, own `vela/base64` call and a library-provided one all render concrete in a single compilation. |
+| A library importing a CUE builtin, `strings` | Resolves whether or not the fetched instance's imports are wired. Builtins need no registration. |
+| A library importing an unregistered package | **Build error:** `builtin package "vela/nope" undefined`. Caught at admission, not at render. |
+| A library calling a provider with **no** import, a literal `#do`/`#provider` struct | Executes. So an import list is not a complete account of what a library needs. |
 | An `*ast.ImportDecl` inserted into a parsed file before `AddSyntax` | Resolves. No `astutil.Sanitize` needed, and it coexists with import declarations the author wrote. |
 | The same, with two aliases pointing at two builds of one library | Both bind. `a: old.#Ingress` and `b: new.#Ingress` evaluate independently. |
 | A reference to an alias with no import | **Error:** `output: reference "ingress" not found`, naming the alias. |
@@ -501,6 +504,29 @@ The injected import adds no fields, so it cannot interfere with the resolve walk
 
 **The provider set is an implicit, unversioned contract.** A library is compiled by whichever binary pulls it, with whatever packages that binary registered. `WorkloadCompiler` carries `helm`, `registry` and `velaconfig`; `providers.DefaultCompiler` does not. So a library calling `vela/registry` would resolve under the controller and fail under `vela def vet`, which is precisely the split this KEP set out to close, reintroduced one level down.
 
+#### Checking it at admission rather than at render
+
+The obvious fix is a `// +requires` marker on the library naming the packages it needs. It is not needed, and it would not hold.
+
+**The import case is already caught, and not at runtime.** An unresolvable import is a hard build error, `builtin package "vela/nope" undefined`, and admission compiles the definition, so it is caught at apply. What is wrong with it today is the message, which names neither the library, the registry, the ref, nor the binary that lacks the package. That is a message to rewrite, not a mechanism to add. CUE's own builtins need no thought either: probed, `import "strings"` in a library resolves whether or not the fetched instance's imports are wired, so a checker must let builtins through rather than demanding they be declared.
+
+**A marker would go stale, because an import is not the only way to call a provider.** A `#do` / `#provider` struct written out by hand invokes the provider with no import statement anywhere. Probed: a library whose only provider access is a literal `{#do: "encode", #provider: "base64", ...}`, built with its imports deliberately not wired, still resolves to `"aGVsbG8="`. So a hand-maintained `+requires` could disagree with the file in two directions at once, and the thing it restates is already in the AST.
+
+So the requirement is **derived, from two places rather than one**, both static walks over CUE that resolution already has in hand:
+
+| Source | Checked against | Catches |
+|---|---|---|
+| `import` paths in the fetched files | CUE builtins, then the compiler's registered packages | `import "vela/registry"` under a binary that lacks it |
+| `#provider: "name"` string literals | The compiler's registered providers | The same call written without an import |
+
+Both reject at admission, naming the library, the registry, the ref and the compiler, rather than rendering something incomplete much later.
+
+**The silent case is the one no declaration can fix.** A provider call that never surfaces as a field does not fail to resolve a package; it resolves nothing and leaves a non-concrete value. That is a shape problem, and it is checkable in the same pass: a `#do` struct that is not bound to a field can never execute, so the library is rejected. The consuming half, where a template selects a sub-path out of an instantiated definition instead of binding it, is checkable only for the common shapes and is a warning rather than a rejection.
+
+All four checks are possible for one reason worth naming: **the library's CUE is in hand at admission**, because resolution runs there. A design that fetched lazily at render would have none of them.
+
+The one thing a declaration could still add is a *version*: `import "vela/kube"` says which package, not which shape of `#Get`. KubeVela's provider packages carry no version today, so there is nothing to check against, and inventing one here would be the wrong place to start.
+
 **So: pure CUE by default.** A library may declare types, defaults, constraints and transformations. All of that is verifiable in its own repository with plain `cue vet`, and none of it has any of the problems above. Provider calls need the registry to set `allowProviders`, and a library containing `#do` or `#provider` without it is rejected at resolution rather than compiled and quietly half-evaluated.
 
 That is also the honest reading of the risk. Anything a library could do with a provider, a definition author can already do by writing the same CUE inline, where it is visible in the definition and evaluated in the consumer's own tree. Moving it into a library buys nothing except distance from whoever reviews it.
@@ -609,7 +635,10 @@ Every one of these should name the definition, the reference and the registry. A
 | Package clause conflict within a directory reference | Admission | Reject, naming both clauses and the files they came from. |
 | Content over the size limit | Admission | Reject, naming the size and the limit. |
 | Library contains `#do` or `#provider`, registry has no `allowProviders` | Admission | Reject, naming the file and the construct. |
-| Library calls a provider the compiling binary does not register | Admission | Reject, naming the package. Better than resolving under the controller and failing under `vela def vet`. |
+| Library imports a package the compiling binary does not register | Admission | Reject, naming the library, registry, ref and compiler. CUE catches this itself as `builtin package "x" undefined`; the message is rewritten to say where it came from. |
+| Library names a provider the compiling binary does not register, with no import | Admission | Reject. Found by scanning `#provider` literals, since an import list does not account for this form. |
+| Library binds a `#do` struct somewhere it can never be walked | Admission | Reject. It would resolve to nothing and leave a non-concrete value with no error. |
+| Template selects a sub-path out of a library definition containing a provider call | `vela def vet` | Warn, best-effort. The call will not execute, and the shape is only detectable for the common cases. |
 | Registry unreachable, reference pinned and cached | Render | Render normally. No fetch was needed. |
 | Registry unreachable, reference floating and cached | Render | Render from stale cache, raise a condition on the Application. |
 | Registry unreachable, nothing cached | Render | Fail the render with a retryable condition. There is nothing to render with. |
