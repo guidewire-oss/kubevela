@@ -520,11 +520,28 @@ The severe half is that "in both" is not the same thing twice. Internal packages
 
 So `http.#Get` resolves in the controller and fails under `vela def vet`, and `kube.#Read` does the reverse. Checking that a package is *present* would certify a library that still breaks, because the name is not the contract.
 
-**This is pre-existing and not caused by `@uses`.** A definition template written today has exactly the same exposure. What changes is the blast radius: a template is authored by someone who can run it where it runs, whereas a library is written once, in another repository, and compiled by several binaries none of whose package sets its author can see. `@uses` turns a trap into a distribution channel for the trap.
+**Validation is not fooled by this, because it runs per surface.** The pass lives inside `CompileStringWithOptions` and checks against `in.PackageManager`, which is the package set of whichever compiler is being used. Admission validates against `WorkloadCompiler` and is right about admission; `vela def vet` validates against `providers.DefaultCompiler` and is right about the CLI. There is no false green light, and no surface certifies another.
 
-**It is also not this KEP's to fix.** The two compilers agreeing is worth doing on its own merits, and CLAUDE.md already records the same divergence biting `vela/helm`, `vela/registry` and `vela/velaconfig` in turn. Until they do agree, the scope that stays safe is the one the KEP already defaults to: **libraries are pure CUE**, so they import CUE builtins and nothing else, and builtins are identical in every compiler because CUE provides them rather than KubeVela registering them.
+What is left is narrower, and it is a disagreement rather than a gap: the same library is genuinely valid in one place and genuinely invalid in another, and each says so accurately. In practice that lands as an error at whichever surface lacks the symbol. `vela def vet` refusing something the controller would happily render is irritating, not dangerous.
 
-That is the load-bearing reason `allowProviders` is off by default, over and above the security argument. A pure-CUE library has no compiler-dependent surface at all. A provider-calling library has one that cannot currently be validated, because validating it means checking every symbol it references against every compiler that might compile it, not merely checking that a package of that name exists somewhere.
+The residual risk is **shape divergence on a symbol both compilers publish**, where the name matches and the contract does not:
+
+```cue
+// vela/kube #Apply, WorkloadCompiler       // vela/kube #Apply, providers.DefaultCompiler
+$params: {                                  $params: {
+    cluster:  *"" | string                      cluster: *"" | string
+    resource: {...}                             value:   {...}
+    options: threeWayMergePatch: {...}          patch?:  {...}
+}                                           }
+```
+
+Mostly this errors too, because the field names differ, so a call written for one is structurally invalid under the other. It can go quiet only where a struct is open: `$returns: {...}` under `WorkloadCompiler` will absorb a read of `$returns.value` as a non-concrete field rather than reject it, which is the same silent shape covered above.
+
+**This is pre-existing and not caused by `@uses`.** A definition template written today has exactly the same exposure. What changes is the blast radius: a template is authored by someone who can run it where it runs, whereas a library is written once, in another repository, and compiled by several binaries none of whose package sets its author can see.
+
+**It is also not this KEP's to fix.** The two compilers agreeing is worth doing on its own merits, and CLAUDE.md already records the same divergence biting `vela/helm`, `vela/registry` and `vela/velaconfig` in turn. Until they do, the scope that stays safe is the one the KEP already defaults to: **libraries are pure CUE**, so they import CUE builtins and nothing else, and builtins are identical in every compiler because CUE provides them rather than KubeVela registering them.
+
+That is the load-bearing reason `allowProviders` is off by default, over and above the security argument. A pure-CUE library has no compiler-dependent surface at all, so it is valid everywhere or nowhere. A provider-calling library has one, and the honest guidance is that it must be vetted at every surface it will be compiled by, which `vela def vet` makes possible rather than difficult.
 
 #### Checking it at admission rather than at render
 
@@ -658,7 +675,7 @@ Every one of these should name the definition, the reference and the registry. A
 | Content over the size limit | Admission | Reject, naming the size and the limit. |
 | Library contains `#do` or `#provider`, registry has no `allowProviders` | Admission | Reject, naming the file and the construct. |
 | Library imports a package the compiling binary does not register | Admission | Reject, naming the library, registry, ref and compiler. CUE catches this itself as `builtin package "x" undefined`; the message is rewritten to say where it came from. |
-| Library uses a symbol that exists under one compiler and not another | Not caught | Admission validates against the compiler admission uses. `http.#Get` passes there and fails under `vela def vet`. Only closable by making the compilers agree, which is why provider-calling libraries stay opt-in. |
+| Library uses a symbol that exists under one compiler and not another | Each surface, accurately | Not a validation gap. Admission checks against `WorkloadCompiler`, `vela def vet` against `providers.DefaultCompiler`, and each is right about itself. The library is simply valid in one place and not the other, which is why provider-calling libraries stay opt-in and want vetting at every surface. |
 | Library names a provider the compiling binary does not register, with no import | Admission | Reject. Found by scanning `#provider` literals, since an import list does not account for this form. |
 | Library binds a `#do` struct somewhere it can never be walked | Admission | Reject. It would resolve to nothing and leave a non-concrete value with no error. |
 | Template selects a sub-path out of a library definition containing a provider call | `vela def vet` | Warn, best-effort. The call will not execute, and the shape is only detectable for the common cases. |
