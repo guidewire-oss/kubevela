@@ -65,13 +65,8 @@ type resolvedTarget struct {
 // Application, read-only (Get/List only -- see PrepareCurrentAppRevision and
 // GenerateAppFile in the upstream research this mirrors).
 func (r *Reconciler) resolveTarget(ctx context.Context, op *v2alpha1.Operation) (*resolvedTarget, error) {
-	switch op.Spec.Target.Kind {
-	case "", v2alpha1.OperationTargetKindComponent:
-	default:
-		return nil, fmt.Errorf("unsupported target kind %q: only %q is supported so far", op.Spec.Target.Kind, v2alpha1.OperationTargetKindComponent)
-	}
-	if op.Spec.Target.App == "" || op.Spec.Target.Name == "" {
-		return nil, fmt.Errorf("spec.target.app and spec.target.name are required")
+	if op.Spec.Target.App == "" || op.Spec.Target.Component == "" {
+		return nil, fmt.Errorf("spec.target.app and spec.target.component are required")
 	}
 
 	app := &v1beta1.Application{}
@@ -87,13 +82,13 @@ func (r *Reconciler) resolveTarget(ctx context.Context, op *v2alpha1.Operation) 
 
 	var comp *common.ApplicationComponent
 	for i := range af.Components {
-		if af.Components[i].Name == op.Spec.Target.Name {
+		if af.Components[i].Name == op.Spec.Target.Component {
 			comp = &af.Components[i]
 			break
 		}
 	}
 	if comp == nil {
-		return nil, fmt.Errorf("component %q not found in application %q", op.Spec.Target.Name, op.Spec.Target.App)
+		return nil, fmt.Errorf("component %q not found in application %q", op.Spec.Target.Component, op.Spec.Target.App)
 	}
 
 	// Only r.Client is read by NewAppHandler/checkComponentHealth --

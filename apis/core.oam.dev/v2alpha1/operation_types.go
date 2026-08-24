@@ -23,29 +23,14 @@ import (
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 )
 
-// OperationTargetKind is the kind of resource an Operation acts on.
-// Only Component is supported so far (KEP 2.15).
-type OperationTargetKind string
-
-const (
-	// OperationTargetKindComponent means the target is a Component belonging
-	// to an Application.
-	OperationTargetKindComponent OperationTargetKind = "Component"
-)
-
 // OperationTarget identifies what an Operation's workflow steps read through
 // `context` -- the same target a healthPolicy already evaluates against.
 type OperationTarget struct {
-	// Kind of the target. Only "Component" is supported so far.
-	// +kubebuilder:validation:Enum=Component
-	// +kubebuilder:default=Component
-	Kind OperationTargetKind `json:"kind,omitempty"`
-
 	// App is the name of the Application that owns the target Component.
 	App string `json:"app"`
 
-	// Name is the name of the target Component within App.
-	Name string `json:"name"`
+	// Component is the name of the target Component within App.
+	Component string `json:"component"`
 }
 
 // OperationSpec is the spec of Operation.
@@ -147,7 +132,8 @@ type OperationStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories={oam},shortName={op,vop}
 // +kubebuilder:printcolumn:name="TEMPLATE",type=string,JSONPath=`.spec.template`
-// +kubebuilder:printcolumn:name="TARGET",type=string,JSONPath=`.spec.target.name`
+// +kubebuilder:printcolumn:name="APP",type=string,JSONPath=`.spec.target.app`
+// +kubebuilder:printcolumn:name="COMPONENT",type=string,JSONPath=`.spec.target.component`
 // +kubebuilder:printcolumn:name="PHASE",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="AGE",type=date,JSONPath=".metadata.creationTimestamp"
 // +genclient

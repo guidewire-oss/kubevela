@@ -42,7 +42,7 @@ const operationLockDuration = 20 * time.Second
 // same target serialize on the same object regardless of their own names.
 func operationLockName(target v2alpha1.OperationTarget, cluster string) string {
 	h := fnv.New32a()
-	_, _ = fmt.Fprintf(h, "%s/%s/%s", target.App, target.Name, cluster)
+	_, _ = fmt.Fprintf(h, "%s/%s/%s", target.App, target.Component, cluster)
 	return fmt.Sprintf("operation-lock-%x", h.Sum32())
 }
 
@@ -65,7 +65,7 @@ func (r *Reconciler) acquireLock(ctx context.Context, op *v2alpha1.Operation) (b
 				Namespace: op.Namespace,
 				Labels: map[string]string{
 					"operation.oam.dev/target-app":       op.Spec.Target.App,
-					"operation.oam.dev/target-component": op.Spec.Target.Name,
+					"operation.oam.dev/target-component": op.Spec.Target.Component,
 					"operation.oam.dev/cluster":          localCluster,
 				},
 			},

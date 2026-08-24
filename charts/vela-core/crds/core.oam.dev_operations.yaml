@@ -23,8 +23,11 @@ spec:
     - jsonPath: .spec.template
       name: TEMPLATE
       type: string
-    - jsonPath: .spec.target.name
-      name: TARGET
+    - jsonPath: .spec.target.app
+      name: APP
+      type: string
+    - jsonPath: .spec.target.component
+      name: COMPONENT
       type: string
     - jsonPath: .status.phase
       name: PHASE
@@ -88,18 +91,13 @@ spec:
                     description: App is the name of the Application that owns the
                       target Component.
                     type: string
-                  kind:
-                    default: Component
-                    description: Kind of the target. The POC only supports "Component".
-                    enum:
-                    - Component
-                    type: string
-                  name:
-                    description: Name is the name of the target Component within App.
+                  component:
+                    description: Component is the name of the target Component
+                      within App.
                     type: string
                 required:
                 - app
-                - name
+                - component
                 type: object
               template:
                 description: |-

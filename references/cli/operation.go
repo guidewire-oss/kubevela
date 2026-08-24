@@ -251,9 +251,8 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 				Spec: v2alpha1.OperationSpec{
 					Template: templateName,
 					Target: v2alpha1.OperationTarget{
-						Kind: v2alpha1.OperationTargetKindComponent,
-						App:  appName,
-						Name: compName,
+						App:       appName,
+						Component: compName,
 					},
 				},
 			}
