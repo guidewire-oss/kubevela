@@ -26,10 +26,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-
-	"github.com/pkg/errors"
 	"testing"
 
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart"
