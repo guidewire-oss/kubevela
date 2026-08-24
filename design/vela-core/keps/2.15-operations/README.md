@@ -117,12 +117,12 @@ Whether a backup turns out to be a Kubernetes Job, an Argo Workflow, a Crossplan
 | Layer | Artifact | Author | Responsibility |
 |---|---|---|---|
 | Template | `OperationTemplate` | Component / platform author | Declares attachment rules, parameter schema, and the workflow to run |
-| Invocation | `Operation` | Operator | Names a template and a target, supplies parameters, records the result |
-| Execution | embedded workflow engine | Controller | Builds the target's context and runs the workflow to completion |
+| Invocation | `Operation` | Operator | Names a template and, unless the template is unattached, a target; supplies parameters; records the result |
+| Execution | embedded workflow engine | Controller | Builds the target's context (if any) and runs the workflow to completion |
 
 The separation matters: an `OperationTemplate` is a high-trust artifact published alongside a `ComponentDefinition`, carrying arbitrary workflow steps. An `Operation` is low-trust: it names a template and supplies parameters against a validated schema, and cannot alter what the template does.
 
-**"Target" means the Component or Application an operation was pointed at**, per `attach.scope`, which defaults to `Component`. An Application-scoped operation coordinates; a Component-scoped one does the work. See [Composition and Fan-out](#composition-and-fan-out).
+**"Target" means the Component or Application an operation was pointed at**, per `attach.scope`, which defaults to `Component`. An Application-scoped operation coordinates; a Component-scoped one does the work; a `None`-scoped one has no target at all and runs its steps directly. See [Composition and Fan-out](#composition-and-fan-out) and [Scope: None](#scope-none-the-unattached-case).
 
 ## Injecting the OAM Context: Three Options
 
@@ -415,7 +415,7 @@ The broader question, whether KubeVela should declare OpenAPI generally rather t
 
 `spec.attach` declares what the operation may be run against. It answers *availability*: is this operation offered for this target at all, and nothing more. A template never acts on anything; the `Operation` does, and only against a target the template admits.
 
-**The two scopes attach to different kinds of thing, which is worth noticing.** Component scope binds to a component *type*, so a template written against an `aws-s3-bucket` is applicable wherever that definition is used and nowhere else. Application scope has no type to bind to, so it selects Application *instances* by label.
+**Two of the three scopes attach to different kinds of thing, which is worth noticing.** Component scope binds to a component *type*, so a template written against an `aws-s3-bucket` is applicable wherever that definition is used and nowhere else. Application scope has no type to bind to, so it selects Application *instances* by label. The third scope, `None`, attaches to nothing at all; see [below](#scope-none-the-unattached-case).
 
 That asymmetry follows from what exists. A `ComponentDefinition` is the contract a component-scoped template is written against, and reading its status shape is the whole point. There is no equivalent contract for an Application: two Applications carrying the same label may contain entirely different components. So an application-scoped template can assert what must be present (`requiredComponentTypes`) but cannot be written against a declared shape the way a component-scoped one is, and its steps [dispatch to components](#composition-and-fan-out) rather than reading the Application directly.
 
@@ -451,7 +451,7 @@ attach:
       provider: aws                        # this snapshot procedure is not portable
 ```
 
-It is evaluated by listing clusters and matching their labels, which works today: a `VirtualCluster` carries `Labels`, and `FindVirtualClustersByLabels` (`pkg/multicluster/virtual_cluster.go`) is the existing lookup. Nothing about it requires cluster metadata in the CUE context, which is a separate question owned by [KEP-2.20 Design 04](../2.20-module-versioning/design/04-cluster-context.md) and still open.
+It is evaluated by listing clusters and matching their labels, which works today: a `VirtualCluster` carries `Labels`, and `FindVirtualClustersByLabels` (`pkg/multicluster/virtual_cluster.go`) is the existing lookup. Nothing about it requires cluster metadata in the CUE context, which is a separate question owned by [KEP-2.20 Design 04](../2.20-module-versioning/design/04-cluster-context.md) and still open. `clusterSelector` is meaningful under `None` too, in the narrower sense of restricting which clusters the operator may pass in `spec.clusters`; see [below](#scope-none-the-unattached-case).
 
 **A cluster excluded by `clusterSelector` is refused, not skipped.** That is a deliberate difference from the [operator's own selector](#running-across-clusters), where a cluster matching `--clusters region=eu` but not running the component is skipped and reported. The operator's net was wide and being in an EU cluster without the component is not an error. `clusterSelector` is the author saying the procedure does not work there, so naming such a cluster explicitly fails at admission rather than quietly dropping it. Skip when the operator's net was wide; fail when the author's constraint was crossed.
 
@@ -459,11 +459,26 @@ It is evaluated by listing clusters and matching their labels, which works today
 
 **Coordinating does not mean running centrally.** The `Application` object lives on the hub, but an Application-scoped operation still [fans out to a workflow per cluster](#cluster-targeting) like any other, and those workflows run in the target clusters rather than on the hub. The [failover example](#worked-example-dr-failover-with-a-human-gate) leans on this: `spec.clusters` names only the surviving region, so the coordinating workflow runs *there*, which is the point when the region being abandoned might have taken the hub with it. Scope decides what a workflow does once it is running, dispatch children or act directly; it does not decide where it runs.
 
-**One kind with a scope field, not two kinds.** The two share parameters, workflow, sources, permissions, `runAs`, retention and status; what differs is `attach`, part of the context, and which steps make sense. That is a mode rather than a different artifact, so splitting them would duplicate a schema to express one field. It also keeps RBAC, discovery and the webhook path singular, and means a future third scope is a value rather than another CRD.
+**One kind with a scope field, not three kinds.** All three share parameters, workflow, sources, permissions, `runAs`, retention and status; what differs is `attach`, part of the context, and which steps make sense. That is a mode rather than a different artifact, so splitting them would duplicate a schema to express one field. It also keeps RBAC, discovery and the webhook path singular, and means a future fourth scope is a value rather than another CRD. `None` in particular earns its keep only because it is a value here rather than a second controller with its own schema, RBAC and CLI verb; see [Execution Model](#execution-model) for what that convergence is worth.
 
-`OperationTemplate` avoids that by **mirroring `scope` into a label**, for the same reason [step scope](#workflowstepdefinition-scope) belongs in labels: they are server-side selectable. Discovery then filters with a selector rather than fetching and inspecting, and nobody has to build an index to answer "which of these apply to an Application".
+`OperationTemplate` avoids that by **mirroring `scope` into a label**, for the same reason [step scope](#workflowstepdefinition-scope) belongs in labels: they are server-side selectable. Discovery then filters with a selector rather than fetching and inspecting, and nobody has to build an index to answer "which of these apply to an Application" — or, for `None`, "which of these need no target at all".
 
-Fields that are only meaningful in one scope, `selector` under Application and `allowedComponentTypes` under Component, are rejected in the wrong one at admission. `clusterSelector` is the exception, being meaningful in every scope. That is the same validation obligation as the [parameters union](#parameters), and the same two ways of discharging it.
+Fields that are only meaningful in one scope, `selector` under Application and `allowedComponentTypes` under Component, are rejected in the wrong one at admission; under `None` both are rejected. `clusterSelector` is the exception, being meaningful in every scope, `None` included. That is the same validation obligation as the [parameters union](#parameters), and the same two ways of discharging it.
+
+### Scope: None, the unattached case
+
+`scope: None` is what makes `Operation` capable of everything `WorkflowRun` does today, inside the same primitive rather than a neighboring one:
+
+```yaml
+attach:
+  scope: None   # no target, no context, no placement resolution
+```
+
+**`spec.target` is optional, and only under this scope.** Every other scope requires it; `None` is the one case where an `Operation` may be created without one. When it is absent, the controller skips both steps that a target would otherwise drive: it does not build a CUE context from a target's live status (there is no target to read), and it does not resolve placement from a topology policy (there is nothing to place). The workflow's steps run directly, against whatever they name themselves, exactly as a `WorkflowRun`'s steps do today.
+
+**This is parity, not a reduced mode.** Permissions, discovery, retention, `runAs`, and the CLI are unchanged: an unattached operation is checked against the invoker exactly as an attached one is, [`clusterSelector`](#attachment) still restricts which clusters an operator may name in `spec.clusters` (there is no target to fan out over, but nothing stops an operator asking for a step to run in more than one), and it shows up in `vela operation list` and `status` like any other. What it does not get, because there is nothing for it to get, is a populated `context.output`/`context.outputs` and automatic multi-cluster placement — a step wanting either has to be pointed at a target instead, which is what the other two scopes are for.
+
+**Why this, and not a fourth CRD or an upstream change to `WorkflowRun`.** `WorkflowRun` is delivered as an optional addon precisely so an install can omit it (KEP-2.7); extending its type would either force every install to carry the controller or leave `Operation` unable to rely on it being present, and the type itself lives in a separately-released module (`github.com/kubevela/workflow`), so the change would need upstream coordination before it reached here at all. `scope: None` needs none of that: it is a value on a type this KEP already introduces, checked by the webhook this KEP already specifies, so the cost of the unattached case is the cost of making `None` a first-class value rather than a fourth CRD, a second controller, or a second release train.
 
 Two enforcement points, serving the two requirements attachment exists for:
 
@@ -486,12 +501,15 @@ spec:
   template: s3-backup
 
   # target names the Component or Application this operation attaches to.
+  # Required for every scope except None, where it is omitted entirely:
+  # see [Scope: None](#scope-none-the-unattached-case).
   target:
     kind: Component
     name: payments-db
 
   # clusters restricts which of the target's clusters are operated on.
-  # Omitted means every cluster the target is dispatched to.
+  # Omitted means every cluster the target is dispatched to. Under scope
+  # None there is no target to dispatch from, so clusters names them directly.
   clusters: [eu-west-1, eu-central-1]
 
 
@@ -515,9 +533,17 @@ The operation-controller executes the workflow using the **embedded workflow eng
 
 It deliberately does **not** create a `WorkflowRun`. KEP-2.7 makes the standalone WorkflowRun controller *optional* (bundled by default, disableable). An `Operation` that depended on it would silently fail to run wherever it had been switched off. The embedded engine has no such failure mode, and the component-controller already embeds it for Component lifecycle workflows, so this follows an established pattern rather than introducing one.
 
-This also draws the boundary between the two features, though not where an earlier draft put it. **An `Operation` is hub-orchestrated and cluster-aware; a `WorkflowRun` is spoke-local and single-cluster.** KEP-2.7 lists "standalone operational runbooks" as a motivation for `WorkflowRun`, and for a runbook confined to one cluster that is the right home. It is not a home for a runbook that has to fan out across the fleet and report back, because a spoke-local controller has no fleet view and no cluster-gateway path to one.
+**`Operation` and `WorkflowRun` converge rather than staying permanently separate features.** An early draft of this KEP drew a hard boundary — "an `Operation` is hub-orchestrated and cluster-aware; a `WorkflowRun` is spoke-local and single-cluster" — and treated the two as different kinds of thing for different jobs. That is the wrong place to draw it. `WorkflowRun`'s own KEP describes it as "an independent controller for running arbitrary workflows outside Component/Application scope" (KEP-2.7), which is exactly [`scope: None`](#scope-none-the-unattached-case): no target, no context, no placement resolution, steps that run as they are written. An `Operation` under that scope *is* what a `WorkflowRun` is today, inside the primitive this KEP already specifies, with the same permissions, discovery, retention and CLI every other scope gets for free.
 
-So attachment is something an `Operation` usually has rather than what defines it, and there is a real class of work with an OAM target of neither kind: fleet-wide reads, cluster bootstrap checks, anything whose subject is the cluster. [Design 04](./design/04-cluster-scope.md) works that case through as a third `scope`. It is deliberately secondary to the thesis of this KEP and shares its machinery rather than extending its argument.
+Three implementation paths were weighed for closing this gap:
+
+- **Extend `WorkflowRun` itself** to be target- and cluster-aware. Rejected: the type lives in `github.com/kubevela/workflow`, a separately-released module, so this is a coordinated upstream change rather than a local one; it also reverses KEP-2.7's own rationale for keeping the controller optional, since an `Operation` depending on it would fail silently wherever it was disabled; and once extended this way it is `Operation` under a different name, which is the "two ways to do one thing" drift this KEP rejects everywhere else, one level up.
+- **Let `Operation` support the unattached case**, via `scope: None`. Adopted. One controller, one CLI, one permissions model, whether or not a given operation has a target. The cost is low because the machinery is being built either way; what changes is treating `None` as a first-class value rather than a validation-skipping afterthought.
+- **Client-side execution**, where the CLI itself fetches a template and runs its steps against the invoker's own kubeconfig rather than an on-cluster controller. Considered and deferred: it trades away exactly the property this KEP exists to provide, a durable, resumable, auditable record of what ran, for simpler RBAC. Out of scope for this KEP.
+
+**Migration is incremental, not a flag day.** The `WorkflowRun` addon stays available and unchanged while `scope: None` operations are proven out; it is deprecated only once parity is confirmed, at which point a cluster can retire the addon without losing anything a bare workflow could do. Nothing here requires migrating existing `WorkflowRun`s on any particular timeline.
+
+So attachment is something an `Operation` usually has rather than what defines it, and there is a real class of work with an OAM target of neither kind: fleet-wide reads, cluster bootstrap checks, anything whose subject is the cluster. That is distinct from the unattached case above, since the cluster *is* a target, just not a Component or Application one. [Design 04](./design/04-cluster-scope.md) works that case through as a further `scope: Cluster`. It is deliberately secondary to the thesis of this KEP and shares its machinery rather than extending its argument.
 
 ### The shape of a reconcile
 
@@ -2293,15 +2319,16 @@ rules:
 
 `VirtualCluster` is the right object for three reasons. It carries no credentials, its spec being alias, endpoint, acceptance and credential *type*, so granting on it is not granting a kubeconfig the way granting on a cluster secret would be. It is uniform across backings, since it is already the abstraction unifying cluster secrets and OCM `ManagedCluster`s. And it is served by cluster-gateway, which is the multicluster substrate rather than an optional component, so the gate exists wherever multiclustering does. It is also where `clusterSelector` reads its labels, so selection and permission point at one object rather than two.
 
-**This makes the model uniform across all three scopes:**
+**This makes the model uniform across every scope:**
 
 | Scope | act on the target | run the procedure | run it there |
 |---|---|---|---|
 | Component | `operate` on the `Application` | `invoke` on the `OperationTemplate` | `operate` on each `VirtualCluster` |
 | Application | `operate` on the `Application` | `invoke` on the `OperationTemplate` | `operate` on each `VirtualCluster` |
+| None | no target, so no check | `invoke` on the `OperationTemplate` | `operate` on each `VirtualCluster` named in `spec.clusters` |
 | [Cluster](./design/04-cluster-scope.md) | the cluster *is* the target | `invoke` on the `OperationTemplate` | the same check, collapsed |
 
-Cluster scope is then not a special case with a gate swapped out. It is this model with two of the three coinciding, which is why it needs no permission machinery of its own.
+`None` drops the first gate rather than collapsing it: there is no target object to check the invoker against, only the template grant and, if `spec.clusters` names any, the cluster grant. Cluster scope is a different collapse, where the first and third gates ask the same question about the same object. Neither needs permission machinery beyond what Component and Application scope already require.
 
 **A platform that does not want the distinction pays nothing for it.** Granting `operate` on `virtualclusters` with no `resourceNames` covers every cluster, so the check passes always and the gate costs one rule per role. The verbosity only arrives when a platform actually wants to draw the line, which is the right way round.
 
