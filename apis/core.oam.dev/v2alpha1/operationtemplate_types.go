@@ -1,0 +1,107 @@
+/*
+ Copyright 2026. The KubeVela Authors.
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+package v2alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	wfv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
+)
+
+// OperationAttachScope is the kind of target an OperationTemplate can be
+// invoked against. Only Component is implemented so far; Application-scoped
+// attach (and Composition/Fan-out, KEP 2.15) is not yet implemented.
+type OperationAttachScope string
+
+const (
+	// OperationAttachScopeComponent means the template is invoked against a
+	// single Component.
+	OperationAttachScopeComponent OperationAttachScope = "Component"
+)
+
+// OperationAttach describes what an OperationTemplate can be invoked against.
+type OperationAttach struct {
+	// Scope is the kind of target this template attaches to. Only
+	// "Component" is supported so far.
+	// +kubebuilder:validation:Enum=Component
+	// +kubebuilder:default=Component
+	Scope OperationAttachScope `json:"scope,omitempty"`
+
+	// AllowedComponentTypes restricts which ComponentDefinition types this
+	// template may be invoked against. Empty means any type is allowed.
+	// +optional
+	AllowedComponentTypes []string `json:"allowedComponentTypes,omitempty"`
+}
+
+// OperationTemplateParameters declares the input parameters an Operation may
+// supply via spec.parameters, as a `parameter: {...}` CUE definition -- the
+// same shape used by ComponentDefinition/WorkflowStepDefinition schematics
+// (see common.Schematic). The OpenAPI schema shown by `vela operation list`
+// is derived from this via pkg/utils/common.GenOpenAPI; there is no separate
+// schema format to author.
+type OperationTemplateParameters struct {
+	// CUE is a `parameter: {...}` definition.
+	CUE string `json:"cue,omitempty"`
+}
+
+// OperationTemplateSpec is the spec of OperationTemplate.
+type OperationTemplateSpec struct {
+	// Description is a human-readable summary shown by `vela operation list`.
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// Attach describes what this template can be invoked against.
+	Attach OperationAttach `json:"attach"`
+
+	// Parameters declares the parameters accepted by this template.
+	// +optional
+	Parameters *OperationTemplateParameters `json:"parameters,omitempty"`
+
+	// Workflow is the set of steps run when this template is invoked.
+	Workflow wfv1alpha1.WorkflowSpec `json:"workflow"`
+}
+
+// +kubebuilder:object:root=true
+
+// OperationTemplate is the Schema for the OperationTemplate API.
+//
+// TODO(KEP 2.15): the permission model isn't implemented yet. Any RBAC
+// principal able to create an Operation can invoke any OperationTemplate
+// against any target in its namespace. Do not release or promote this
+// code path until the permission model lands.
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:categories={oam},shortName={opt,optemplate}
+// +kubebuilder:printcolumn:name="SCOPE",type=string,JSONPath=`.spec.attach.scope`
+// +kubebuilder:printcolumn:name="AGE",type=date,JSONPath=".metadata.creationTimestamp"
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type OperationTemplate struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec OperationTemplateSpec `json:"spec,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// OperationTemplateList contains a list of OperationTemplate.
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type OperationTemplateList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []OperationTemplate `json:"items"`
+}
