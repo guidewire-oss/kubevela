@@ -59,15 +59,17 @@ metadata, version metadata, one XRD, one composition, and one definition.
 Tests that need a deliberately special tree continue creating their own
 temporary data, keeping each scenario local and explicit.
 
-Delete both `pkg/module/testdata/modules/s3` and
-`pkg/module/testdata/modules/minimal`. The realistic `s3` data belongs outside
-the package, while the tiny valid-module data is clearer as test-only Go input
-created independently for each unit test.
+Move `pkg/module/testdata/modules/s3` unchanged to
+`test/e2e-test/testdata/module/s3`. The realistic Crossplane module belongs
+with registry-backed E2E coverage, while the tiny valid-module data from
+`pkg/module/testdata/modules/minimal` is clearer as test-only Go input created
+independently for each unit test and is therefore deleted rather than moved.
 
 Delete the two integration test files from `pkg/module`. Their live-registry
-coverage will live in `test/e2e-test` and reuse the existing `e2e-widget`
-fixture, avoiding a second realistic module tree. The existing cluster E2E
-scenario remains the authoritative full publish/deploy/controller workflow.
+coverage will live in `test/e2e-test` and use the relocated `s3` fixture. The
+existing definitions-only `e2e-widget` fixture remains dedicated to the full
+cluster publish/deploy/controller workflow so that scenario does not acquire a
+Crossplane dependency.
 
 Move the registry-backed CI job out of the unit-test workflow and into the
 E2E workflow. It will run only the two plain Go registry tests, set both
@@ -81,8 +83,9 @@ No test under `pkg/module` may reference `test/e2e-test` or another package's
 fixture tree. Package unit tests may use only data created during the test.
 
 E2E tests resolve their fixture paths from the repository root rather than
-depending on the process working directory. The two registry tests share the
-existing module E2E path constants and fixture.
+depending on the process working directory. The two live-registry tests share
+`test/e2e-test/testdata/module/s3`; the cluster workflow continues to use
+`test/e2e-test/testdata/module/e2e-widget`.
 
 Unrelated tracked and untracked worktree changes must remain untouched.
 
@@ -98,6 +101,9 @@ Verification will cover:
 4. The focused module publish/deploy Ginkgo scenario against the supplied
    Kubernetes cluster.
 5. A final layout check confirming `pkg/module/testdata` no longer exists.
+6. A fixture check confirming the complete former `s3` tree exists under
+   `test/e2e-test/testdata/module/s3` and is referenced by both live-registry
+   tests.
 
 If cluster access is unavailable from the execution sandbox, the exact failed
 command and connectivity error will be reported rather than treating the E2E

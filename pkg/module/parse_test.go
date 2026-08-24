@@ -26,14 +26,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// copyMinimalModule copies the minimal baseline fixture into a fresh temp
-// directory and returns its path, so each test case can mutate its own
-// private copy without disturbing the checked-in fixture or other cases.
+// copyMinimalModule returns a fresh minimal module directory so each test case
+// can mutate its own private copy without disturbing other cases.
 func copyMinimalModule(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	require.NoError(t, os.CopyFS(dir, os.DirFS("testdata/modules/minimal")))
-	return dir
+	return minimalModuleDir(t)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -55,11 +52,11 @@ func findByKind(objs []map[string]interface{}, kind string) map[string]interface
 }
 
 func TestParseModule_WellFormedModule(t *testing.T) {
-	mod, err := ParseModuleDir("testdata/modules/s3")
+	mod, err := ParseModuleDir(minimalModuleDir(t))
 	require.NoError(t, err)
 	require.NotNil(t, mod)
 
-	assert.Equal(t, "s3", mod.Name)
+	assert.Equal(t, "minimal", mod.Name)
 	assert.Equal(t, "1.0.0", mod.Version)
 
 	require.NotEmpty(t, mod.Auxiliary)
@@ -67,7 +64,7 @@ func TestParseModule_WellFormedModule(t *testing.T) {
 	require.NotNil(t, xrd, "expected a CompositeResourceDefinition among the module's auxiliary objects")
 	xrdMetadata, ok := xrd["metadata"].(map[string]interface{})
 	require.True(t, ok, "xrd metadata must be a map")
-	assert.Equal(t, "xs3.objectstore.atmos.guidewire.com", xrdMetadata["name"])
+	assert.Equal(t, "xwidgets.example.com", xrdMetadata["name"])
 
 	require.Contains(t, mod.Lines, "v1")
 	line := mod.Lines["v1"]
@@ -78,13 +75,13 @@ func TestParseModule_WellFormedModule(t *testing.T) {
 	require.NotNil(t, comp, "expected a Composition among the line's auxiliary objects")
 	compMetadata, ok := comp["metadata"].(map[string]interface{})
 	require.True(t, ok, "composition metadata must be a map")
-	assert.Equal(t, "s3.objectstore.atmos.guidewire.com", compMetadata["name"])
+	assert.Equal(t, "widgets.example.com", compMetadata["name"])
 
 	require.Len(t, line.Definitions, 1)
 	def := line.Definitions[0]
 	defMetadata, ok := def["metadata"].(map[string]interface{})
 	require.True(t, ok, "definition metadata must be a map")
-	assert.Equal(t, "atmos-s3-v1", defMetadata["name"])
+	assert.Equal(t, "widget", defMetadata["name"])
 }
 
 // TestParseModule_StructuralAndIdentityFailures starts from one minimal
