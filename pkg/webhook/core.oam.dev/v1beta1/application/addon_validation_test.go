@@ -144,6 +144,15 @@ func TestAddonValidationUsesSharedApplicationWebhook(t *testing.T) {
 	assert.NotContains(t, string(registry), "addon.RegisterValidatingHandler")
 }
 
+func TestAddonValidatorLivesUnderApplication(t *testing.T) {
+	_, err := os.Stat("addon/validator.go")
+	require.NoError(t, err, "addon validator must live under the Application webhook package")
+
+	_, err = os.Stat("../addon")
+	require.ErrorIs(t, err, os.ErrNotExist,
+		"top-level v1beta1/addon implies a standalone Addon webhook kind")
+}
+
 func addonApplication() *v1beta1.Application {
 	return &v1beta1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "addon-app", Namespace: "default"},
