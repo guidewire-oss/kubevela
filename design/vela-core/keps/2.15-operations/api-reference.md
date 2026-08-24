@@ -40,7 +40,7 @@ Namespaced. No status subresource — it's a template, not a running thing.
 
 | Field | Type | Required | Applies when | Notes |
 | - | - | - | - | - |
-| `scope` | `Component \| Application \| None`, default `Component` | yes | — | see [Attachment](./README.md#attachment) |
+| `scope` | `Component \| Application \| None`, default `Component` | no | — | see [Attachment](./README.md#attachment) |
 | `allowedComponentTypes` | `[]string` | no | `scope: Component` | empty means unrestricted |
 | `selector.matchLabels` | `map[string]string` | no | `scope: Application` | |
 | `selector.matchExpressions` | `[]LabelSelectorRequirement` | no | `scope: Application` | |
@@ -61,7 +61,7 @@ controller resolves whichever is there when the `Operation` is admitted.
 
 | Field | Type | Notes |
 | - | - | - |
-| `openAPIV3` | OpenAPI v3 schema (object) | validated directly by the API server |
+| `openAPIV3` | OpenAPI v3 schema (object) | used by the controller to validate supplied parameters at admission |
 | `cue` | string, a CUE `parameter{}` block | unified against supplied parameters; CUE's own errors reported |
 
 ### `RunAs`
@@ -108,7 +108,7 @@ See [Target](./README.md#target).
 | - | - | - |
 | `phase` | `Pending \| Running \| Succeeded \| Failed \| Cancelled` | |
 | `startTime` / `completionTime` | `metav1.Time` | |
-| `template` | object (`name`, `hash`, `spec`) | the template as copied at creation, with expressions intact — resolved once, never re-resolved |
+| `template` | object (`name`, `hash`, `spec`) | the template as copied at creation, with expressions intact; the snapshot is reused while values resolve according to their documented timing |
 | `resolved.parameters` | object | the parameters actually used |
 | `resolved.sources` | object | **Option 3 only** — what each declared source resolved to, for audit |
 | `workflows` | `[]OperationWorkflowStatus` | one entry per cluster the operation ran a workflow on, even for a single-cluster run |
