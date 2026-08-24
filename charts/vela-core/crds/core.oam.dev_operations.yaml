@@ -90,10 +90,12 @@ spec:
                   app:
                     description: App is the name of the Application that owns the
                       target Component.
+                    minLength: 1
                     type: string
                   component:
                     description: Component is the name of the target Component
                       within App.
+                    minLength: 1
                     type: string
                 required:
                 - app
@@ -103,6 +105,7 @@ spec:
                 description: |-
                   Template is the name of the OperationTemplate to invoke. Resolved in
                   the Operation's own namespace first, then "vela-system".
+                minLength: 1
                 type: string
             required:
             - target

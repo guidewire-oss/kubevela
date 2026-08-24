@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -73,9 +74,12 @@ func applyOperationRBAC(ctx context.Context) {
 }
 
 // deleteOperationVelaSystemFixtures removes everything the functions above
-// install into vela-system, so the next run never sees a stale Spec left
-// over from this one.
-func deleteOperationVelaSystemFixtures(ctx context.Context) {
+// install into vela-system, plus this run's restart Job and its Pods.
+func deleteOperationVelaSystemFixtures(ctx context.Context, targetNamespace string) {
+	Expect(k8sClient.DeleteAllOf(ctx, &batchv1.Job{}, client.InNamespace("vela-system"),
+		client.MatchingLabels{"operation.oam.dev/target-namespace": targetNamespace},
+		client.PropagationPolicy(metav1.DeletePropagationForeground))).Should(SatisfyAny(BeNil(), &util.NotFoundMatcher{}))
+
 	objs := []client.Object{
 		&v1beta1.WorkflowStepDefinition{ObjectMeta: metav1.ObjectMeta{Name: "restart-webservice", Namespace: "vela-system"}},
 		&v2alpha1.OperationTemplate{ObjectMeta: metav1.ObjectMeta{Name: "restart-webservice", Namespace: "vela-system"}},
@@ -101,7 +105,7 @@ var _ = Describe("Operation (v2alpha1)", func() {
 
 	AfterEach(func() {
 		Expect(k8sClient.Delete(ctx, &ns, client.PropagationPolicy(metav1.DeletePropagationBackground))).Should(BeNil())
-		deleteOperationVelaSystemFixtures(ctx)
+		deleteOperationVelaSystemFixtures(ctx, namespaceName)
 	})
 
 	It("restarts the target Deployment, and only reaches phase Succeeded once the Job completes", func() {

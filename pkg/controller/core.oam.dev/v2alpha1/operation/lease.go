@@ -32,10 +32,13 @@ import (
 )
 
 // operationLockDuration is how long a lock is honored without a renew
-// before another Operation may take it over -- long enough to tolerate a
-// couple of missed reconciles at the controller's requeue interval, short
-// enough to recover quickly from a crashed controller.
-const operationLockDuration = 20 * time.Second
+// before another Operation may take it over.
+//
+// TODO(KEP 2.15): only renewed once per Reconcile, not while ExecuteRunners
+// is running a step -- a step blocking longer than this can still lose its
+// lock mid-run. A goroutine renewing on a tick during ExecuteRunners would
+// close that gap; deferred to keep this POC's scope small.
+const operationLockDuration = 60 * time.Second
 
 // operationLockName derives a stable Lease name for the (namespace, target,
 // cluster) an Operation runs against, so any two Operations racing for the
@@ -122,5 +125,11 @@ func (r *Reconciler) releaseLock(ctx context.Context, op *v2alpha1.Operation) er
 	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != string(op.UID) {
 		return nil
 	}
-	return client.IgnoreNotFound(r.Delete(ctx, lease))
+	// Precondition guards against a renew/steal between the Get and here:
+	// the Delete fails instead of removing someone else's Lease.
+	err := r.Delete(ctx, lease, client.Preconditions{UID: &lease.UID, ResourceVersion: &lease.ResourceVersion})
+	if kerrors.IsConflict(err) {
+		return nil
+	}
+	return client.IgnoreNotFound(err)
 }

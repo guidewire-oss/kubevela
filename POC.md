@@ -18,7 +18,7 @@ This POC ships without the KEP's permissions model. Any RBAC principal that can 
 - [x] `attach.scope: Component`, filtered by `allowedComponentTypes`
 - [x] `vela operation list` / `run` / `status` CLI, modeled on `vela def`
 - [x] Job-based step cleanup via `ttlSecondsAfterFinished` (the KEP intentionally doesn't GC step-created resources itself — see its "Resource ownership and cleanup" section — so a template author has to opt into TTLs or an `if: always` cleanup step)
-- [x] Concurrency control: a `coordination.k8s.io/Lease` per `(namespace, target, cluster)` serializes Operations racing for the same target; a losing Operation just retries on the next requeue, and a crashed holder's lock expires after `operationLockDuration`
+- [x] Concurrency control: a `coordination.k8s.io/Lease` per `(namespace, target, cluster)` bounds (not fully closes, see `lease.go`'s `TODO(KEP 2.15)`) Operations racing for the same target
 - [ ] Permissions: the two `SubjectAccessReview`s, `spec.runAs` (`Platform`/`Invoker`), service-account `use` grants, `requireDirectGrant`
 - [ ] Parameter schema validation/defaulting (needs admission, see above)
 - [ ] `Application` attach scope, [Composition and Fan-out](https://github.com/guidewire-oss/kubevela/blob/design/kep-2.15-operations/design/vela-core/keps/2.15-operations/README.md#composition-and-fan-out) (`dispatch-operations`, child Operations, `status.children[]`)

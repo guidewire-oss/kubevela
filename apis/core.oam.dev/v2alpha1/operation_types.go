@@ -27,9 +27,11 @@ import (
 // `context` -- the same target a healthPolicy already evaluates against.
 type OperationTarget struct {
 	// App is the name of the Application that owns the target Component.
+	// +kubebuilder:validation:MinLength=1
 	App string `json:"app"`
 
 	// Component is the name of the target Component within App.
+	// +kubebuilder:validation:MinLength=1
 	Component string `json:"component"`
 }
 
@@ -37,6 +39,7 @@ type OperationTarget struct {
 type OperationSpec struct {
 	// Template is the name of the OperationTemplate to invoke. Resolved in
 	// the Operation's own namespace first, then "vela-system".
+	// +kubebuilder:validation:MinLength=1
 	Template string `json:"template"`
 
 	// Target is what the workflow steps read through `context`.

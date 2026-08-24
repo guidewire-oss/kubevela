@@ -38,6 +38,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1beta1/application"
 	velaprocess "github.com/oam-dev/kubevela/pkg/cue/process"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 // systemDefinitionNamespace mirrors the "vela-system" fallback namespace
@@ -147,11 +148,19 @@ func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, target *re
 	if output != nil {
 		outputObj = output.Object
 	}
-	outputsList := make([]interface{}, 0, len(outputs))
+	// oam.TraitResource carries each output's original name regardless of
+	// whether it came from the component's own template or a trait (see
+	// getResourceFromObj in pkg/cue/definition/template.go).
+	outputsMap := make(map[string]interface{}, len(outputs))
 	for _, o := range outputs {
-		if o != nil {
-			outputsList = append(outputsList, o.Object)
+		if o == nil {
+			continue
 		}
+		key := o.GetLabels()[oam.TraitResource]
+		if key == "" {
+			key = o.GetName()
+		}
+		outputsMap[key] = o.Object
 	}
 
 	var params map[string]interface{}
@@ -170,7 +179,7 @@ func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, target *re
 		AppAnnotations:  target.app.Annotations,
 		Ctx:             ctx,
 		Output:          outputObj,
-		Outputs:         outputsList,
+		Outputs:         outputsMap,
 		Status:          status,
 		OperationName:   op.Name,
 		OperationScope:  string(v2alpha1.OperationAttachScopeComponent),

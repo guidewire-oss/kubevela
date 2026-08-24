@@ -83,18 +83,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 
-	// Release op's target lock (if held) once it goes terminal, however
-	// that happens below.
-	defer func() {
-		if op.IsTerminal() {
-			if err := r.releaseLock(logCtx, op); err != nil {
-				logCtx.Error(err, "release operation lock")
-			}
+	for _, cluster := range op.Spec.Clusters {
+		if cluster != localCluster {
+			return r.fail(logCtx, op, fmt.Errorf("spec.clusters only supports %q so far, got %v", localCluster, op.Spec.Clusters))
 		}
-	}()
-
-	if len(op.Spec.Clusters) > 0 {
-		return r.fail(logCtx, op, fmt.Errorf("spec.clusters is not supported yet (single-cluster only), got %v", op.Spec.Clusters))
 	}
 
 	target, err := r.resolveTarget(logCtx, op)
@@ -168,14 +160,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		op.Status.Phase = v2alpha1.OperationPhaseRunning
 	}
 
+	if op.IsTerminal() {
+		return r.finish(logCtx, op)
+	}
 	if err := r.Status().Update(logCtx, op); err != nil {
 		return ctrl.Result{}, err
 	}
-
-	if op.IsTerminal() {
-		return ctrl.Result{}, nil
-	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+}
+
+// finish persists op's already-set terminal status, then releases its
+// target lock -- only once the write succeeds, so a failed write can't
+// drop the lock before the terminal state is durable.
+func (r *Reconciler) finish(ctx context.Context, op *v2alpha1.Operation) (ctrl.Result, error) {
+	if err := r.Status().Update(ctx, op); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.releaseLock(ctx, op); err != nil {
+		if lg, ok := ctx.(monitorContext.Context); ok {
+			lg.Error(err, "release operation lock")
+		}
+	}
+	return ctrl.Result{}, nil
 }
 
 // fail marks the Operation Failed before any workflow step ran (template or
@@ -191,10 +197,7 @@ func (r *Reconciler) fail(ctx context.Context, op *v2alpha1.Operation, cause err
 	}
 	now := metav1.Now()
 	op.Status.CompletionTime = &now
-	if err := r.Status().Update(ctx, op); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	return r.finish(ctx, op)
 }
 
 // SetupWithManager sets up the controller with the Manager.

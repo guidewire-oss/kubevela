@@ -52,10 +52,12 @@ type ContextData struct {
 
 	ClusterVersion types.ClusterVersion
 	Output         interface{}
-	// Outputs holds the auxiliary (trait-produced) resources for
-	// context.outputs, populated the same way Output populates
-	// context.output.
-	Outputs []interface{}
+	// Outputs holds context.outputs: a component's auxiliary resources,
+	// keyed by output name. These can come from the component's own
+	// template (e.g. a Service declared alongside its Deployment) as well
+	// as from traits -- not trait-only, despite the name of the label
+	// (trait.oam.dev/resource) this key is usually read from.
+	Outputs map[string]interface{}
 
 	// The fields below are populated for an Operation-driven workflow (see
 	// KEP 2.15, "Operations"); they are left zero-valued for an
@@ -132,9 +134,11 @@ func NewContext(data ContextData) process.Context {
 	}
 	if data.OperationName != "" {
 		ctx.PushData(ContextOperationName, data.OperationName)
-	}
-	if data.OperationParams != nil {
-		ctx.PushData(ContextOperationParams, data.OperationParams)
+		params := data.OperationParams
+		if params == nil {
+			params = map[string]interface{}{}
+		}
+		ctx.PushData(ContextOperationParams, params)
 	}
 	if data.OperationScope != "" {
 		ctx.PushData(ContextOperationScope, data.OperationScope)

@@ -122,6 +122,12 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 			if seen[tmpl.Name] {
 				continue
 			}
+			// Mark seen by name now, before filtering: a template shadowed
+			// by an unsupported scope or disallowed component type in the
+			// higher-precedence namespace must not fall through to a
+			// same-named template further down -- `run` still resolves the
+			// higher-precedence copy first and would fail on it.
+			seen[tmpl.Name] = true
 			if tmpl.Spec.Attach.Scope != "" && tmpl.Spec.Attach.Scope != v2alpha1.OperationAttachScopeComponent {
 				continue
 			}
@@ -138,7 +144,6 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 					continue
 				}
 			}
-			seen[tmpl.Name] = true
 			out = append(out, tmpl)
 		}
 	}
@@ -159,12 +164,15 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 			if err != nil {
 				return err
 			}
-			ns, err := cmd.Flags().GetString(FlagNamespace)
+			ns, err := GetFlagNamespace(cmd, c)
 			if err != nil {
 				return err
 			}
 			if ns == "" {
-				ns = "default"
+				ns, err = GetNamespaceFromEnv(cmd, c)
+				if err != nil {
+					return err
+				}
 			}
 			appName, compName, err := splitComponentRef(componentRef)
 			if err != nil {
@@ -200,7 +208,7 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 		},
 	}
 	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
-	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the application (defaults to \"default\")")
+	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the application (defaults to the current environment's namespace)")
 	return cmd
 }
 
@@ -219,12 +227,15 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 			if err != nil {
 				return err
 			}
-			ns, err := cmd.Flags().GetString(FlagNamespace)
+			ns, err := GetFlagNamespace(cmd, c)
 			if err != nil {
 				return err
 			}
 			if ns == "" {
-				ns = "default"
+				ns, err = GetNamespaceFromEnv(cmd, c)
+				if err != nil {
+					return err
+				}
 			}
 			paramFlags, err := cmd.Flags().GetStringArray(FlagParam)
 			if err != nil {
@@ -285,7 +296,7 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 		},
 	}
 	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
-	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the application (defaults to \"default\")")
+	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the application (defaults to the current environment's namespace)")
 	cmd.Flags().StringArrayP(FlagParam, "p", nil, "a key=value parameter, may be repeated")
 	return cmd
 }
@@ -300,12 +311,15 @@ func NewOperationStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobr
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			ns, err := cmd.Flags().GetString(FlagNamespace)
+			ns, err := GetFlagNamespace(cmd, c)
 			if err != nil {
 				return err
 			}
 			if ns == "" {
-				ns = "default"
+				ns, err = GetNamespaceFromEnv(cmd, c)
+				if err != nil {
+					return err
+				}
 			}
 			k8sClient, err := c.GetClient()
 			if err != nil {
@@ -322,7 +336,7 @@ func NewOperationStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobr
 			return nil
 		},
 	}
-	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the operation (defaults to \"default\")")
+	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the operation (defaults to the current environment's namespace)")
 	return cmd
 }
 

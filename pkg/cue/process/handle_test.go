@@ -276,7 +276,7 @@ func TestOperationContextFields(t *testing.T) {
 			Details: map[string]string{"reason": "ready"},
 		},
 		Output:  map[string]interface{}{"kind": "Deployment"},
-		Outputs: []interface{}{map[string]interface{}{"kind": "ConfigMap"}},
+		Outputs: map[string]interface{}{"config": map[string]interface{}{"kind": "ConfigMap"}},
 	})
 
 	c, err := ctx.BaseContextFile()
@@ -311,9 +311,25 @@ func TestOperationContextFields(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, `{"kind":"Deployment"}`, string(output))
 
-	outputs, err := v.LookupPath(value.FieldPath("context", OutputsFieldName)).MarshalJSON()
+	outputs, err := v.LookupPath(value.FieldPath("context", OutputsFieldName, "config")).MarshalJSON()
 	assert.NoError(t, err)
-	assert.Equal(t, `[{"kind":"ConfigMap"}]`, string(outputs))
+	assert.Equal(t, `{"kind":"ConfigMap"}`, string(outputs))
+}
+
+func TestOperationContextParamsDefaultEmpty(t *testing.T) {
+	ctx := NewContext(ContextData{
+		AppName:       "myapp",
+		CompName:      "mycomp",
+		OperationName: "restart-op",
+	})
+
+	c, err := ctx.BaseContextFile()
+	assert.NoError(t, err)
+	v := cuecontext.New().CompileString(c)
+
+	params, err := v.LookupPath(value.FieldPath("context", ContextOperationParams)).MarshalJSON()
+	assert.NoError(t, err)
+	assert.Equal(t, `{}`, string(params))
 }
 
 func TestOperationContextFieldsOmittedWhenUnset(t *testing.T) {
