@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24
 **Branch:** `feat/addon-component`
-**Status:** Approved design, pending written-spec review
+**Status:** Approved revised design
 
 ## Problem
 
@@ -54,13 +54,24 @@ into that path removes an extra admission round trip, avoids dependence on
 
 ## Architecture
 
-### Addon package
+### Application addon subpackage
 
-`pkg/webhook/core.oam.dev/v1beta1/addon` remains the owner of addon-specific
-admission validation, but it no longer owns an admission handler.
+Addon-specific implementation lives under:
 
-The current addon `ValidatingHandler` becomes a focused validator with this
-responsibility:
+```text
+pkg/webhook/core.oam.dev/v1beta1/application/addon
+```
+
+The parent path communicates that this code validates addon components only as
+part of Application admission. It must not live at `v1beta1/addon`, because
+sibling directories at that level represent independently admitted Kubernetes
+resource kinds and the standalone path implies an Addon webhook API that does
+not exist.
+
+The nested `application/addon` package owns addon-specific parsing and
+compatibility validation, but it does not own an admission handler or route.
+
+The nested package exposes a focused `Validator` with this responsibility:
 
 1. Iterate Application components.
 2. Ignore components whose type is not `addon`.
@@ -71,13 +82,13 @@ responsibility:
 7. Return indexed `field.Error` values for confirmed incompatibilities.
 
 The validator exposes a constructor for production use. Its compatibility
-checker remains replaceable inside package tests so registry-dependent behavior
-can be tested hermetically.
+checker remains replaceable inside nested-package tests so registry-dependent
+behavior can be tested hermetically.
 
 `compat.go` continues to own registry resolution and system-requirement checks.
 Its production checker becomes independent of an admission-handler receiver.
 
-### Application package
+### Parent Application package
 
 The Application package defines the narrow interface it consumes:
 
@@ -90,6 +101,11 @@ type addonComponentValidator interface {
 Defining the interface at the consumer keeps the addon package independent of
 Application admission orchestration and allows Application tests to inject a
 small fake.
+
+The parent package imports its child with the `addonvalidation` alias. It keeps
+feature-gate checks, `type: addon` detection, validator dispatch, and shared
+admission error aggregation. The nested package must not import its parent, so
+the dependency remains one-way and cycle-free.
 
 `ValidatingHandler` receives an `addonComponentValidator`. Production
 registration supplies the addon package's validator. Tests may supply a fake.
@@ -180,6 +196,10 @@ Keep unchanged:
 - The `EnableAddonComponent` controller argument.
 - The shared Application validating webhook configuration.
 - Existing certgen jobs and RBAC.
+
+Remove the obsolete top-level
+`pkg/webhook/core.oam.dev/v1beta1/addon` directory after moving its validator,
+compatibility checker, and tests into `application/addon`.
 
 ## Tests
 
