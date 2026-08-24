@@ -1,6 +1,3 @@
-//go:build integration
-// +build integration
-
 /*
 Copyright 2021 The KubeVela Authors.
 
@@ -17,48 +14,40 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package module
+package controllers_test
 
 import (
 	"context"
-	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
-	ggcrregistry "github.com/google/go-containerregistry/pkg/registry"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/stretchr/testify/require"
 
 	"github.com/oam-dev/kubevela/pkg/addon"
+	pkgmodule "github.com/oam-dev/kubevela/pkg/module"
 )
 
-// TestPublishRoundTripInProcessRegistry publishes the s3 fixture to an
-// in-process OCI registry, reads the manifest back to check the tag and the
-// annotations, then pulls the artifact through the same code the module fetch
-// uses and asserts an equal Module. It proves the round trip end to end
-// without any external dependency, so it always runs under -tags integration.
-func TestPublishRoundTripInProcessRegistry(t *testing.T) {
-	server := httptest.NewServer(ggcrregistry.New())
-	defer server.Close()
-	host := strings.TrimPrefix(server.URL, "http://")
+const moduleRegistryFixtureRelPath = "test/e2e-test/testdata/module/s3"
 
-	reg := addon.Registry{Name: "local", OCI: &addon.OCIAddonSource{URL: "http://" + host + "/modules"}}
-	publishAndAssert(t, reg, host+"/modules", name.Insecure)
-}
-
-// TestPublishRoundTripECR runs the same assertions against a real ECR
+// TestPublishRoundTripECR runs a publish/pull round trip against a real ECR
 // repository prefix when MODULE_ECR_REGISTRY is set, for example
 // 123456789012.dkr.ecr.us-west-2.amazonaws.com/modules, or against any
 // plain-HTTP registry via an "http://" prefix (e.g. a port-forwarded
 // registry:2). Credentials come from the docker credential chain, so
 // `aws ecr get-login-password | docker login` or docker-credential-ecr-login
-// must be in place for ECR. The repository <prefix>/s3 must already exist.
-// It skips cleanly when the environment variable is unset, so the default
-// (non-integration) suite and CI runs without ECR access never touch a real
-// registry.
+// must be in place for ECR. The repository <prefix>/s3 must already
+// exist. It skips cleanly when the environment variable is unset, so the
+// default e2e run (no real ECR access) never touches a real registry; CI does
+// not set it, so this is a manual/opt-in verification test, not a gate.
+//
+// It uses the realistic s3 fixture relocated from pkg/module testdata to the
+// E2E fixture tree.
 func TestPublishRoundTripECR(t *testing.T) {
 	target := os.Getenv("MODULE_ECR_REGISTRY")
 	if target == "" {
@@ -82,21 +71,14 @@ func TestPublishRoundTripECR(t *testing.T) {
 	case strings.HasPrefix(target, "oci://"):
 		repoPrefix = strings.TrimPrefix(target, "oci://")
 	}
-	publishAndAssert(t, reg, repoPrefix, refOpts...)
-}
 
-// publishAndAssert packages the s3 testdata module, pushes it to reg, then
-// verifies the round trip from both directions: the raw OCI manifest (tag and
-// annotations) via go-containerregistry, and the parsed Module via the same
-// PullOCIChartFiles path the module fetch service uses.
-func publishAndAssert(t *testing.T, reg addon.Registry, repoPrefix string, refOpts ...name.Option) {
-	t.Helper()
 	ctx := context.Background()
+	fixtureDir := filepath.Join(modulePublishRepoRoot(), moduleRegistryFixtureRelPath)
 
-	source, err := ParseModuleDir("testdata/modules/s3")
+	source, err := pkgmodule.ParseModuleDir(fixtureDir)
 	require.NoError(t, err)
 
-	art, err := PackageModule("testdata/modules/s3", "")
+	art, err := pkgmodule.PackageModule(fixtureDir, "")
 	require.NoError(t, err)
 	require.NoError(t, addon.PushOCIChart(ctx, reg, source.Name, art.Tag, art.Archive))
 
@@ -108,17 +90,17 @@ func publishAndAssert(t *testing.T, reg addon.Registry, repoPrefix string, refOp
 	require.NoError(t, err)
 	mf, err := manifest.Manifest()
 	require.NoError(t, err)
-	require.Equal(t, source.Name, mf.Annotations[AnnotationModule])
-	require.Equal(t, "v1", mf.Annotations[AnnotationLines])
-	require.Equal(t, "v1", mf.Annotations[AnnotationEnabledLines])
+	require.Equal(t, source.Name, mf.Annotations[pkgmodule.AnnotationModule])
+	require.Equal(t, "v1", mf.Annotations[pkgmodule.AnnotationLines])
+	require.Equal(t, "v1", mf.Annotations[pkgmodule.AnnotationEnabledLines])
 
 	files, err := addon.PullOCIChartFiles(ctx, reg, source.Name, art.Tag)
 	require.NoError(t, err)
-	pulled := map[string][]byte{}
+	pulled := fstest.MapFS{}
 	for _, f := range files {
-		pulled[f.Name] = f.Data
+		pulled[f.Name] = &fstest.MapFile{Data: f.Data}
 	}
-	fetched, err := ParseModule(fstestMapFS(pulled))
+	fetched, err := pkgmodule.ParseModule(pulled)
 	require.NoError(t, err)
 	require.Equal(t, source, fetched)
 }

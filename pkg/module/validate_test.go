@@ -32,7 +32,7 @@ func TestValidateModuleName(t *testing.T) {
 		{name: "", wantError: true},
 	}
 	for _, c := range cases {
-		err := validateModuleName(c.name, "testdata/modules/x/_module.cue")
+		err := validateModuleName(c.name, "modules/x/_module.cue")
 		if c.wantError {
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "_module.cue")
@@ -59,7 +59,7 @@ func TestValidateModuleVersion(t *testing.T) {
 		{version: "v1.2.3", wantError: true},
 	}
 	for _, c := range cases {
-		err := validateModuleVersion(c.version, "testdata/modules/x/_module.cue")
+		err := validateModuleVersion(c.version, "modules/x/_module.cue")
 		if c.wantError {
 			assert.Error(t, err, "version %q should be rejected", c.version)
 			assert.Contains(t, err.Error(), "_module.cue")
@@ -84,7 +84,7 @@ func TestValidateAPIVersion(t *testing.T) {
 		{apiVersion: "v1.2", wantError: true},
 	}
 	for _, c := range cases {
-		err := validateAPIVersion(c.apiVersion, "testdata/modules/x/v1/_version.cue")
+		err := validateAPIVersion(c.apiVersion, "modules/x/v1/_version.cue")
 		if c.wantError {
 			assert.Error(t, err, "apiVersion %q should be rejected", c.apiVersion)
 			assert.Contains(t, err.Error(), "_version.cue")
@@ -117,7 +117,7 @@ func TestValidateDefinitionName(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		err := validateDefinitionName(c.def, "testdata/modules/x/v1/definitions/widget.yaml")
+		err := validateDefinitionName(c.def, "modules/x/v1/definitions/widget.yaml")
 		if c.want {
 			assert.Error(t, err, c.name)
 		} else {

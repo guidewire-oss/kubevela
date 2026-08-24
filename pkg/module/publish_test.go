@@ -50,24 +50,21 @@ func archiveFS(t *testing.T, archive []byte, chartName string) fs.FS {
 }
 
 func TestPackageModuleRoundTrip(t *testing.T) {
-	for _, dir := range []string{"testdata/modules/s3", "testdata/modules/minimal"} {
-		t.Run(dir, func(t *testing.T) {
-			source, err := ParseModuleDir(dir)
-			require.NoError(t, err)
+	dir := minimalModuleDir(t)
+	source, err := ParseModuleDir(dir)
+	require.NoError(t, err)
 
-			art, err := PackageModule(dir, "")
-			require.NoError(t, err)
-			require.Equal(t, source.Version, art.Tag)
+	art, err := PackageModule(dir, "")
+	require.NoError(t, err)
+	require.Equal(t, source.Version, art.Tag)
 
-			pulled, err := ParseModule(archiveFS(t, art.Archive, source.Name))
-			require.NoError(t, err)
-			require.Equal(t, source, pulled)
-		})
-	}
+	pulled, err := ParseModule(archiveFS(t, art.Archive, source.Name))
+	require.NoError(t, err)
+	require.Equal(t, source, pulled)
 }
 
 func TestPackageModuleArchiveContents(t *testing.T) {
-	art, err := PackageModule("testdata/modules/s3", "")
+	art, err := PackageModule(minimalModuleDir(t), "")
 	require.NoError(t, err)
 
 	files, err := loader.LoadArchiveFiles(bytes.NewReader(art.Archive))
@@ -82,7 +79,7 @@ func TestPackageModuleArchiveContents(t *testing.T) {
 		"auxiliary/xrd.yaml",
 		"v1/_version.cue",
 		"v1/auxiliary/composition.yaml",
-		"v1/definitions/bucket.cue",
+		"v1/definitions/widget.yaml",
 	} {
 		require.True(t, names[want], "archive is missing %s, has %v", want, names)
 	}
@@ -150,12 +147,13 @@ func TestPackageModuleAnnotations(t *testing.T) {
 }
 
 func TestPackageModuleVersionOverride(t *testing.T) {
-	art, err := PackageModule("testdata/modules/s3", "1.1.0-rc1")
+	dir := minimalModuleDir(t)
+	art, err := PackageModule(dir, "1.1.0-rc1")
 	require.NoError(t, err)
 	require.Equal(t, "1.1.0-rc1", art.Tag)
 	require.Equal(t, "1.0.0", art.Module.Version)
 
-	_, err = PackageModule("testdata/modules/s3", "latest")
+	_, err = PackageModule(dir, "latest")
 	require.ErrorContains(t, err, "not a valid semver")
 }
 
@@ -227,19 +225,6 @@ func TestPackageModuleDropsHelmignoreAndChartYamlAtRootOnly(t *testing.T) {
 	require.Contains(t, contents, "Chart.yaml")
 	require.NotEqual(t, authorRootChart, string(contents["Chart.yaml"]),
 		"root Chart.yaml must be replaced by the generated one, not the author's")
-}
-
-// writeModuleTree writes files (keyed by slash-separated relative path) into a
-// fresh temp directory and returns it.
-func writeModuleTree(t *testing.T, files map[string]string) string {
-	t.Helper()
-	dir := t.TempDir()
-	for rel, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(rel))
-		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o750))
-		require.NoError(t, os.WriteFile(p, []byte(content), 0o600))
-	}
-	return dir
 }
 
 // treeSnapshot maps every file path under dir to its contents, so a test can
