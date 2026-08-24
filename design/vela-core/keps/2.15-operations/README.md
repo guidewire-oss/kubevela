@@ -502,10 +502,10 @@ spec:
 
   # target names the Component or Application this operation attaches to.
   # Required for every scope except None, where it is omitted entirely:
-  # see [Scope: None](#scope-none-the-unattached-case).
+  # see [Scope: None](#scope-none-the-unattached-case) and [Target](#target).
   target:
-    kind: Component
-    name: payments-db
+    app: payments
+    component: payments-db
 
   # clusters restricts which of the target's clusters are operated on.
   # Omitted means every cluster the target is dispatched to. Under scope
@@ -526,6 +526,20 @@ spec:
     onFailure: Retain
 
 ```
+
+### Target
+
+`spec.target` names the containment path to what an operation acts on: `app` names the owning Application, and `component` names a Component within it, required or omitted according to the template's `attach.scope`.
+
+| `attach.scope` | `target.app` | `target.component` |
+|---|---|---|
+| `Component` | required | required |
+| `Application` | required | omitted |
+| `None` | `target` itself is omitted | — |
+
+A component's name is only unique within its Application, not across a namespace, so `app` is required rather than optional: without it, `context.appName` and `context.componentName` (see [CUE Context](#cue-context)) cannot be resolved, and neither can the CLI's own `--app`/`--component` pair (see [CLI](#cli)).
+
+The path form follows OAM's own containment, an Application holds Components, a Component holds Traits, so which fields are populated already says what kind of thing is targeted, and `component` always means the same thing regardless of scope. Whether operations should reach *inside* a Component to attach to one of its Traits, by populating a `trait` field alongside `component`, is a real question and is listed under [Open Questions](#open-questions) rather than decided here.
 
 ## Execution Model
 
@@ -1521,8 +1535,7 @@ metadata:
 spec:
   template: payments-backup
   target:
-    kind: Application
-    name: payments
+    app: payments
   clusters: [eu-west-1, eu-central-1]
   parameters:
     retentionDays: 90
@@ -2652,3 +2665,5 @@ The existing `skipUsers` list on the handler covers controller and system identi
    Deciding on Option 1 and adopting neither of the others is a legitimate outcome and costs this KEP nothing.
 
 2. **Whether reconciliation pausing needs finer granularity than an Application.** See [Drift Correction During an Operation](#drift-correction-during-an-operation). Pausing is an Application-level concern today, so `suspendTargetReconciliation` on an operation against one component also stops drift correction for every other component in that Application. A pause scoped to the target component would be the right granularity and does not exist. The question is whether that granularity is worth building, and whether it belongs here or in the Application controller, since nothing about the need is specific to Operations.
+
+3. **Whether to support Trait-scoped operations.** [`target`](#target)'s `app`/`component` path leaves room for a `trait` field naming a Trait within `target.component`, but that does not answer whether such a scope should exist: a Trait's status shape is generally thinner than a Component's, some traits have no independent lifecycle to operate on, and `attach.scope` would need a fourth value with its own admission and discovery rules to match. This KEP takes no position on whether Trait scope is worth building.
