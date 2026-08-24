@@ -19,13 +19,19 @@ package addon
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	admissionv1 "k8s.io/api/admission/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -36,6 +42,18 @@ func rawProps(t *testing.T, m map[string]interface{}) *runtime.RawExtension {
 	b, err := json.Marshal(m)
 	require.NoError(t, err)
 	return &runtime.RawExtension{Raw: b}
+}
+
+type fakeAdmissionDecoder struct {
+	decodeFn func(req admission.Request, into runtime.Object) error
+}
+
+func (f fakeAdmissionDecoder) Decode(req admission.Request, into runtime.Object) error {
+	return f.decodeFn(req, into)
+}
+
+func (f fakeAdmissionDecoder) DecodeRaw(_ runtime.RawExtension, _ runtime.Object) error {
+	return errors.New("not implemented in test")
 }
 
 func TestValidateComponents(t *testing.T) {
@@ -142,6 +160,86 @@ func TestValidateComponents(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandle(t *testing.T) {
+	newReq := func(op admissionv1.Operation) admission.Request {
+		return admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+			UID:       "req-1",
+			Name:      "my-app",
+			Namespace: "default",
+			Operation: op,
+		}}
+	}
+
+	t.Run("non-create-update operations are allowed", func(t *testing.T) {
+		h := &ValidatingHandler{}
+		resp := h.Handle(context.Background(), newReq(admissionv1.Delete))
+		assert.True(t, resp.Allowed)
+	})
+
+	t.Run("decode error returns bad request", func(t *testing.T) {
+		h := &ValidatingHandler{Decoder: fakeAdmissionDecoder{decodeFn: func(_ admission.Request, _ runtime.Object) error {
+			return errors.New("bad payload")
+		}}}
+		resp := h.Handle(context.Background(), newReq(admissionv1.Create))
+		assert.False(t, resp.Allowed)
+		require.NotNil(t, resp.Result)
+		assert.Equal(t, int32(http.StatusBadRequest), resp.Result.Code)
+		assert.Contains(t, resp.Result.Message, "failed to decode")
+	})
+
+	t.Run("deleting application is allowed", func(t *testing.T) {
+		h := &ValidatingHandler{Decoder: fakeAdmissionDecoder{decodeFn: func(_ admission.Request, into runtime.Object) error {
+			app := into.(*v1beta1.Application)
+			ts := metav1.NewTime(time.Now())
+			app.ObjectMeta.DeletionTimestamp = &ts
+			return nil
+		}}}
+		resp := h.Handle(context.Background(), newReq(admissionv1.Update))
+		assert.True(t, resp.Allowed)
+	})
+
+	t.Run("validation errors are denied", func(t *testing.T) {
+		h := &ValidatingHandler{
+			Decoder: fakeAdmissionDecoder{decodeFn: func(_ admission.Request, into runtime.Object) error {
+				app := into.(*v1beta1.Application)
+				app.Spec.Components = []common.ApplicationComponent{{
+					Name:       "fluxcd",
+					Type:       ComponentType,
+					Properties: rawProps(t, map[string]interface{}{"addon": "fluxcd"}),
+				}}
+				return nil
+			}},
+			compatChecker: func(_ context.Context, _, _, _ string) *field.Error {
+				return field.Invalid(field.NewPath("x"), "fluxcd", "incompatible")
+			},
+		}
+		resp := h.Handle(context.Background(), newReq(admissionv1.Create))
+		assert.False(t, resp.Allowed)
+		require.NotNil(t, resp.Result)
+		assert.Equal(t, int32(http.StatusBadRequest), resp.Result.Code)
+		assert.Contains(t, resp.Result.Message, "incompatible")
+	})
+
+	t.Run("valid request is allowed", func(t *testing.T) {
+		h := &ValidatingHandler{
+			Decoder: fakeAdmissionDecoder{decodeFn: func(_ admission.Request, into runtime.Object) error {
+				app := into.(*v1beta1.Application)
+				app.Spec.Components = []common.ApplicationComponent{{
+					Name:       "fluxcd",
+					Type:       ComponentType,
+					Properties: rawProps(t, map[string]interface{}{"addon": "fluxcd"}),
+				}}
+				return nil
+			}},
+			compatChecker: func(_ context.Context, _, _, _ string) *field.Error {
+				return nil
+			},
+		}
+		resp := h.Handle(context.Background(), newReq(admissionv1.Update))
+		assert.True(t, resp.Allowed)
+	})
 }
 
 // TestWebhookPathMatchesChart guards the one drift that fails silently: if the route
