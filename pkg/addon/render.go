@@ -408,7 +408,51 @@ func renderResources(addon *InstallPackage, args map[string]interface{}) ([]comm
 		}
 		resources = append(resources, *comp)
 	}
+
+	moduleComponents, err := renderModuleComponents(addon, args, resources)
+	if err != nil {
+		return nil, err
+	}
+	resources = append(resources, moduleComponents...)
+
 	return resources, nil
+}
+
+// renderModuleComponents turns the addon's enabled modules/_imports.cue
+// entries into type: module components, ordered after every component
+// already rendered from resources/ (resourceComponents) via DependsOn, so
+// the addon's own operators/CRDs are healthy before a module's XRD/
+// Compositions apply.
+func renderModuleComponents(addon *InstallPackage, args map[string]interface{}, resourceComponents []common2.ApplicationComponent) ([]common2.ApplicationComponent, error) {
+	imports, err := parseModuleImports(addon, args)
+	if err != nil {
+		return nil, err
+	}
+	if len(imports) == 0 {
+		return nil, nil
+	}
+
+	dependsOn := make([]string, 0, len(resourceComponents))
+	for _, r := range resourceComponents {
+		dependsOn = append(dependsOn, r.Name)
+	}
+
+	components := make([]common2.ApplicationComponent, 0, len(imports))
+	for _, imp := range imports {
+		if len(imp.Sources) == 0 {
+			return nil, NewAddonError(fmt.Sprintf("module import %q has no sources", imp.Module))
+		}
+		components = append(components, common2.ApplicationComponent{
+			Type: "module",
+			Name: fmt.Sprintf("module-%s", imp.Module),
+			Properties: util.Object2RawExtension(map[string]interface{}{
+				"module":   imp.Module,
+				"registry": imp.Sources[0].Registry,
+			}),
+			DependsOn: dependsOn,
+		})
+	}
+	return components, nil
 }
 
 // checkNeedAttachTopologyPolicy will check this addon want to deploy to runtime-cluster, but application template doesn't specify the

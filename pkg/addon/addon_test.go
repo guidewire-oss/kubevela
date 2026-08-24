@@ -1651,3 +1651,29 @@ func TestListInstalledAddons(t *testing.T) {
 	}
 	assert.Equal(t, expected, res)
 }
+
+// staticContentReader is an AsyncReader stub that returns the same content
+// for every ReadFile call, for tests that only exercise one file.
+type staticContentReader struct {
+	content string
+}
+
+func (s staticContentReader) ListAddonMeta() (map[string]SourceMeta, error) { return nil, nil }
+func (s staticContentReader) ReadFile(path string) (string, error)          { return s.content, nil }
+func (s staticContentReader) RelativePath(item Item) string                 { return item.GetPath() }
+
+func TestReadModulesFile(t *testing.T) {
+	importsCue := `imports: [{module: "aws-s3", enabled: true, sources: [{registry: "oam-modules"}]}]`
+	r := staticContentReader{content: importsCue}
+
+	a := &InstallPackage{}
+	assert.NoError(t, readModulesFile(a, r, "my-addon/modules/_imports.cue"))
+	assert.Equal(t, importsCue, a.ModuleImports.Data)
+	assert.Equal(t, ModuleImportsFileName, a.ModuleImports.Name)
+
+	// A file under modules/ that isn't _imports.cue is ignored today
+	// (reserved for future inline module dirs, out of scope here).
+	a2 := &InstallPackage{}
+	assert.NoError(t, readModulesFile(a2, r, "my-addon/modules/aws-s3/_module.cue"))
+	assert.Equal(t, ElementFile{}, a2.ModuleImports)
+}

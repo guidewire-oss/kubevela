@@ -117,6 +117,15 @@ const (
 	// ViewDirName is the addon views dir name
 	ViewDirName string = "views"
 
+	// ModulesDirName is the addon modules/ dir name, holding either
+	// modules/_imports.cue (external module references) or, in the future,
+	// modules/<name>/ (inline module sources — not yet supported).
+	ModulesDirName string = "modules"
+
+	// ModuleImportsFileName is the external module-import manifest found
+	// directly under modules/.
+	ModuleImportsFileName string = "_imports.cue"
+
 	// GoDefDirName is the addon godef/ dir name for Go-based definitions
 	GoDefDirName string = "godef"
 
@@ -183,7 +192,7 @@ var Patterns = []Pattern{
 	// parameter in resource directory
 	{Value: ParameterFileName},
 	// directory files
-	{IsDir: true, Value: ResourcesDirName}, {IsDir: true, Value: DefinitionsDirName}, {IsDir: true, Value: DefSchemaName}, {IsDir: true, Value: ViewDirName},
+	{IsDir: true, Value: ResourcesDirName}, {IsDir: true, Value: DefinitionsDirName}, {IsDir: true, Value: DefSchemaName}, {IsDir: true, Value: ViewDirName}, {IsDir: true, Value: ModulesDirName},
 	// Go-based definitions directory
 	{IsDir: true, Value: GoDefDirName},
 	// CUE app template, parameter and notes
@@ -315,6 +324,7 @@ func GetInstallPackageFromReader(r AsyncReader, meta *SourceMeta, uiData *UIData
 		ViewDirName:            readViewFile,
 		AppTemplateCueFileName: readAppCueTemplate,
 		NotesCUEFileName:       readNotesFile,
+		ModulesDirName:         readModulesFile,
 	}
 	ptItems := ClassifyItemByPattern(meta, r)
 
@@ -415,6 +425,21 @@ func readResFile(a *InstallPackage, reader AsyncReader, readPath string) error {
 	default:
 		// skip other file formats
 	}
+	return nil
+}
+
+// readModulesFile reads files under modules/. Only the external import
+// manifest (_imports.cue) is recognized today; any other file under
+// modules/ (e.g. a future inline module source directory) is ignored.
+func readModulesFile(a *InstallPackage, reader AsyncReader, readPath string) error {
+	if path.Base(readPath) != ModuleImportsFileName {
+		return nil
+	}
+	b, err := reader.ReadFile(readPath)
+	if err != nil {
+		return err
+	}
+	a.ModuleImports = ElementFile{Data: b, Name: ModuleImportsFileName}
 	return nil
 }
 

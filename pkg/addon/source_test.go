@@ -51,6 +51,7 @@ func TestClassifyItemByPattern(t *testing.T) {
 			mockItem{path: "my-addon/resources/res.yaml"},
 			mockItem{path: "my-addon/schemas/schema.cue"},
 			mockItem{path: "my-addon/views/view.cue"},
+			mockItem{path: "my-addon/modules/_imports.cue"},
 			mockItem{path: "my-addon/some-other-file.txt"}, // Should be ignored
 		},
 	}
@@ -75,6 +76,9 @@ func TestClassifyItemByPattern(t *testing.T) {
 
 	assert.Contains(t, classified, ViewDirName)
 	assert.Len(t, classified[ViewDirName], 1)
+
+	assert.Contains(t, classified, ModulesDirName)
+	assert.Len(t, classified[ModulesDirName], 1)
 
 	assert.NotContains(t, classified, "some-other-file.txt")
 }

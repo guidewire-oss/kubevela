@@ -17,6 +17,7 @@ limitations under the License.
 package addon
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -570,4 +571,95 @@ output: {
 	ok, err = checkCueFileHasPackageHeader(cueTemplate)
 	assert.NoError(t, err)
 	assert.Equal(t, false, ok)
+}
+
+func TestRenderResourcesEmitsModuleComponent(t *testing.T) {
+	cueTemplate := `output: {
+ type: "k8s-objects"
+ name: "crossplane-crds"
+}`
+	importsCue := `imports: [{module: "aws-s3", enabled: true, sources: [{registry: "oam-modules"}]}]`
+
+	comps, err := renderResources(&InstallPackage{
+		CUETemplates:  []ElementFile{{Data: cueTemplate, Name: "crds.cue"}},
+		ModuleImports: ElementFile{Data: importsCue, Name: ModuleImportsFileName},
+	}, nil)
+	assert.NoError(t, err)
+	assert.Len(t, comps, 2)
+
+	moduleComp := comps[1]
+	assert.Equal(t, "module", moduleComp.Type)
+	assert.Equal(t, "module-aws-s3", moduleComp.Name)
+	assert.Equal(t, []string{"crossplane-crds"}, moduleComp.DependsOn)
+
+	var props map[string]interface{}
+	assert.NoError(t, json.Unmarshal(moduleComp.Properties.Raw, &props))
+	assert.Equal(t, "aws-s3", props["module"])
+	assert.Equal(t, "oam-modules", props["registry"])
+}
+
+func TestRenderResourcesMultipleModuleImports(t *testing.T) {
+	importsCue := `imports: [
+	{module: "aws-s3", enabled: true, sources: [{registry: "oam-modules"}]},
+	{module: "aws-rds", enabled: true, sources: [{registry: "oam-modules"}]},
+]`
+
+	comps, err := renderResources(&InstallPackage{
+		ModuleImports: ElementFile{Data: importsCue, Name: ModuleImportsFileName},
+	}, nil)
+	assert.NoError(t, err)
+	assert.Len(t, comps, 2)
+	assert.Equal(t, "module-aws-s3", comps[0].Name)
+	assert.Equal(t, "module-aws-rds", comps[1].Name)
+	// No resources/ tier in this fixture, so both depend on nothing.
+	assert.Empty(t, comps[0].DependsOn)
+	assert.Empty(t, comps[1].DependsOn)
+}
+
+func TestRenderResourcesNoModuleImportsNoRegression(t *testing.T) {
+	cueTemplate := `output: {
+ type: "webservice"
+ name: "velaux"
+}`
+	comps, err := renderResources(&InstallPackage{
+		CUETemplates: []ElementFile{{Data: cueTemplate, Name: "tmpl.cue"}},
+	}, nil)
+	assert.NoError(t, err)
+	assert.Len(t, comps, 1)
+	assert.Equal(t, "velaux", comps[0].Name)
+}
+
+func TestRenderAppIncludesModuleComponentAfterResources(t *testing.T) {
+	cueTemplate := `output: {
+ type: "k8s-objects"
+ name: "crossplane-crds"
+}`
+	importsCue := `imports: [{module: "aws-s3", enabled: true, sources: [{registry: "oam-modules"}]}]`
+
+	addon := &InstallPackage{
+		Meta: Meta{Name: "my-addon"},
+		CUETemplates: []ElementFile{
+			{Data: cueTemplate, Name: "crds.cue"},
+		},
+		ModuleImports: ElementFile{Data: importsCue, Name: ModuleImportsFileName},
+	}
+
+	app, _, err := RenderApp(context.Background(), addon, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "addon-my-addon", app.Name)
+
+	var names []string
+	for _, c := range app.Spec.Components {
+		names = append(names, c.Name)
+	}
+	assert.Equal(t, []string{"crossplane-crds", "module-aws-s3"}, names)
+
+	var moduleComp *common.ApplicationComponent
+	for i := range app.Spec.Components {
+		if app.Spec.Components[i].Name == "module-aws-s3" {
+			moduleComp = &app.Spec.Components[i]
+		}
+	}
+	assert.NotNil(t, moduleComp)
+	assert.Equal(t, []string{"crossplane-crds"}, moduleComp.DependsOn)
 }
