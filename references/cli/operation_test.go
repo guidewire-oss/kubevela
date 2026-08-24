@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +30,27 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
+	velaargs "github.com/oam-dev/kubevela/pkg/utils/common"
+	"github.com/oam-dev/kubevela/pkg/utils/util"
 )
+
+// TestOperationCommandsRegisterEnvFlag guards against GetNamespaceFromEnv
+// panicking on a nil "env" flag when --namespace is omitted.
+func TestOperationCommandsRegisterEnvFlag(t *testing.T) {
+	args := velaargs.Args{}
+	io := util.IOStreams{}
+	for _, cmd := range []*cobra.Command{
+		NewOperationListCommand(args, io),
+		NewOperationRunCommand(args, io),
+		NewOperationStatusCommand(args, io),
+	} {
+		flag := cmd.Flag("env")
+		require.NotNil(t, flag, "%s must register --env (via addNamespaceAndEnvArg)", cmd.Name())
+		assert.NotPanics(t, func() {
+			_ = flag.Value.String()
+		})
+	}
+}
 
 func TestSplitComponentRef(t *testing.T) {
 	app, name, err := splitComponentRef("myapp/mycomp")

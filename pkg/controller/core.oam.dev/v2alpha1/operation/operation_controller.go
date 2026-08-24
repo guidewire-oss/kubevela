@@ -83,10 +83,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, nil
 	}
 
-	for _, cluster := range op.Spec.Clusters {
-		if cluster != localCluster {
-			return r.fail(logCtx, op, fmt.Errorf("spec.clusters only supports %q so far, got %v", localCluster, op.Spec.Clusters))
-		}
+	if len(op.Spec.Clusters) > 1 || (len(op.Spec.Clusters) == 1 && op.Spec.Clusters[0] != localCluster) {
+		return r.fail(logCtx, op, fmt.Errorf("spec.clusters only supports %q so far, got %v", localCluster, op.Spec.Clusters))
 	}
 
 	target, err := r.resolveTarget(logCtx, op)

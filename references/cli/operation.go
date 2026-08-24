@@ -208,7 +208,7 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 		},
 	}
 	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
-	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the application (defaults to the current environment's namespace)")
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
@@ -296,8 +296,8 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 		},
 	}
 	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
-	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the application (defaults to the current environment's namespace)")
 	cmd.Flags().StringArrayP(FlagParam, "p", nil, "a key=value parameter, may be repeated")
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
@@ -336,7 +336,7 @@ func NewOperationStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobr
 			return nil
 		},
 	}
-	cmd.Flags().StringP(FlagNamespace, "n", "", "the namespace of the operation (defaults to the current environment's namespace)")
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
