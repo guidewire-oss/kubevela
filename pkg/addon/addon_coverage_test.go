@@ -49,7 +49,6 @@ func TestIsSkippableRegistryErrorClassification(t *testing.T) {
 
 // stubInfoLister implements ItemInfoLister for tests.
 type stubInfoLister struct {
-	name   string
 	addons map[string]ItemInfo
 	err    error
 }
@@ -144,7 +143,7 @@ func TestToVersionedRegistryConversion(t *testing.T) {
 		}
 		vr, err := ToVersionedRegistry(r)
 		require.NoError(t, err)
-		assert.NotNil(t, vr)
+		assert.IsType(t, &versionedRegistry{}, vr, "Helm must take precedence over OCI")
 	})
 
 	t.Run("git-only registry is not versioned", func(t *testing.T) {
