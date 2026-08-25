@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 
+	upstreamcuex "github.com/kubevela/pkg/cue/cuex"
+
 	velacuex "github.com/oam-dev/kubevela/pkg/cue/cuex"
 	"github.com/oam-dev/kubevela/pkg/cue/cuex/providers/helm"
 
@@ -84,8 +86,28 @@ func ValidateCueTemplate(cueTemplate string) error {
 // arguments to helm.#Render could trigger a real chart fetch and helm
 // install during admission.
 func ValidateCuexTemplate(ctx context.Context, cueTemplate string) error {
+	return validateCuexTemplate(ctx, cueTemplate)
+}
+
+// ValidateCuexTemplateWithoutProviders validates a template's shape without
+// executing the provider functions in it.
+//
+// A SourceDefinition's whole purpose is to fetch something, and admission runs
+// with no parameters supplied - so every provider call is either handed a
+// non-concrete value ("cannot convert incomplete value \"string\" to JSON") or,
+// worse, actually performed. Performing it would do the source's I/O on every
+// apply, which is the exact cost the cache exists to avoid, and would make
+// admission depend on a remote service being reachable.
+//
+// The shape checks that matter - the schema block, the storage block, the
+// generated key - are all static and unaffected.
+func ValidateCuexTemplateWithoutProviders(ctx context.Context, cueTemplate string) error {
+	return validateCuexTemplate(ctx, cueTemplate, upstreamcuex.DisableResolveProviderFunctions{})
+}
+
+func validateCuexTemplate(ctx context.Context, cueTemplate string, opts ...upstreamcuex.CompileOption) error {
 	ctx = helm.WithDryRun(ctx)
-	val, err := velacuex.WorkloadCompiler.Get().CompileStringWithOptions(ctx, cueTemplate)
+	val, err := velacuex.WorkloadCompiler.Get().CompileStringWithOptions(ctx, cueTemplate, opts...)
 	if err != nil {
 		return err
 	}

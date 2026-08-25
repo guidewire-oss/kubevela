@@ -31,6 +31,7 @@ type (
 	WorkflowStepConstructor    func(step workflowv1alpha1.WorkflowStep) (apis.WorkflowStep, error)
 	WorkflowSubStepConstructor func(step workflowv1alpha1.WorkflowStepBase) (apis.WorkflowStep, error)
 	PolicyConstructor          func(policy v1beta1.AppPolicy) (apis.Policy, error)
+	SourceConstructor          func(source v1beta1.ApplicationSource) (apis.Source, error)
 )
 
 var (
@@ -39,6 +40,7 @@ var (
 	WorkflowSubStepsBuilders = make(map[string]WorkflowSubStepConstructor, 0)
 	PoliciesBuilders         = make(map[string]PolicyConstructor, 0)
 	TraitBuilders            = make(map[string]TraitConstructor, 0)
+	SourcesBuilders          = make(map[string]SourceConstructor, 0)
 )
 
 func RegisterComponent(_type string, c ComponentConstructor) {
@@ -59,4 +61,8 @@ func RegisterTrait(_type string, c TraitConstructor) {
 
 func RegisterWorkflowSubStep(_type string, c WorkflowSubStepConstructor) {
 	WorkflowSubStepsBuilders[_type] = c
+}
+
+func RegisterSource(_type string, c SourceConstructor) {
+	SourcesBuilders[_type] = c
 }

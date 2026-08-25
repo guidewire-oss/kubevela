@@ -33,6 +33,7 @@ type TypedApplication interface {
 	SetComponents(components ...Component) TypedApplication
 	SetWorkflowSteps(steps ...WorkflowStep) TypedApplication
 	SetPolicies(policies ...Policy) TypedApplication
+	SetSources(sources ...Source) TypedApplication
 
 	GetNamespace() string
 	GetLabels() map[string]string
@@ -43,6 +44,8 @@ type TypedApplication interface {
 	GetWorkflowStepsByType(typ string) []WorkflowStep
 	GetPolicyByName(name string) Policy
 	GetPoliciesByType(typ string) []Policy
+	GetSourceByName(name string) Source
+	GetSourcesByType(typ string) []Source
 
 	Build() v1beta1.Application
 	ToYAML() (string, error)
@@ -75,6 +78,15 @@ type Policy interface {
 	PolicyName() string
 	DefType() string
 	Build() v1beta1.AppPolicy
+	Validate() error
+}
+
+// Source is a binding under spec.sources, which components, traits, workflow
+// steps and policies read with $(source...) expressions.
+type Source interface {
+	SourceName() string
+	DefType() string
+	Build() v1beta1.ApplicationSource
 	Validate() error
 }
 
@@ -117,4 +129,13 @@ type WorkflowStepBase struct {
 type PolicyBase struct {
 	Name string
 	Type string
+}
+
+type SourceBase struct {
+	Name string
+	Type string
+	// AutoUpdate opts the binding in or out of source-driven re-dispatch. Nil
+	// defers to the controller's EnableSourceAutoUpdate default, which is why it
+	// is a pointer rather than a bool.
+	AutoUpdate *bool
 }

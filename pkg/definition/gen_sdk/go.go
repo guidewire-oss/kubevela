@@ -73,6 +73,7 @@ var (
 		v1beta1.TraitDefinitionKind:        "Trait",
 		v1beta1.WorkflowStepDefinitionKind: "WorkflowStep",
 		v1beta1.PolicyDefinitionKind:       "Policy",
+		v1beta1.SourceDefinitionKind:       "Source",
 	}
 	// DefinitionKindToBaseType is the map of definition kind to base type
 	DefinitionKindToBaseType = map[string]string{
@@ -80,6 +81,7 @@ var (
 		v1beta1.TraitDefinitionKind:        "TraitBase",
 		v1beta1.WorkflowStepDefinitionKind: "WorkflowStepBase",
 		v1beta1.PolicyDefinitionKind:       "PolicyBase",
+		v1beta1.SourceDefinitionKind:       "SourceBase",
 	}
 	// DefinitionKindToStatement is the map of definition kind to statement
 	DefinitionKindToStatement = map[string]*j.Statement{
@@ -87,8 +89,21 @@ var (
 		v1beta1.TraitDefinitionKind:        j.Qual("common", "ApplicationTrait"),
 		v1beta1.WorkflowStepDefinitionKind: j.Qual("github.com/kubevela/pkg/apis/oam/v1alpha1", "WorkflowStep"),
 		v1beta1.PolicyDefinitionKind:       j.Qual("v1beta1", "AppPolicy"),
+		v1beta1.SourceDefinitionKind:       j.Qual("v1beta1", "ApplicationSource"),
 	}
 )
+
+// SupportedDefinitionKind reports whether the generator models a definition
+// kind.
+//
+// The kind decides the base struct, the API type and the registration call, so
+// one that is absent from those maps produces Go that does not compile rather
+// than an SDK that is merely incomplete. Skipping it keeps a new definition kind
+// from breaking generation for every other kind before its SDK support lands.
+func SupportedDefinitionKind(kind string) bool {
+	_, ok := DefinitionKindToBaseType[kind]
+	return ok
+}
 
 // GoDefModifier is the Modifier for golang, modify code for each definition
 type GoDefModifier struct {
@@ -413,7 +428,8 @@ func (m *GoDefModifier) genCommonFunc() []*j.Statement {
 	defStructConstructor := j.Func().Id(m.nameInPascalCase).Params(
 		j.Do(func(s *j.Statement) {
 			switch kind {
-			case v1beta1.ComponentDefinitionKind, v1beta1.PolicyDefinitionKind, v1beta1.WorkflowStepDefinitionKind:
+			case v1beta1.ComponentDefinitionKind, v1beta1.PolicyDefinitionKind,
+				v1beta1.WorkflowStepDefinitionKind, v1beta1.SourceDefinitionKind:
 				s.Id("name").String()
 			}
 		}),
@@ -422,7 +438,8 @@ func (m *GoDefModifier) genCommonFunc() []*j.Statement {
 			j.Id("Base"): j.Id("apis").Dot(DefinitionKindToBaseType[kind]).BlockFunc(
 				func(g *j.Group) {
 					switch kind {
-					case v1beta1.ComponentDefinitionKind, v1beta1.PolicyDefinitionKind, v1beta1.WorkflowStepDefinitionKind:
+					case v1beta1.ComponentDefinitionKind, v1beta1.PolicyDefinitionKind,
+						v1beta1.WorkflowStepDefinitionKind, v1beta1.SourceDefinitionKind:
 						g.Id("Name").Op(":").Id("name").Op(",")
 						g.Id("Type").Op(":").Add(typeName).Op(",")
 					}
@@ -456,6 +473,7 @@ func (m *GoDefModifier) genCommonFunc() []*j.Statement {
 		builderDictValues := map[string][]string{
 			v1beta1.PolicyDefinitionKind:    {"Name"},
 			v1beta1.ComponentDefinitionKind: {"Name", "DependsOn", "Inputs", "Outputs"},
+			v1beta1.SourceDefinitionKind:    {"Name", "AutoUpdate"},
 		}
 		for _, v := range builderDictValues[kind] {
 			builderDict[j.Id(v)] = j.Id(m.defFuncReceiver).Dot("Base").Dot(v)
@@ -497,6 +515,7 @@ func (m *GoDefModifier) genFromFunc() []*j.Statement {
 		v1beta1.ComponentDefinitionKind:    {"Name", "DependsOn", "Inputs", "Outputs"},
 		v1beta1.WorkflowStepDefinitionKind: {"Name", "DependsOn", "Inputs", "Outputs", "If", "Timeout", "Meta"},
 		v1beta1.PolicyDefinitionKind:       {"Name"},
+		v1beta1.SourceDefinitionKind:       {"Name", "AutoUpdate"},
 		v1beta1.TraitDefinitionKind:        {},
 	}
 
@@ -655,7 +674,8 @@ func (m *GoDefModifier) genNameTypeFunc() []*j.Statement {
 		j.Return(j.Id(m.typeVarName)),
 	)
 	switch m.kind {
-	case v1beta1.ComponentDefinitionKind, v1beta1.WorkflowStepDefinitionKind, v1beta1.PolicyDefinitionKind:
+	case v1beta1.ComponentDefinitionKind, v1beta1.WorkflowStepDefinitionKind,
+		v1beta1.PolicyDefinitionKind, v1beta1.SourceDefinitionKind:
 		return []*j.Statement{nameFunc, typeFunc}
 	case v1beta1.TraitDefinitionKind:
 		return []*j.Statement{typeFunc}

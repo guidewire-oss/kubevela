@@ -1,0 +1,84 @@
+import "vela/kube"
+
+"vela-env": {
+	type: "source"
+	annotations: {}
+	labels: {}
+	description: "The KubeVela environment an Application is deployed into - its name, namespace, whether the namespace is a managed env, and the labels and annotations a platform keeps there. Reads the Application's own namespace only."
+}
+
+template: {
+	// The KubeVela environment an Application is deployed into.
+	//
+	// An env is a Namespace carrying two labels - `usage.oam.dev/control-plane: env`
+	// marking it as one, and `namespace.oam.dev/env: <name>` naming it. That is the
+	// whole mechanism, which is why this needs no Go: it is one `kube.#Get`.
+	//
+	// It exists as its own source rather than a generic `namespace` one because the
+	// environment is the concept a platform team and an application team share. A
+	// namespace is where it happens to live. Reading `source.env.name` says what it
+	// means; reading a label key off a namespace says how it is stored, and ties
+	// every Application to that storage choice.
+	//
+	// Parameterless, deliberately. The namespace read is always the Application's
+	// own, so there is no way to ask this source about somebody else's - a namespace
+	// is a boundary, and its labels are a platform's notes about that tenant. Taking
+	// a namespace parameter would turn "what environment am I in" into "read any
+	// namespace's tenancy", which is a different capability wearing the same name.
+	//
+	// `name` always resolves: an env's label when there is one, and the namespace's
+	// own name when there is not. So consumers need no default for it, and a
+	// namespace that was never `vela env init`-ed still reads sensibly rather than
+	// forcing every Application to carry a fallback for a case it does not have.
+	//
+	// `managed` is what that fallback would otherwise cost. Once `name` can equal
+	// `namespace`, the two cases become indistinguishable - an env genuinely named
+	// `default`, and a namespace nobody ever ran `vela env init` against - so
+	// anything gating on being in a real environment needs the question answered
+	// directly rather than inferred from the two matching.
+	//
+	// `labels` and `annotations` are open maps, so a key read carries the usual
+	// default obligation when it feeds a required parameter. This is where platforms
+	// keep tenancy - team, cost centre, tier - and a definition wanting a typed
+	// contract over those should name its fields rather than hand out raw keys.
+	schema: {
+		name:      string
+		namespace: string
+		managed:   bool
+		labels: [string]:      string
+		annotations: [string]: string
+	}
+
+	storage: {
+		// A namespace's labels change when an operator changes them. The read is a
+		// single GET, but it is on the hot path of every render that consumes it.
+		storageTTL:     "5m"
+		onStaleFailure: "use-stale"
+	}
+
+	parameter: {}
+
+	_ns: kube.#Get & {
+		$params: resource: {
+			apiVersion: "v1"
+			kind:       "Namespace"
+			metadata: name: context.namespace
+		}
+	}
+
+	_labels: *_ns.$returns.metadata.labels | {}
+
+	output: {
+		name:      *_labels["namespace.oam.dev/env"] | context.namespace
+		namespace: context.namespace
+		// A one-element list indexed at 0 is the idiom for "this value if the guard
+		// holds, otherwise that": a bare `x != _|_` is not an expression CUE will
+		// evaluate to a bool outside a comprehension.
+		managed: [
+			if _labels["namespace.oam.dev/env"] != _|_ {true},
+			false,
+		][0]
+		labels: _labels
+		annotations: *_ns.$returns.metadata.annotations | {}
+	}
+}

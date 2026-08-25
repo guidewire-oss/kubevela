@@ -40,6 +40,7 @@ type ApplicationBuilder struct {
 	components   []apis.Component
 	steps        []apis.WorkflowStep
 	policies     []apis.Policy
+	sources      []apis.Source
 	workflowMode workflowv1alpha1.WorkflowExecuteMode
 }
 
@@ -95,6 +96,46 @@ func (a *ApplicationBuilder) SetPolicies(policies ...apis.Policy) apis.TypedAppl
 		}
 	}
 	return a
+}
+
+// SetSources sets bindings on the application, matching on name so a repeated
+// name replaces rather than duplicates - the same rule SetPolicies follows, and
+// the one the API enforces, since a duplicated source name is refused at
+// admission.
+func (a *ApplicationBuilder) SetSources(sources ...apis.Source) apis.TypedApplication {
+	for _, addSource := range sources {
+		found := false
+		for i, s := range a.sources {
+			if s.SourceName() == addSource.SourceName() {
+				a.sources[i] = addSource
+				found = true
+				break
+			}
+		}
+		if !found {
+			a.sources = append(a.sources, addSource)
+		}
+	}
+	return a
+}
+
+func (a *ApplicationBuilder) GetSourceByName(name string) apis.Source {
+	for _, s := range a.sources {
+		if s.SourceName() == name {
+			return s
+		}
+	}
+	return nil
+}
+
+func (a *ApplicationBuilder) GetSourcesByType(typ string) []apis.Source {
+	var res []apis.Source
+	for _, s := range a.sources {
+		if s.DefType() == typ {
+			res = append(res, s)
+		}
+	}
+	return res
 }
 
 func (a *ApplicationBuilder) GetComponentByName(name string) apis.Component {
@@ -203,6 +244,7 @@ func New() apis.TypedApplication {
 		components: make([]apis.Component, 0),
 		steps:      make([]apis.WorkflowStep, 0),
 		policies:   make([]apis.Policy, 0),
+		sources:    make([]apis.Source, 0),
 	}
 	return app
 }
@@ -219,6 +261,10 @@ func (a *ApplicationBuilder) Build() v1beta1.Application {
 	policies := make([]v1beta1.AppPolicy, 0)
 	for _, policy := range a.policies {
 		policies = append(policies, policy.Build())
+	}
+	sources := make([]v1beta1.ApplicationSource, 0, len(a.sources))
+	for _, source := range a.sources {
+		sources = append(sources, source.Build())
 	}
 
 	res := v1beta1.Application{
@@ -239,6 +285,7 @@ func (a *ApplicationBuilder) Build() v1beta1.Application {
 				Steps: steps,
 			},
 			Policies: policies,
+			Sources:  sources,
 		},
 	}
 	return res
@@ -318,6 +365,13 @@ func FromK8sObject(app v1beta1.Application) (apis.TypedApplication, error) {
 		}
 		a.SetPolicies(p)
 	}
+	for _, source := range app.Spec.Sources {
+		s, err := FromSource(source)
+		if err != nil {
+			return nil, errors.Wrap(err, "convert source from k8s object")
+		}
+		a.SetSources(s)
+	}
 	return a, nil
 }
 
@@ -343,6 +397,14 @@ func FromPolicy(policy v1beta1.AppPolicy) (apis.Policy, error) {
 		return nil, errors.Errorf("no policy type %s registered", policy.Type)
 	}
 	return build(policy)
+}
+
+func FromSource(source v1beta1.ApplicationSource) (apis.Source, error) {
+	build, ok := SourcesBuilders[source.Type]
+	if !ok {
+		return nil, errors.Errorf("no source type %s registered", source.Type)
+	}
+	return build(source)
 }
 
 func FromTrait(trait common.ApplicationTrait) (apis.Trait, error) {

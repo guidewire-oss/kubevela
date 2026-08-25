@@ -36,6 +36,8 @@ e2e-setup-core-wo-auth:
 		--set featureGates.validateResourcesExist=true \
 		--set featureGates.enableApplicationScopedPolicies=true \
 		--set featureGates.enableGlobalPolicies=true \
+		--set featureGates.enableCelExpressions=true \
+		--set featureGates.requireCelExpressionOptIn=true \
 	    --wait kubevela ./charts/vela-core          \
 		--debug
 
@@ -57,6 +59,8 @@ e2e-setup-core-w-auth:
 	    --set featureGates.zstdResourceTracker=true     \
 	    --set featureGates.zstdApplicationRevision=true \
 	    --set featureGates.validateComponentWhenSharding=true \
+	    --set featureGates.enableCelExpressions=true  \
+	    --set featureGates.requireCelExpressionOptIn=true \
 	    --set featureGates.validateResourcesExist=true \
 	    --set multicluster.clusterGateway.enabled=true  \
 			--set multicluster.clusterGateway.image.repository=ghcr.io/oam-dev/cluster-gateway \

@@ -1,0 +1,45 @@
+apiVersion: core.oam.dev/v1beta1
+kind: SourceDefinition
+metadata:
+  name: configmap-check-source
+  annotations:
+    # Which inference policy produced storage.key below. Admission loads the
+    # rules with this hash rather than the current ones, so a later policy does
+    # not invalidate a definition already committed.
+    definition.oam.dev/cache-key-rules: "6ac674fa"
+    definition.oam.dev/cache-key-rules-version: v1
+spec:
+  schematic:
+    cue:
+      template: |
+        schema: {
+          image: string
+          tag?: string
+        }
+
+        // $internal is generated from the context this template reads - do not
+        // edit it. Nothing in output depends on the namespace, so the source is
+        // not keyed by it; the binding's properties still separate entries, so
+        // two Applications passing different images do not share one.
+        $internal: {
+          key: "configmap-check-source"
+          keyInputs: []
+        }
+
+        // storage: is yours.
+        storage: {
+          storageTTL: "15m"
+          onStaleFailure: "use-stale"
+        }
+
+        output: {
+          image: parameter.image
+          if parameter.tag != _|_ {
+            tag: parameter.tag
+          }
+        }
+
+        parameter: {
+          image: string
+          tag?: string
+        }

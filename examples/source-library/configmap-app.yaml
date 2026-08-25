@@ -1,0 +1,41 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata: {name: configmap-example, namespace: source-library-demo}
+spec:
+  sources:
+    # Defaults to the Application's own namespace.
+    - name: app
+      type: configmap
+      properties: {name: app-config}
+    # Or an explicit one, for platform-wide config.
+    - name: platform
+      type: configmap
+      properties: {name: platform-config, namespace: vela-system}
+    # Same read, no reach: configmap-local takes no namespace and no cluster, so
+    # it can only ever see the Application's own. Grant this one and withhold
+    # `configmap` to give tenants their config without giving them everyone's.
+    - name: locked
+      type: configmap-local
+      properties: {name: app-config}
+  components:
+    - name: probe
+      type: webservice
+      properties:
+        image: nginx:1.25.0
+        port: 80
+        env:
+          # An open map, so each read carries a default.
+          - name: TIER
+            value: '$("tier" in source.app.data ? source.app.data["tier"] : "unset")'
+          - name: REGION
+            value: '$("region" in source.platform.data ? source.platform.data["region"] : "unknown")'
+          # A key that is not there falls back rather than failing.
+          - name: MISSING
+            value: '$("nope" in source.app.data ? source.app.data["nope"] : "absent")'
+          # ConfigMap values are strings - so this concatenates, not adds.
+          - name: REPLICAS_STR
+            value: '$("replicas" in source.app.data ? source.app.data["replicas"] : "0")'
+          # Reads the same ConfigMap as TIER above, and could not be pointed
+          # anywhere else even if the author wanted to.
+          - name: TIER_LOCKED
+            value: '$("tier" in source.locked.data ? source.locked.data["tier"] : "unset")'
