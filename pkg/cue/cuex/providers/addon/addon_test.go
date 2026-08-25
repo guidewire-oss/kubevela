@@ -143,6 +143,7 @@ func TestRenderIsRefusedWhenTheGateIsDisabled(t *testing.T) {
 }
 
 func TestPackageInputs(t *testing.T) {
+	require.NotNil(t, Package)
 	assert.NotEmpty(t, GetTemplate())
 	providers := GetProviders()
 	require.Contains(t, providers, "render")
