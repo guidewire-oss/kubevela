@@ -24,6 +24,8 @@ import (
 	cueext "github.com/kubevela/pkg/cue/cuex/providers/cue"
 	"github.com/kubevela/pkg/cue/cuex/providers/http"
 	"github.com/kubevela/pkg/cue/cuex/providers/kube"
+	cuexruntime "github.com/kubevela/pkg/cue/cuex/runtime"
+	"github.com/kubevela/pkg/util/runtime"
 	"github.com/kubevela/pkg/util/singleton"
 	"k8s.io/klog/v2"
 
@@ -49,7 +51,7 @@ var WorkloadCompiler = singleton.NewSingleton[*cuex.Compiler](func() *cuex.Compi
 		http.Package,
 		kube.Package,
 		cueext.Package,
-		addon.Package,
+		runtime.Must(cuexruntime.NewInternalPackage("addon", addon.GetTemplate(), addon.GetProviders())),
 	)
 	if cuex.EnableExternalPackageForDefaultCompiler {
 		if err := compiler.LoadExternalPackages(context.Background()); err != nil {

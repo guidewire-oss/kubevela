@@ -25,7 +25,6 @@ import (
 
 	"github.com/kubevela/pkg/cue/cuex/providers"
 	cuexruntime "github.com/kubevela/pkg/cue/cuex/runtime"
-	"github.com/kubevela/pkg/util/runtime"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 
 	"github.com/oam-dev/kubevela/pkg/addon/service/api"
@@ -92,7 +91,14 @@ func Render(ctx context.Context, params *RenderParams) (*RenderReturns, error) {
 	}}, nil
 }
 
-// Package is the internal CueX package registered on the WorkloadCompiler.
-var Package = runtime.Must(cuexruntime.NewInternalPackage(ProviderName, template, map[string]cuexruntime.ProviderFn{
-	"render": cuexruntime.GenericProviderFn[RenderParams, RenderReturns](Render),
-}))
+// GetTemplate returns the CUE template.
+func GetTemplate() string {
+	return template
+}
+
+// GetProviders returns the CUE providers.
+func GetProviders() map[string]cuexruntime.ProviderFn {
+	return map[string]cuexruntime.ProviderFn{
+		"render": cuexruntime.GenericProviderFn[RenderParams, RenderReturns](Render),
+	}
+}

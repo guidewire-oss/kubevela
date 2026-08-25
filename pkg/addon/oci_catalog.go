@@ -60,8 +60,16 @@ type ociCatalogIndexLister func(ctx context.Context, registryURL, username, pass
 // its repository name is fixed, it only uses portable OCI operations: list tags
 // for a known repository and pull a known manifest.
 func listPortableOCICatalog(ctx context.Context, registryURL, username, password string) ([]*UIData, error) {
+	return listPortableOCICatalogWithTransport(ctx, registryURL, username, password, false)
+}
+
+func listPortableOCICatalogWithPlainHTTP(ctx context.Context, registryURL, username, password string) ([]*UIData, error) {
+	return listPortableOCICatalogWithTransport(ctx, registryURL, username, password, true)
+}
+
+func listPortableOCICatalogWithTransport(ctx context.Context, registryURL, username, password string, plainHTTP bool) ([]*UIData, error) {
 	repoRef, host := ociRepoRef(registryURL, ociCatalogChartName)
-	tags, err := listOCITags(ctx, repoRef, host, username, password)
+	tags, err := listOCITagsWithTransport(repoRef, host, username, password, plainHTTP)
 	if err != nil {
 		// A registry that has never had a catalog pushed answers "repository does
 		// not exist". That is an absence, not a read failure, so the first push to
@@ -74,7 +82,7 @@ func listPortableOCICatalog(ctx context.Context, registryURL, username, password
 	if len(tags) == 0 {
 		return nil, errors.Wrap(ErrOCICatalogAbsent, "portable OCI addon catalog has no semver tags")
 	}
-	archive, err := pullOCIChart(ctx, repoRef+":"+tags[0], host, username, password)
+	archive, err := pullOCIChartWithTransport(repoRef+":"+tags[0], host, username, password, plainHTTP)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to pull portable OCI addon catalog")
 	}
@@ -157,9 +165,9 @@ func newestOCICatalogVersion(versions []string) string {
 // confirmPortableCatalogAbsent re-probes the catalog repository to confirm that
 // there is genuinely no catalog to preserve, and returns an error describing why
 // it could not be confirmed otherwise.
-func confirmPortableCatalogAbsent(ctx context.Context, source *OCIAddonSource) error {
+func confirmPortableCatalogAbsent(ctx context.Context, source *OCIAddonSource, plainHTTP bool) error {
 	repoRef, host := ociRepoRef(source.URL, ociCatalogChartName)
-	tags, err := listOCITags(ctx, repoRef, host, source.Username, source.Token)
+	tags, err := listOCITagsWithTransport(repoRef, host, source.Username, source.Token, plainHTTP)
 	return classifyCatalogAbsenceProbe(repoRef, tags, err)
 }
 
@@ -193,15 +201,25 @@ func classifyCatalogAbsenceProbe(repoRef string, tags []string, probeErr error) 
 // updateOCIAddonCatalog upserts an addon after it has been pushed and publishes
 // a new catalog chart version. The fixed catalog repository makes discovery
 // portable across OCI registries.
-func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source *OCIAddonSource, addonMeta *chart.Metadata) error {
+func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source *OCIAddonSource, addonMeta *chart.Metadata, plainHTTP bool) error {
+	pullFn := pullOCIChart
+	tagsFn := listOCITags
+	catalogFn := listOCIRepositories
+	catalogIndexFn := listPortableOCICatalog
+	if plainHTTP {
+		pullFn = pullOCIChartWithPlainHTTP
+		tagsFn = listOCITagsWithPlainHTTP
+		catalogFn = listOCIRepositoriesWithPlainHTTP
+		catalogIndexFn = listPortableOCICatalogWithPlainHTTP
+	}
 	reader := &ociRegistry{
 		url:            source.URL,
 		username:       source.Username,
 		token:          source.Token,
-		pullFn:         pullOCIChart,
-		tagsFn:         listOCITags,
-		catalogFn:      listOCIRepositories,
-		catalogIndexFn: listPortableOCICatalog,
+		pullFn:         pullFn,
+		tagsFn:         tagsFn,
+		catalogFn:      catalogFn,
+		catalogIndexFn: catalogIndexFn,
 	}
 	existing, err := reader.ListAddon()
 	if err != nil {
@@ -219,14 +237,14 @@ func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source 
 		// filter empty, a 404 from a proxy or gateway, and a registry that does
 		// not serve /v2/_catalog. Confirm the absence against the catalog
 		// repository itself before replacing what is published there.
-		if err := confirmPortableCatalogAbsent(ctx, source); err != nil {
+		if err := confirmPortableCatalogAbsent(ctx, source, plainHTTP); err != nil {
 			return err
 		}
 		existing = nil
 	}
 
 	addonRepo, host := ociRepoRef(source.URL, addonMeta.Name)
-	versions, err := listOCITags(ctx, addonRepo, host, source.Username, source.Token)
+	versions, err := listOCITagsWithTransport(addonRepo, host, source.Username, source.Token, plainHTTP)
 	if err != nil {
 		return errors.Wrapf(err, "failed to list versions for OCI addon %s", addonMeta.Name)
 	}
@@ -259,7 +277,7 @@ func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source 
 
 	catalogRepo, _ := ociRepoRef(source.URL, ociCatalogChartName)
 	catalogVersion := "0.0.1"
-	catalogTags, tagErr := listOCITags(ctx, catalogRepo, host, source.Username, source.Token)
+	catalogTags, tagErr := listOCITagsWithTransport(catalogRepo, host, source.Username, source.Token, plainHTTP)
 	if tagErr == nil && len(catalogTags) > 0 {
 		current, parseErr := semver.NewVersion(catalogTags[0])
 		if parseErr != nil {

@@ -124,6 +124,19 @@ func TestListOCIRepositories(t *testing.T) {
 	assert.Equal(t, []string{"fluxcd", "velaux"}, addons)
 }
 
+func TestListOCIRepositoriesWithPlainHTTP(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		assert.Equal(t, "/v2/_catalog", req.URL.Path)
+		_, _ = rw.Write([]byte(`{"repositories":["addon/sample"]}`))
+	}))
+	defer server.Close()
+
+	registryURL := "oci://" + strings.TrimPrefix(server.URL, "http://") + "/addon"
+	addons, err := listOCIRepositoriesWithPlainHTTP(context.Background(), registryURL, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"sample"}, addons)
+}
+
 func TestDecodeOCIAddonCatalog(t *testing.T) {
 	catalog, err := json.Marshal(OCIAddonCatalog{
 		APIVersion: ociCatalogAPIVersion,
