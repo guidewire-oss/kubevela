@@ -115,13 +115,20 @@ func (o *moduleInitOptions) run(out io.Writer) error {
 		}
 	}
 
+	auxDirs := moduleAuxiliaryDirs()
+	for _, d := range auxDirs {
+		if mkErr := os.MkdirAll(filepath.Join(target, d), 0o755); mkErr != nil {
+			return fmt.Errorf("create directory %s: %w", d, mkErr)
+		}
+	}
+
 	// The shipped scaffold must always be a valid skeleton. A parse failure here
 	// is a bug in these templates, not the author's input, so fail loudly.
 	if _, err := pkgmodule.ParseModuleDir(target); err != nil {
 		return fmt.Errorf("scaffolded module failed validation (this is a bug in the init templates): %w", err)
 	}
 
-	printGuidance(out, o.name, target, files)
+	printGuidance(out, o.name, target, files, auxDirs)
 	return nil
 }
 
@@ -151,22 +158,34 @@ func scaffoldFiles(name string) []scaffoldFile {
 	sub := func(s string) string { return strings.ReplaceAll(s, moduleNamePlaceholder, name) }
 	return []scaffoldFile{
 		{rel: "_module.cue", content: sub(moduleCUETemplate)},
-		{rel: filepath.Join("auxiliary", "xrd.yaml"), content: sub(xrdYAMLTemplate)},
+		{rel: "README.md", content: sub(readmeTemplate)},
 		{rel: filepath.Join("v1", "_version.cue"), content: versionCUETemplate},
-		{rel: filepath.Join("v1", "auxiliary", "composition.yaml"), content: sub(compositionYAMLTemplate)},
 		{rel: filepath.Join("v1", "definitions", "example.cue"), content: sub(definitionCUETemplate)},
 	}
 }
 
+// moduleAuxiliaryDirs are the empty auxiliary directories init creates
+// alongside the scaffold files. Nothing writes into them by default (a
+// module needs no infrastructure to be valid), so they are created
+// explicitly rather than as a side effect of writing a file into them;
+// README.md documents what belongs in each.
+func moduleAuxiliaryDirs() []string {
+	return []string{"auxiliary", filepath.Join("v1", "auxiliary")}
+}
+
 // printGuidance prints the created tree and the next step for the author.
-func printGuidance(out io.Writer, name, target string, files []scaffoldFile) {
+func printGuidance(out io.Writer, name, target string, files []scaffoldFile, auxDirs []string) {
 	fmt.Fprintf(out, "Scaffolded module %q at %s:\n", name, target)
 	for _, f := range files {
 		fmt.Fprintf(out, "  %s\n", filepath.Join(name, f.rel))
 	}
+	for _, d := range auxDirs {
+		fmt.Fprintf(out, "  %s/ (empty, see README.md)\n", filepath.Join(name, d))
+	}
 	fmt.Fprintf(out, "\nNext steps:\n")
-	fmt.Fprintf(out, "  1. Edit the TODO markers in the files above (version, owners, the XRD schema, the composition, and the definition body).\n")
-	fmt.Fprintf(out, "  2. Publish it, then install with: vela module deploy %s\n", name)
+	fmt.Fprintf(out, "  1. Edit the TODO markers in _module.cue (version, owners), and rename v1/definitions/example.cue to your capability.\n")
+	fmt.Fprintf(out, "  2. If your module needs infrastructure, add it under auxiliary/ and v1/auxiliary/ (see README.md).\n")
+	fmt.Fprintf(out, "  3. Publish it, then install with: vela module deploy %s\n", name)
 }
 
 const moduleCUETemplate = `module:      "__MODULE__"
@@ -208,41 +227,49 @@ template: {
 }
 `
 
-const xrdYAMLTemplate = `# TODO: define the CompositeResourceDefinition (XRD) your module offers.
-apiVersion: apiextensions.crossplane.io/v1
-kind: CompositeResourceDefinition
-metadata:
-  name: TODO-plural.example.com # TODO: <plural>.<group>
-spec:
-  group: example.com # TODO: your API group
-  names:
-    kind: XExample # TODO: composite kind
-    plural: xexamples # TODO: composite plural
-  claimNames:
-    kind: Example # TODO: claim kind (what consumers reference)
-    plural: examples # TODO: claim plural
-  versions:
-    - name: v1alpha1
-      served: true
-      referenceable: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          # TODO: describe the spec/status the claim exposes.
-          properties:
-            spec:
-              type: object
-`
+const readmeTemplate = `# __MODULE__
 
-const compositionYAMLTemplate = `# TODO: define the Composition that satisfies the XRD for this API line.
-apiVersion: apiextensions.crossplane.io/v1
-kind: Composition
-metadata:
-  name: __MODULE__-v1 # TODO: a name for this composition
-spec:
-  compositeTypeRef:
-    apiVersion: example.com/v1alpha1 # TODO: match the XRD group/version
-    kind: XExample # TODO: match the XRD composite kind
-  # TODO: the resources or pipeline that provision the real infrastructure.
-  resources: []
+This module was scaffolded by "vela module init". It follows the layout the
+module parser expects:
+
+  __MODULE__/
+    _module.cue              module identity: name, version, description, owners
+    README.md                this file
+    auxiliary/                module-wide auxiliary objects (currently empty)
+    v1/
+      _version.cue           this API line's identity: apiVersion, enabled
+      auxiliary/              v1-only auxiliary objects (currently empty)
+      definitions/
+        example.cue          rename to your capability, e.g. bucket.cue
+
+## What goes in auxiliary/
+
+auxiliary/ (module-wide) and v1/auxiliary/ (this line only) hold whatever
+Kubernetes objects your module needs to install alongside its capability
+definitions, before consumers can use type: __MODULE__-v1-<capability>.
+Neither is required: leave a folder empty if your module has no infrastructure 
+to install.
+
+Where to put things:
+
+- auxiliary/ - objects shared by every API line.
+- v1/auxiliary/ - objects specific to this line only.
+
+File format:
+
+- A file may be .yaml, .yml, or .cue.
+- A .yaml file is a plain Kubernetes object (apiVersion, kind, metadata, ...),
+  the same shape you would kubectl apply. One file can hold several objects
+  separated by "---", the same as a normal manifest.
+- A .cue file is a single plain object at its root.
+- Every file in a scope is installed.
+
+## Next steps
+
+1. Fill in the TODOs in _module.cue (version, description, owners).
+2. Add your capability definition(s) under v1/definitions/ (rename
+   example.cue to the capability it defines).
+3. If your module needs infrastructure, add the objects under auxiliary/
+   and v1/auxiliary/ as described above.
+4. Publish it, then install with: vela module deploy __MODULE__
 `
