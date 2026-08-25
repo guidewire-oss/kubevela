@@ -28,24 +28,24 @@ import (
 
 	"helm.sh/helm/v3/pkg/chart/loader"
 
-	"github.com/oam-dev/kubevela/pkg/addon"
+	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/module"
 )
 
 // Service fetches modules. It resolves registries through module.ResolveRegistry
-// (GWCP-106679) over an addon.RegistryDataStore — reusing that story's default
+// over an pkgaddon.RegistryDataStore — reusing that story's default
 // policy, source rejection, token loading, and not-found reporting. Its
 // reader/puller seams are wired to the real addon transport by NewService and
 // overridden by tests.
 type Service struct {
-	store     addon.RegistryDataStore
-	newReader func(reg *addon.Registry) (addon.AsyncReader, error)
+	store     pkgaddon.RegistryDataStore
+	newReader func(reg *pkgaddon.Registry) (pkgaddon.AsyncReader, error)
 	pullChart ociChartPuller
 }
 
 // NewService wires the real addon transport. In production the store is
 // module.NewStore(cli) (the vela-module-registry ConfigMap).
-func NewService(store addon.RegistryDataStore) *Service {
+func NewService(store pkgaddon.RegistryDataStore) *Service {
 	return &Service{
 		store:     store,
 		newReader: buildModuleReader,
@@ -55,9 +55,9 @@ func NewService(store addon.RegistryDataStore) *Service {
 
 // buildModuleReader builds the reader for a module registry, pointed at its
 // modules root (the source Path); ListAddonMeta then keys each module by name.
-// It reuses the addon transport (reg.BuildReader), returning the addon.AsyncReader
+// It reuses the addon transport (reg.BuildReader), returning the pkgaddon.AsyncReader
 // readerFS consumes.
-func buildModuleReader(reg *addon.Registry) (addon.AsyncReader, error) {
+func buildModuleReader(reg *pkgaddon.Registry) (pkgaddon.AsyncReader, error) {
 	return reg.BuildReader()
 }
 
@@ -87,7 +87,7 @@ func (s *Service) FetchModule(ctx context.Context, registry, moduleName string) 
 // converge on readerFS: git supplies the live reader, OCI a MemoryReader over the
 // pulled chart. readerFS errors are wrapped with the registry name so a failing
 // Application status is actionable.
-func (s *Service) sourceFS(ctx context.Context, reg *addon.Registry, moduleName string) (fs.FS, error) {
+func (s *Service) sourceFS(ctx context.Context, reg *pkgaddon.Registry, moduleName string) (fs.FS, error) {
 	switch {
 	case reg.OCI != nil:
 		return s.ociChartFS(ctx, reg, moduleName)
@@ -107,12 +107,12 @@ func (s *Service) sourceFS(ctx context.Context, reg *addon.Registry, moduleName 
 }
 
 // readerFS is the single source->tree adapter. It reads the module's files from
-// any addon.AsyncReader and assembles a mapFS keyed module-root-relative. It uses
+// any pkgaddon.AsyncReader and assembles a mapFS keyed module-root-relative. It uses
 // RelativePath (not the raw item path) because that is the reader-agnostic path
 // both the live git reader and MemoryReader accept for ReadFile: the git reader
 // strips its configured base, and MemoryReader returns "<module>/<rel>". Both
 // forms start with "<module>/", which readerFS then strips.
-func readerFS(r addon.AsyncReader, moduleName string) (fs.FS, error) {
+func readerFS(r pkgaddon.AsyncReader, moduleName string) (fs.FS, error) {
 	metas, err := r.ListAddonMeta()
 	if err != nil {
 		return nil, fmt.Errorf("list modules: %w", err)
@@ -124,7 +124,7 @@ func readerFS(r addon.AsyncReader, moduleName string) (fs.FS, error) {
 	prefix := moduleName + "/"
 	files := mapFS{}
 	for _, item := range meta.Items {
-		if item.GetType() != addon.FileType {
+		if item.GetType() != pkgaddon.FileType {
 			continue
 		}
 		readPath := r.RelativePath(item)
@@ -144,14 +144,14 @@ func readerFS(r addon.AsyncReader, moduleName string) (fs.FS, error) {
 	return files, nil
 }
 
-type ociChartPuller func(ctx context.Context, reg *addon.Registry, moduleName string) ([]*loader.BufferedFile, error)
+type ociChartPuller func(ctx context.Context, reg *pkgaddon.Registry, moduleName string) ([]*loader.BufferedFile, error)
 
 // pullModuleChart pulls the module's Helm-chart OCI artifact (same semantics as
 // vela addon push) and returns its buffered files, paths prefixed by the chart
 // (module) name. It reuses addon's pull verbatim; ociChartFS wraps the files in a
 // MemoryReader and runs readerFS. Version "" resolves the highest semver tag.
-func pullModuleChart(ctx context.Context, reg *addon.Registry, moduleName string) ([]*loader.BufferedFile, error) {
-	buffered, err := addon.PullOCIChartFiles(ctx, *reg, moduleName, "")
+func pullModuleChart(ctx context.Context, reg *pkgaddon.Registry, moduleName string) ([]*loader.BufferedFile, error) {
+	buffered, err := pkgaddon.PullOCIChartFiles(ctx, *reg, moduleName, "")
 	if err != nil {
 		return nil, fmt.Errorf("module %q: pull OCI chart: %w", moduleName, err)
 	}
@@ -159,14 +159,14 @@ func pullModuleChart(ctx context.Context, reg *addon.Registry, moduleName string
 }
 
 // ociChartFS pulls the module's Helm chart and reuses readerFS by wrapping the
-// buffered files in addon.MemoryReader (itself an addon.AsyncReader). No new
+// buffered files in pkgaddon.MemoryReader (itself an pkgaddon.AsyncReader). No new
 // adapter — the OCI blob just becomes a reader.
-func (s *Service) ociChartFS(ctx context.Context, reg *addon.Registry, moduleName string) (fs.FS, error) {
+func (s *Service) ociChartFS(ctx context.Context, reg *pkgaddon.Registry, moduleName string) (fs.FS, error) {
 	bufs, err := s.pullChart(ctx, reg, moduleName)
 	if err != nil {
 		return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 	}
-	fsys, err := readerFS(&addon.MemoryReader{Name: moduleName, Files: bufs}, moduleName)
+	fsys, err := readerFS(&pkgaddon.MemoryReader{Name: moduleName, Files: bufs}, moduleName)
 	if err != nil {
 		return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 	}

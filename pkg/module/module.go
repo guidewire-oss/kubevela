@@ -19,27 +19,27 @@ limitations under the License.
 // by vela module publish, the registry fetch, and vela module deploy.
 package module
 
-// Line is one API line of a module: its version identity, the Crossplane
-// Composition backing it, and its rendered ComponentDefinitions.
+// Line is one API line of a module: its version identity, the auxiliary objects
+// backing it, and its rendered ComponentDefinitions.
 type Line struct {
 	// APIVersion is the API line identifier, e.g. "v1", "v1beta1".
 	APIVersion string
 	// Enabled is the module author's install switch for this line, read from
 	// v<N>/_version.cue's top-level enabled field. Absent means true: a line
 	// ships installable unless its author opts out. The render service
-	// (GWCP-106941) installs every enabled line and skips the rest.
+	// installs every enabled line and skips the rest.
 	Enabled bool
-	// Composition is the per-line Crossplane Composition, read from
-	// v<N>/auxiliary/composition.yaml when present; nil for a KRO-style or
-	// infra-less line that ships no auxiliary/.
-	Composition map[string]interface{}
+	// Auxiliary holds the objects read from v<N>/auxiliary/, in filename order
+	// (and document order within a multi-document file).
+	// Empty for a line that ships no auxiliary/.
+	Auxiliary []map[string]interface{}
 	// Definitions are the rendered ComponentDefinitions (or other
 	// X-Definitions) under v<N>/definitions/, in sorted filename order.
 	Definitions []map[string]interface{}
 }
 
-// Module is a parsed module source tree: its identity, module-wide XRD,
-// and its API lines keyed by apiVersion.
+// Module is a parsed module source tree: its identity, module-wide auxiliary
+// objects, and its API lines keyed by apiVersion.
 type Module struct {
 	// Name is the module identity, read from _module.cue's top-level module
 	// field.
@@ -47,10 +47,10 @@ type Module struct {
 	// Version is the module's own semver, read from _module.cue's top-level
 	// version field. It is the tag vela module publish uses for the artifact.
 	Version string
-	// XRD is the module-wide Crossplane CompositeResourceDefinition, read
-	// from auxiliary/xrd.yaml when present; nil for a KRO-style or
-	// infra-less module that ships no module-level auxiliary/.
-	XRD map[string]interface{}
+	// Auxiliary holds the objects read from the module-level auxiliary/, in
+	// filename order (and document order within a multi-document file). Empty
+	//for infra-less module that ships no module-level auxiliary/.
+	Auxiliary []map[string]interface{}
 	// Lines are the module's API lines, keyed by APIVersion.
 	Lines map[string]Line
 }

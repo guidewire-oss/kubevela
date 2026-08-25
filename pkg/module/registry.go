@@ -25,7 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/oam-dev/kubevela/pkg/addon"
+	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 )
 
 const (
@@ -51,8 +51,8 @@ const (
 
 // NewStore returns the module registry store: the shared addon registry
 // implementation pointed at the module ConfigMap and secret prefix.
-func NewStore(cli client.Client) addon.RegistryDataStore {
-	return addon.NewRegistryDataStoreFor(cli, ModuleRegistryConfigMap, ModuleRegistrySecretPrefix)
+func NewStore(cli client.Client) pkgaddon.RegistryDataStore {
+	return pkgaddon.NewRegistryDataStoreFor(cli, ModuleRegistryConfigMap, ModuleRegistrySecretPrefix)
 }
 
 // ResolveRegistry returns the module registry to use for an operation. A non-empty
@@ -73,13 +73,13 @@ func NewStore(cli client.Client) addon.RegistryDataStore {
 // registry rule alone would start failing as soon as a user adds a second registry
 // alongside the seeded one, and the DefaultRegistryName rule alone would fail for
 // an operator who removed the seeded entry.
-func ResolveRegistry(ctx context.Context, store addon.RegistryDataStore, name string) (addon.Registry, error) {
+func ResolveRegistry(ctx context.Context, store pkgaddon.RegistryDataStore, name string) (pkgaddon.Registry, error) {
 	reg, err := resolveRegistryByName(ctx, store, name)
 	if err != nil {
-		return addon.Registry{}, err
+		return pkgaddon.Registry{}, err
 	}
 	if reg.Git == nil && reg.OCI == nil {
-		return addon.Registry{}, fmt.Errorf(
+		return pkgaddon.Registry{}, fmt.Errorf(
 			"module registry %q is a %s source; modules support only git and OCI registries",
 			reg.Name, SourceTypeName(reg))
 	}
@@ -89,25 +89,25 @@ func ResolveRegistry(ctx context.Context, store addon.RegistryDataStore, name st
 // resolveRegistryByName implements ResolveRegistry's name-selection rules,
 // without enforcing that the result is a git or OCI source. ResolveRegistry
 // applies that check uniformly to every return path below.
-func resolveRegistryByName(ctx context.Context, store addon.RegistryDataStore, name string) (addon.Registry, error) {
+func resolveRegistryByName(ctx context.Context, store pkgaddon.RegistryDataStore, name string) (pkgaddon.Registry, error) {
 	if name != "" {
 		reg, err := store.GetRegistry(ctx, name)
 		if err == nil {
 			return reg, nil
 		}
 		if !apierrors.IsNotFound(err) {
-			return addon.Registry{}, err
+			return pkgaddon.Registry{}, err
 		}
-		return addon.Registry{}, notFoundError(ctx, store, name)
+		return pkgaddon.Registry{}, notFoundError(ctx, store, name)
 	}
 
 	registries, err := store.ListRegistries(ctx)
 	if err != nil {
-		return addon.Registry{}, err
+		return pkgaddon.Registry{}, err
 	}
 	switch len(registries) {
 	case 0:
-		return addon.Registry{}, fmt.Errorf(
+		return pkgaddon.Registry{}, fmt.Errorf(
 			"no module registry is configured; add one with \"vela module registry add\"")
 	case 1:
 		return registries[0], nil
@@ -117,7 +117,7 @@ func resolveRegistryByName(ctx context.Context, store addon.RegistryDataStore, n
 			return reg, nil
 		}
 	}
-	return addon.Registry{}, fmt.Errorf(
+	return pkgaddon.Registry{}, fmt.Errorf(
 		"several module registries are configured and none is named %q; pass --registry with one of: %s",
 		DefaultRegistryName, strings.Join(sortedRegistryNames(registries), ", "))
 }
@@ -126,7 +126,7 @@ func resolveRegistryByName(ctx context.Context, store addon.RegistryDataStore, n
 // "unknown" if none is set. It covers every source the shared addon ConfigMap
 // format can hold, not just git and OCI, so a caller such as list can name an
 // entry ResolveRegistry would reject instead of leaving its type blank.
-func SourceTypeName(reg addon.Registry) string {
+func SourceTypeName(reg pkgaddon.Registry) string {
 	switch {
 	case reg.Git != nil:
 		return "git"
@@ -151,7 +151,7 @@ func SourceTypeName(reg addon.Registry) string {
 // ResolveRegistry -- so an entry ResolveRegistry would reject as unsupported
 // can still be found and removed -- but should report an unknown name the
 // same way.
-func NotFoundError(ctx context.Context, store addon.RegistryDataStore, name string) error {
+func NotFoundError(ctx context.Context, store pkgaddon.RegistryDataStore, name string) error {
 	return notFoundError(ctx, store, name)
 }
 
@@ -160,7 +160,7 @@ func NotFoundError(ctx context.Context, store addon.RegistryDataStore, name stri
 // genuinely empty, and reports the read failure plainly when the store could
 // not be listed at all -- rather than telling the operator to add a registry
 // that could not be read, e.g. under an RBAC denial or a corrupted ConfigMap.
-func notFoundError(ctx context.Context, store addon.RegistryDataStore, name string) error {
+func notFoundError(ctx context.Context, store pkgaddon.RegistryDataStore, name string) error {
 	names, err := registryNames(ctx, store)
 	if err != nil {
 		return fmt.Errorf("module registry %q not found: failed to list the configured registries: %w", name, err)
@@ -173,7 +173,7 @@ func notFoundError(ctx context.Context, store addon.RegistryDataStore, name stri
 }
 
 // sortedRegistryNames returns the registry names in sorted order.
-func sortedRegistryNames(registries []addon.Registry) []string {
+func sortedRegistryNames(registries []pkgaddon.Registry) []string {
 	names := make([]string, 0, len(registries))
 	for _, reg := range registries {
 		names = append(names, reg.Name)
@@ -186,7 +186,7 @@ func sortedRegistryNames(registries []addon.Registry) []string {
 // or an error if the store could not be read. Distinguishing a read failure
 // from a genuinely empty store is what lets notFoundError avoid masquerading
 // one as the other.
-func registryNames(ctx context.Context, store addon.RegistryDataStore) ([]string, error) {
+func registryNames(ctx context.Context, store pkgaddon.RegistryDataStore) ([]string, error) {
 	registries, err := store.ListRegistries(ctx)
 	if err != nil {
 		return nil, err
