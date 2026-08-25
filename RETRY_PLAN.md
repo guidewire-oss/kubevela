@@ -112,7 +112,8 @@ is currently exactly that merge commit, clean.
 **CLI — `references/cli/operation.go`**
 - [ ] `vela operation restart <name> [--step s] [--only] [--cluster c] [--force]` (no `--failed-only` yet — no children to re-run)
 - [ ] `vela operation resume <name>`
-- [ ] both reuse the existing poll-until-terminal loop + `printOperationStatus`
+- [ ] `vela operation suspend <name> [--step s]` — mirrors `vela workflow suspend`; the underlying operator method is already required by the `wfUtils.WorkflowOperator` interface regardless, so this is close to free once `restart`/`resume` exist. No idempotency gate (pausing isn't re-executing anything).
+- [ ] `restart`/`resume` reuse the existing poll-until-terminal loop + `printOperationStatus`; `suspend` polls until phase reaches `Suspended` instead (it's non-terminal, so `IsTerminal()` won't do)
 - [ ] `--force` path prompts, naming the specific non-idempotent step(s)
 - [ ] `status` prints `Attempts` + per-step attempt history
 
@@ -120,7 +121,7 @@ is currently exactly that merge commit, clean.
 - [ ] new `--default-operation-ttl-seconds` flag (mirrors the naming precedent of `--application-revision-limit` and the permissions story's `--default-operation-service-account`), threaded into `core.Args` and read by the TTL sweep above. `0`/unset = no default TTL (today's behavior, so this ships opt-in)
 
 **Tests**
-- [ ] unit: snapshot-then-reset, suspended-phase mapping, idempotency allow/deny matrix
+- [ ] unit: snapshot-then-reset, suspended-phase mapping, idempotency allow/deny matrix, `Suspend`/`Resume` phase-transition correctness (whole-workflow and `--step`-scoped), and the `suspend` CLI command polling on phase `== Suspended` rather than `IsTerminal()`
 - [ ] e2e: restart a failed step (attempts grows, prior failure retained), suspend/resume round-trip, non-idempotent step blocked without `--force`, terminal `Operation` deleted after its TTL elapses and NOT deleted while still restartable within the window
 
 **Docs**
