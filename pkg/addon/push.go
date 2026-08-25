@@ -222,10 +222,10 @@ func (p *PushCmd) pushToOCI(ctx context.Context, source *OCIAddonSource) error {
 	if p.ociPushFn != nil {
 		return p.ociPushFn(ctx, source, p.UseHTTP)
 	}
-	return p.pushOCI(ctx, source)
+	return p.pushOCI(source)
 }
 
-func (p *PushCmd) pushOCI(ctx context.Context, source *OCIAddonSource) error {
+func (p *PushCmd) pushOCI(source *OCIAddonSource) error {
 	if err := MakeChartCompatible(p.ChartName, !p.KeepChartMetadata); err != nil && !strings.Contains(err.Error(), "is not a directory") {
 		return err
 	}
@@ -279,7 +279,7 @@ func (p *PushCmd) pushOCI(ctx context.Context, source *OCIAddonSource) error {
 	// /v2/_catalog, no tag listing, or no permission to push the catalog repo).
 	// Reporting a hard error here would tell the user their push failed when it
 	// did not, inviting a retry that publishes a duplicate. Warn instead.
-	if err := updateOCIAddonCatalog(ctx, ociClient, source, loadedChart.Metadata, p.UseHTTP); err != nil {
+	if err := updateOCIAddonCatalog(ociClient, source, loadedChart.Metadata, p.UseHTTP); err != nil {
 		klog.Warningf("addon %s:%s was pushed successfully, but the portable OCI catalog was not updated: %v",
 			loadedChart.Metadata.Name, loadedChart.Metadata.Version, err)
 		if p.Out != nil {

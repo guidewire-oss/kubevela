@@ -59,15 +59,15 @@ type ociCatalogIndexLister func(ctx context.Context, registryURL, username, pass
 // listPortableOCICatalog pulls and decodes the newest catalog artifact. Because
 // its repository name is fixed, it only uses portable OCI operations: list tags
 // for a known repository and pull a known manifest.
-func listPortableOCICatalog(ctx context.Context, registryURL, username, password string) ([]*UIData, error) {
-	return listPortableOCICatalogWithTransport(ctx, registryURL, username, password, false)
+func listPortableOCICatalog(_ context.Context, registryURL, username, password string) ([]*UIData, error) {
+	return listPortableOCICatalogWithTransport(registryURL, username, password, false)
 }
 
-func listPortableOCICatalogWithPlainHTTP(ctx context.Context, registryURL, username, password string) ([]*UIData, error) {
-	return listPortableOCICatalogWithTransport(ctx, registryURL, username, password, true)
+func listPortableOCICatalogWithPlainHTTP(_ context.Context, registryURL, username, password string) ([]*UIData, error) {
+	return listPortableOCICatalogWithTransport(registryURL, username, password, true)
 }
 
-func listPortableOCICatalogWithTransport(ctx context.Context, registryURL, username, password string, plainHTTP bool) ([]*UIData, error) {
+func listPortableOCICatalogWithTransport(registryURL, username, password string, plainHTTP bool) ([]*UIData, error) {
 	repoRef, host := ociRepoRef(registryURL, ociCatalogChartName)
 	tags, err := listOCITagsWithTransport(repoRef, host, username, password, plainHTTP)
 	if err != nil {
@@ -165,7 +165,7 @@ func newestOCICatalogVersion(versions []string) string {
 // confirmPortableCatalogAbsent re-probes the catalog repository to confirm that
 // there is genuinely no catalog to preserve, and returns an error describing why
 // it could not be confirmed otherwise.
-func confirmPortableCatalogAbsent(ctx context.Context, source *OCIAddonSource, plainHTTP bool) error {
+func confirmPortableCatalogAbsent(source *OCIAddonSource, plainHTTP bool) error {
 	repoRef, host := ociRepoRef(source.URL, ociCatalogChartName)
 	tags, err := listOCITagsWithTransport(repoRef, host, source.Username, source.Token, plainHTTP)
 	return classifyCatalogAbsenceProbe(repoRef, tags, err)
@@ -201,7 +201,7 @@ func classifyCatalogAbsenceProbe(repoRef string, tags []string, probeErr error) 
 // updateOCIAddonCatalog upserts an addon after it has been pushed and publishes
 // a new catalog chart version. The fixed catalog repository makes discovery
 // portable across OCI registries.
-func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source *OCIAddonSource, addonMeta *chart.Metadata, plainHTTP bool) error {
+func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addonMeta *chart.Metadata, plainHTTP bool) error {
 	pullFn := pullOCIChart
 	tagsFn := listOCITags
 	catalogFn := listOCIRepositories
@@ -237,7 +237,7 @@ func updateOCIAddonCatalog(ctx context.Context, client *registry.Client, source 
 		// filter empty, a 404 from a proxy or gateway, and a registry that does
 		// not serve /v2/_catalog. Confirm the absence against the catalog
 		// repository itself before replacing what is published there.
-		if err := confirmPortableCatalogAbsent(ctx, source, plainHTTP); err != nil {
+		if err := confirmPortableCatalogAbsent(source, plainHTTP); err != nil {
 			return err
 		}
 		existing = nil
