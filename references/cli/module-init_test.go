@@ -35,7 +35,7 @@ import (
 // mandatory file set with the module name pre-filled.
 func TestModuleInitScaffoldsExpectedFiles(t *testing.T) {
 	tmp := t.TempDir()
-	o := &moduleInitOptions{name: "s3", path: tmp, moduleType: "crossplane"}
+	o := &moduleInitOptions{name: "s3", path: tmp}
 	require.NoError(t, o.run(&bytes.Buffer{}))
 
 	root := filepath.Join(tmp, "s3")
@@ -76,7 +76,7 @@ func TestModuleInitScaffoldsExpectedFiles(t *testing.T) {
 // with the parser: the written tree must parse and validate via pkg/module.
 func TestModuleInitScaffoldValidates(t *testing.T) {
 	tmp := t.TempDir()
-	o := &moduleInitOptions{name: "s3", path: tmp, moduleType: "crossplane"}
+	o := &moduleInitOptions{name: "s3", path: tmp}
 	require.NoError(t, o.run(&bytes.Buffer{}))
 
 	mod, err := pkgmodule.ParseModuleDir(filepath.Join(tmp, "s3"))
@@ -84,18 +84,6 @@ func TestModuleInitScaffoldValidates(t *testing.T) {
 	assert.Equal(t, "s3", mod.Name)
 	_, hasV1 := mod.Lines["v1"]
 	assert.True(t, hasV1, "expected the v1 API line")
-}
-
-// TestModuleInitUnsupportedType rejects a non-crossplane type before writing.
-func TestModuleInitUnsupportedType(t *testing.T) {
-	tmp := t.TempDir()
-	o := &moduleInitOptions{name: "s3", path: tmp, moduleType: "kro"}
-	err := o.run(&bytes.Buffer{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not yet supported")
-
-	_, statErr := os.Stat(filepath.Join(tmp, "s3"))
-	assert.True(t, os.IsNotExist(statErr), "nothing should be written on an unsupported type")
 }
 
 // TestModuleInitNonEmptyDirFails refuses to write into an existing non-empty
@@ -106,7 +94,7 @@ func TestModuleInitNonEmptyDirFails(t *testing.T) {
 	require.NoError(t, os.MkdirAll(target, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(target, "existing.txt"), []byte("keep"), 0o644))
 
-	o := &moduleInitOptions{name: "s3", path: tmp, moduleType: "crossplane"}
+	o := &moduleInitOptions{name: "s3", path: tmp}
 	err := o.run(&bytes.Buffer{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
@@ -123,7 +111,7 @@ func TestModuleInitEmptyDirSucceeds(t *testing.T) {
 	target := filepath.Join(tmp, "s3")
 	require.NoError(t, os.MkdirAll(target, 0o755))
 
-	o := &moduleInitOptions{name: "s3", path: tmp, moduleType: "crossplane"}
+	o := &moduleInitOptions{name: "s3", path: tmp}
 	require.NoError(t, o.run(&bytes.Buffer{}))
 	_, err := os.Stat(filepath.Join(target, "_module.cue"))
 	assert.NoError(t, err)
@@ -132,7 +120,7 @@ func TestModuleInitEmptyDirSucceeds(t *testing.T) {
 // TestModuleInitInvalidName rejects a name that is not a DNS-1123 label.
 func TestModuleInitInvalidName(t *testing.T) {
 	tmp := t.TempDir()
-	o := &moduleInitOptions{name: "S3_Bad", path: tmp, moduleType: "crossplane"}
+	o := &moduleInitOptions{name: "S3_Bad", path: tmp}
 	err := o.run(&bytes.Buffer{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid module name")
@@ -142,7 +130,7 @@ func TestModuleInitInvalidName(t *testing.T) {
 func TestModuleInitPrintsGuidance(t *testing.T) {
 	tmp := t.TempDir()
 	var buf bytes.Buffer
-	o := &moduleInitOptions{name: "s3", path: tmp, moduleType: "crossplane"}
+	o := &moduleInitOptions{name: "s3", path: tmp}
 	require.NoError(t, o.run(&buf))
 	out := buf.String()
 	assert.Contains(t, out, "s3")
@@ -162,11 +150,12 @@ func TestModuleCommandMountsInit(t *testing.T) {
 	assert.True(t, found, "vela module should mount the init subcommand")
 }
 
-// TestNewModuleInitCommandFlags checks the flag surface: --path and --type,
-// no --force.
+// TestNewModuleInitCommandFlags checks the flag surface: --path only. The
+// scaffold is backend-agnostic, so there is no --type flag, and there is no
+// --force flag either.
 func TestNewModuleInitCommandFlags(t *testing.T) {
 	cmd := NewModuleInitCommand(common.Args{}, cmdutil.IOStreams{})
 	assert.NotNil(t, cmd.Flags().Lookup("path"))
-	assert.NotNil(t, cmd.Flags().Lookup("type"))
+	assert.Nil(t, cmd.Flags().Lookup("type"), "the scaffold is backend-agnostic, there is no --type flag")
 	assert.Nil(t, cmd.Flags().Lookup("force"), "there is no --force flag")
 }

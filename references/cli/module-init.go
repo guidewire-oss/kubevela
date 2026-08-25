@@ -33,20 +33,14 @@ import (
 
 const (
 	moduleInitPathFlag = "path"
-	moduleInitTypeFlag = "type"
-
-	// moduleTypeCrossplane is the only backend init scaffolds today. The flag
-	// leaves room for others (e.g. KRO) without implementing them here.
-	moduleTypeCrossplane = "crossplane"
 
 	// moduleNamePlaceholder is substituted with the module name in every template.
 	moduleNamePlaceholder = "__MODULE__"
 )
 
 type moduleInitOptions struct {
-	name       string
-	path       string
-	moduleType string
+	name string
+	path string
 }
 
 // scaffoldFile is one file written into the module directory, kept in order so
@@ -57,15 +51,18 @@ type scaffoldFile struct {
 }
 
 // NewModuleInitCommand returns the vela module init command. It scaffolds a
-// valid, ready-to-edit Crossplane-backed module directory: the module identity,
-// the v1 API line, a definition, and the Crossplane auxiliary files, then
-// validates the result against the module parser so the skeleton always parses.
+// valid, ready-to-edit module directory: the module identity, the v1 API
+// line, a definition, and empty auxiliary/ directories documented by a
+// README, then validates the result against the module parser so the
+// skeleton always parses. The scaffold is backend-agnostic: it carries no
+// Crossplane-specific (or any other backend-specific) placeholder content,
+// so there is nothing for a --type flag to select between.
 func NewModuleInitCommand(_ common.Args, _ cmdutil.IOStreams) *cobra.Command {
 	o := &moduleInitOptions{}
 	cmd := &cobra.Command{
 		Use:   "init <name>",
 		Short: "Scaffold a new module.",
-		Long:  "Scaffold a valid, ready-to-edit Crossplane-backed module directory with placeholder content and TODO markers, so you start from a working skeleton instead of assembling the layout by hand.",
+		Long:  "Scaffold a valid, ready-to-edit module directory with placeholder content and TODO markers, so you start from a working skeleton instead of assembling the layout by hand.",
 		Example: `  Scaffold a module named s3 in the current directory:
 	vela module init s3
 
@@ -78,18 +75,14 @@ func NewModuleInitCommand(_ common.Args, _ cmdutil.IOStreams) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&o.path, moduleInitPathFlag, ".", "Directory to create the <name>/ module directory under.")
-	cmd.Flags().StringVar(&o.moduleType, moduleInitTypeFlag, moduleTypeCrossplane, "Module backend type. Only crossplane is supported.")
 	return cmd
 }
 
-// run validates the name and type, guards an existing non-empty directory,
-// writes the scaffold, and validates it against the module parser.
+// run validates the name, guards an existing non-empty directory, writes the
+// scaffold, and validates it against the module parser.
 func (o *moduleInitOptions) run(out io.Writer) error {
 	if errs := validation.IsDNS1123Label(o.name); len(errs) > 0 {
 		return fmt.Errorf("invalid module name %q: %s", o.name, errs[0])
-	}
-	if o.moduleType != moduleTypeCrossplane {
-		return fmt.Errorf("module type %q is not yet supported: only %q", o.moduleType, moduleTypeCrossplane)
 	}
 	if o.path == "" {
 		o.path = "."
