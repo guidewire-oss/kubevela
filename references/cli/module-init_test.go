@@ -41,19 +41,35 @@ func TestModuleInitScaffoldsExpectedFiles(t *testing.T) {
 	root := filepath.Join(tmp, "s3")
 	for _, rel := range []string{
 		"_module.cue",
-		"auxiliary/xrd.yaml",
+		"README.md",
 		"v1/_version.cue",
-		"v1/auxiliary/composition.yaml",
 		"v1/definitions/example.cue",
 	} {
 		_, err := os.Stat(filepath.Join(root, rel))
 		assert.NoError(t, err, "expected scaffolded file %s", rel)
 	}
 
+	// auxiliary/ and v1/auxiliary/ are created empty; README.md documents
+	// what goes in each rather than a placeholder object living there.
+	for _, dir := range []string{"auxiliary", "v1/auxiliary"} {
+		info, err := os.Stat(filepath.Join(root, dir))
+		require.NoError(t, err, "expected empty directory %s", dir)
+		assert.True(t, info.IsDir())
+		entries, err := os.ReadDir(filepath.Join(root, dir))
+		require.NoError(t, err)
+		assert.Empty(t, entries, "%s should be created empty", dir)
+	}
+
 	mod, err := os.ReadFile(filepath.Join(root, "_module.cue"))
 	require.NoError(t, err)
 	assert.Contains(t, string(mod), `module:`)
 	assert.Contains(t, string(mod), `"s3"`)
+
+	readme, err := os.ReadFile(filepath.Join(root, "README.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "s3", "the module name is substituted into the README")
+	assert.Contains(t, string(readme), "auxiliary/", "the README explains the auxiliary folders")
+	assert.Contains(t, string(readme), "CompositeResourceDefinition")
 }
 
 // TestModuleInitScaffoldValidates is the guard that keeps the templates in sync
