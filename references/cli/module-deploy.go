@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"time"
 
 	"github.com/gosuri/uitable"
@@ -104,41 +103,15 @@ func buildModuleApplication(moduleName, registryName, namespace string) (*v1beta
 	}, nil
 }
 
-// expectedModuleTiers returns the component names the render service will give
-// the module's install tiers, in the order it emits them. It mirrors
-// RenderApplication in pkg/module/service/render.go, so the status report can
-// name every tier before the owned Application exists.
-func expectedModuleTiers(mod *pkgmodule.Module) []string {
-	if mod == nil {
-		return nil
+// moduleTierNames returns the install tier names the render service gave the
+// owned Application's components, in spec order. Reading them from the
+// Application itself.
+func moduleTierNames(app *v1beta1.Application) []string {
+	names := make([]string, 0, len(app.Spec.Components))
+	for _, c := range app.Spec.Components {
+		names = append(names, c.Name)
 	}
-	tiers := []string{}
-	if mod.XRD != nil {
-		tiers = append(tiers, mod.Name+"-xrd")
-	}
-	for _, apiVersion := range enabledModuleLines(mod) {
-		line := mod.Lines[apiVersion]
-		if line.Composition != nil {
-			tiers = append(tiers, fmt.Sprintf("%s-%s-comp", mod.Name, apiVersion))
-		}
-		if len(line.Definitions) > 0 {
-			tiers = append(tiers, fmt.Sprintf("%s-%s-defs", mod.Name, apiVersion))
-		}
-	}
-	return tiers
-}
-
-// enabledModuleLines returns the module's enabled API versions, sorted
-// lexically the way the render service sorts them.
-func enabledModuleLines(mod *pkgmodule.Module) []string {
-	out := make([]string, 0, len(mod.Lines))
-	for apiVersion, line := range mod.Lines {
-		if line.Enabled {
-			out = append(out, apiVersion)
-		}
-	}
-	sort.Strings(out)
-	return out
+	return names
 }
 
 const (
@@ -234,8 +207,7 @@ func (o *moduleDeployOptions) run(ctx context.Context, cli client.Client, out io
 	if fetch == nil {
 		fetch = modulesvc.NewService(store).FetchModule
 	}
-	mod, err := fetch(ctx, reg.Name, o.module)
-	if err != nil {
+	if _, err := fetch(ctx, reg.Name, o.module); err != nil {
 		return err
 	}
 
@@ -257,7 +229,7 @@ func (o *moduleDeployOptions) run(ctx context.Context, cli client.Client, out io
 	}
 	fmt.Fprintf(out, "Applied Application %s/%s\n", app.Namespace, app.Name)
 
-	return o.waitForModule(ctx, cli, expectedModuleTiers(mod), out)
+	return o.waitForModule(ctx, cli, out)
 }
 
 // waitForModule polls the deploy Application and the owned module Application
@@ -265,12 +237,11 @@ func (o *moduleDeployOptions) run(ctx context.Context, cli client.Client, out io
 //
 // It reads both Applications because they carry different halves of the answer:
 // the deploy Application's phase is where a fetch or render failure surfaces,
-// while per-tier health lives only on the owned Application the render service
-// creates.
-func (o *moduleDeployOptions) waitForModule(ctx context.Context, cli client.Client, tiers []string, out io.Writer) error {
+// while the tier shape and per-tier health live only on the owned Application
+// the render service creates.
+func (o *moduleDeployOptions) waitForModule(ctx context.Context, cli client.Client, out io.Writer) error {
 	deadline := time.Now().Add(o.timeout)
 	lastTable := ""
-	var lastServices []oamcommon.ApplicationComponentStatus
 
 	for {
 		var deployApp v1beta1.Application
@@ -283,29 +254,41 @@ func (o *moduleDeployOptions) waitForModule(ctx context.Context, cli client.Clie
 				o.namespace, deployApp.Name, deployApp.Status.Phase, moduleComponentMessage(&deployApp))
 		}
 
+		var tiers []string
+		var services []oamcommon.ApplicationComponentStatus
 		var ownedApp v1beta1.Application
 		err := cli.Get(ctx, types.NamespacedName{Name: ownedModuleAppName(o.module), Namespace: o.namespace}, &ownedApp)
 		switch {
 		case apierrors.IsNotFound(err):
-			lastServices = nil
+			// The render service has not created the owned Application yet, so
+			// the tier shape is not known.
 		case err != nil:
 			return fmt.Errorf("failed to read Application %s/%s: %w", o.namespace, ownedModuleAppName(o.module), err)
 		default:
-			lastServices = ownedApp.Status.Services
+			tiers = moduleTierNames(&ownedApp)
+			services = ownedApp.Status.Services
 		}
 
-		if table := renderModuleTierTable(tiers, lastServices); table != lastTable {
+		table := "Rendering module (install tiers are not known yet)..."
+		if len(tiers) > 0 {
+			table = renderModuleTierTable(tiers, services)
+		}
+		if table != lastTable {
 			fmt.Fprintln(out, table)
 			lastTable = table
 		}
 
-		tier, message := firstUnhealthyTier(tiers, lastServices)
-		if tier == "" && deployApp.Status.Phase == oamcommon.ApplicationRunning {
+		tier, message := firstUnhealthyTier(tiers, services)
+		if tier == "" && len(tiers) > 0 && deployApp.Status.Phase == oamcommon.ApplicationRunning {
 			fmt.Fprintf(out, "Module %q is installed in namespace %q\n", o.module, o.namespace)
 			return nil
 		}
 
 		if time.Now().After(deadline) {
+			if len(tiers) == 0 {
+				return fmt.Errorf("timed out after %s waiting for module %q: the owned Application %s/%s was not created; deploy Application is in phase %s: %s",
+					o.timeout, o.module, o.namespace, ownedModuleAppName(o.module), deployApp.Status.Phase, moduleComponentMessage(&deployApp))
+			}
 			if tier == "" {
 				return fmt.Errorf("timed out after %s waiting for module %q: every tier is healthy but Application %s/%s is in phase %s",
 					o.timeout, o.module, o.namespace, deployApp.Name, deployApp.Status.Phase)

@@ -83,27 +83,42 @@ func RenderApplication(mod *module.Module, namespace string) (map[string]interfa
 
 	comps := []interface{}{}
 
-	// The XRD tier is module-wide and gates every line beneath it.
-	xrdTier := ""
-	if mod.XRD != nil {
-		xrdTier = mod.Name + "-xrd"
-		comps = append(comps, readyTier(xrdTier, []interface{}{mod.XRD}, "Established", ""))
+	// The module-level auxiliary tiers are module-wide and gate every line
+	// beneath them. Auxiliary is split by readiness: any CompositeResourceDefinition
+	// gates on Established, everything else installs and is healthy once applied.
+	established, rest := splitAuxiliaryByReadiness(mod.Auxiliary)
+	dep := ""
+	if len(established) > 0 {
+		dep = mod.Name + "-aux-established"
+		comps = append(comps, readyTier(dep, established, "Established", ""))
 	}
+	if len(rest) > 0 {
+		auxTier := mod.Name + "-aux"
+		// The rest group has no readiness signal to wait on,
+		// so an empty condition type means healthy once applied.
+		comps = append(comps, readyTier(auxTier, rest, "", dep))
+		dep = auxTier
+	}
+	moduleDep := dep
 
 	for _, apiVersion := range enabledLines(mod) {
 		line := mod.Lines[apiVersion]
 
-		// Each line hangs off the XRD, not off the previous line: lines are
-		// siblings, so v2 must not wait on v1.
-		dep := xrdTier
-		if line.Composition != nil {
-			compTier := fmt.Sprintf("%s-%s-comp", mod.Name, apiVersion)
-			// Crossplane's Composition exposes no status.conditions, so there is
-			// no readiness signal to wait on: an empty condition type means
-			// healthy once applied. Kept as a readiness carrier so a real
-			// condition is a one-line change if Crossplane ever adds one.
-			comps = append(comps, readyTier(compTier, []interface{}{line.Composition}, "", dep))
-			dep = compTier
+		// Each line hangs off the module-level auxiliary, not off the previous
+		// line: lines are siblings, so v2 must not wait on v1.
+		dep := moduleDep
+		lineEstablished, lineRest := splitAuxiliaryByReadiness(line.Auxiliary)
+		if len(lineEstablished) > 0 {
+			tier := fmt.Sprintf("%s-%s-aux-established", mod.Name, apiVersion)
+			comps = append(comps, readyTier(tier, lineEstablished, "Established", dep))
+			dep = tier
+		}
+		if len(lineRest) > 0 {
+			tier := fmt.Sprintf("%s-%s-aux", mod.Name, apiVersion)
+			// Same readiness carrier as the module-level rest tier: no real
+			// condition to wait on today, healthy once applied.
+			comps = append(comps, readyTier(tier, lineRest, "", dep))
+			dep = tier
 		}
 
 		if len(line.Definitions) == 0 {
@@ -144,6 +159,26 @@ func enabledLines(mod *module.Module) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// XRDKind is the  CompositeResourceDefinition kind. An
+// auxiliary object of this kind is the one readiness signal
+// the renderer knows how to wait on: everything else installs
+// and is healthy once applied.
+const XRDKind = "CompositeResourceDefinition"
+
+// splitAuxiliaryByReadiness partitions a scope's auxiliary objects into the
+// ones that gate on Established (CompositeResourceDefinitions) and everything
+// else, preserving each group's original order.
+func splitAuxiliaryByReadiness(aux []map[string]interface{}) (established, rest []interface{}) {
+	for _, obj := range aux {
+		if kind, _ := obj["kind"].(string); kind == XRDKind {
+			established = append(established, obj)
+			continue
+		}
+		rest = append(rest, obj)
+	}
+	return established, rest
 }
 
 // readyTier wraps objects in k8s-objects with a readyConditionType, so the next
@@ -221,8 +256,6 @@ func stampIdentity(def map[string]interface{}, moduleName, apiVersion string) ma
 	}
 	annos[types.AnnoDefinitionFullName] = fullName
 
-	// These persist once GWCP-106678 adds the CRD identity fields. Until then
-	// Kubernetes prunes them and the labels above carry identity.
 	spec, _ := out["spec"].(map[string]interface{})
 	if spec == nil {
 		spec = map[string]interface{}{}

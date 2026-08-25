@@ -17,8 +17,10 @@ limitations under the License.
 package module
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -27,6 +29,7 @@ import (
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/pkg/definition"
@@ -53,9 +56,9 @@ func ParseModule(fsys fs.FS) (*Module, error) {
 		return nil, fmt.Errorf("parse module: %w", err)
 	}
 
-	xrd, err := readOptionalYAMLFile(fsys, "auxiliary/xrd.yaml")
+	auxiliary, err := readAuxiliaryDir(fsys, "auxiliary")
 	if err != nil {
-		return nil, fmt.Errorf("parse module: read xrd: %w", err)
+		return nil, fmt.Errorf("parse module: read auxiliary: %w", err)
 	}
 
 	entries, err := fs.ReadDir(fsys, ".")
@@ -82,7 +85,7 @@ func ParseModule(fsys fs.FS) (*Module, error) {
 		return nil, fmt.Errorf("parse module: %w", err)
 	}
 
-	return &Module{Name: name, Version: version, XRD: xrd, Lines: lines}, nil
+	return &Module{Name: name, Version: version, Auxiliary: auxiliary, Lines: lines}, nil
 }
 
 // ParseModuleDir reads a module from a local directory. It is the
@@ -109,9 +112,9 @@ func parseLine(fsys fs.FS, dir string) (*Line, error) {
 		return nil, fmt.Errorf("read enabled: %w", err)
 	}
 
-	composition, err := readOptionalYAMLFile(fsys, path.Join(dir, "auxiliary", "composition.yaml"))
+	auxiliary, err := readAuxiliaryDir(fsys, path.Join(dir, "auxiliary"))
 	if err != nil {
-		return nil, fmt.Errorf("read composition: %w", err)
+		return nil, fmt.Errorf("read auxiliary: %w", err)
 	}
 
 	defsDir := path.Join(dir, "definitions")
@@ -147,7 +150,7 @@ func parseLine(fsys fs.FS, dir string) (*Line, error) {
 		defs = append(defs, rendered)
 	}
 
-	return &Line{APIVersion: apiVersion, Enabled: enabled, Composition: composition, Definitions: defs}, nil
+	return &Line{APIVersion: apiVersion, Enabled: enabled, Auxiliary: auxiliary, Definitions: defs}, nil
 }
 
 // renderDefinition compiles a single definition file into its unstructured
@@ -168,19 +171,99 @@ func renderDefinition(name string, data []byte) (map[string]interface{}, error) 
 	}
 }
 
-// readOptionalYAMLFile reads and unmarshals a YAML file from fsys into a
-// generic map. A missing file is not an error: it returns a nil map. Any
-// other read or unmarshal failure is returned, since only absence means
-// "not provided."
-func readOptionalYAMLFile(fsys fs.FS, p string) (map[string]interface{}, error) {
-	data, err := fs.ReadFile(fsys, p)
+// readAuxiliaryDir reads every file under dir (an auxiliary/ folder) and
+// returns the objects they contain, in filename order. A missing dir is not
+// an error: it means "no auxiliary objects" for that scope.
+func readAuxiliaryDir(fsys fs.FS, dir string) ([]map[string]interface{}, error) {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return unmarshalYAML(data)
+
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+
+	var objects []map[string]interface{}
+	for _, name := range names {
+		p := path.Join(dir, name)
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", p, err)
+		}
+		decoded, err := decodeAuxiliaryFile(name, data)
+		if err != nil {
+			return nil, fmt.Errorf("decode %s: %w", p, err)
+		}
+		objects = append(objects, decoded...)
+	}
+	return objects, nil
+}
+
+// decodeAuxiliaryFile decodes one auxiliary file into the objects it
+// contains: a .yaml/.yml file may hold multiple "---"-separated documents,
+// each becoming its own object; a .cue file is a single object at its root.
+// Any other extension is an error naming the file, not a silent skip.
+func decodeAuxiliaryFile(name string, data []byte) ([]map[string]interface{}, error) {
+	switch {
+	case strings.HasSuffix(name, ".yaml"), strings.HasSuffix(name, ".yml"):
+		return decodeYAMLDocuments(data)
+	case strings.HasSuffix(name, ".cue"):
+		obj, err := decodeCUEObject(data)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]interface{}{obj}, nil
+	default:
+		return nil, fmt.Errorf("unsupported auxiliary file type: %s", name)
+	}
+}
+
+// decodeYAMLDocuments splits data on YAML document boundaries and unmarshals
+// each into a generic map, skipping empty documents (a leading or trailing
+// "---" produces one). This is what lets one auxiliary file hold several
+// objects, the same way a plain Kubernetes manifest can.
+func decodeYAMLDocuments(data []byte) ([]map[string]interface{}, error) {
+	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), len(data))
+	var docs []map[string]interface{}
+	for {
+		var raw map[string]interface{}
+		if err := decoder.Decode(&raw); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		if len(raw) == 0 {
+			continue
+		}
+		docs = append(docs, raw)
+	}
+	return docs, nil
+}
+
+// decodeCUEObject compiles a CUE auxiliary file and decodes its root value
+// into a generic map. Unlike definitions/*.cue (which goes through
+// definition.FromCUEString, the vela-definition wrapper), an auxiliary CUE
+// file is a plain Kubernetes object at the top level: apiVersion, kind,
+// metadata, and so on directly, not wrapped under a named key.
+func decodeCUEObject(data []byte) (map[string]interface{}, error) {
+	val := cuecontext.New().CompileBytes(data)
+	if err := val.Err(); err != nil {
+		return nil, err
+	}
+	var obj map[string]interface{}
+	if err := val.Decode(&obj); err != nil {
+		return nil, fmt.Errorf("decode cue value: %w", err)
+	}
+	return obj, nil
 }
 
 func unmarshalYAML(data []byte) (map[string]interface{}, error) {
