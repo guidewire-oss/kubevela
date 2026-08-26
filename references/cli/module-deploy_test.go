@@ -67,62 +67,21 @@ func TestBuildModuleApplication(t *testing.T) {
 	}, props)
 }
 
-func TestExpectedModuleTiers(t *testing.T) {
-	testCases := map[string]struct {
-		mod  *pkgmodule.Module
-		want []string
-	}{
-		"xrd, one line with composition and definitions": {
-			mod: &pkgmodule.Module{
-				Name: "s3",
-				XRD:  map[string]interface{}{"kind": "CompositeResourceDefinition"},
-				Lines: map[string]pkgmodule.Line{
-					"v1": {
-						APIVersion:  "v1",
-						Enabled:     true,
-						Composition: map[string]interface{}{"kind": "Composition"},
-						Definitions: []map[string]interface{}{{"kind": "ComponentDefinition"}},
-					},
-				},
+func TestModuleTierNames(t *testing.T) {
+	app := &v1beta1.Application{
+		Spec: v1beta1.ApplicationSpec{
+			Components: []oamcommon.ApplicationComponent{
+				{Name: "s3-aux-established"},
+				{Name: "s3-v1-aux"},
+				{Name: "s3-v1-defs"},
 			},
-			want: []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"},
-		},
-		"disabled lines are skipped": {
-			mod: &pkgmodule.Module{
-				Name: "s3",
-				Lines: map[string]pkgmodule.Line{
-					"v1": {APIVersion: "v1", Enabled: true, Definitions: []map[string]interface{}{{"kind": "ComponentDefinition"}}},
-					"v2": {APIVersion: "v2", Enabled: false, Definitions: []map[string]interface{}{{"kind": "ComponentDefinition"}}},
-				},
-			},
-			want: []string{"s3-v1-defs"},
-		},
-		"lines are sorted lexically": {
-			mod: &pkgmodule.Module{
-				Name: "s3",
-				Lines: map[string]pkgmodule.Line{
-					"v2":  {APIVersion: "v2", Enabled: true, Definitions: []map[string]interface{}{{"kind": "ComponentDefinition"}}},
-					"v10": {APIVersion: "v10", Enabled: true, Definitions: []map[string]interface{}{{"kind": "ComponentDefinition"}}},
-				},
-			},
-			want: []string{"s3-v10-defs", "s3-v2-defs"},
-		},
-		"no xrd and no composition": {
-			mod: &pkgmodule.Module{
-				Name: "kro",
-				Lines: map[string]pkgmodule.Line{
-					"v1": {APIVersion: "v1", Enabled: true, Definitions: []map[string]interface{}{{"kind": "ComponentDefinition"}}},
-				},
-			},
-			want: []string{"kro-v1-defs"},
 		},
 	}
+	assert.Equal(t, []string{"s3-aux-established", "s3-v1-aux", "s3-v1-defs"}, moduleTierNames(app))
+}
 
-	for name, tc := range testCases {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tc.want, expectedModuleTiers(tc.mod))
-		})
-	}
+func TestModuleTierNamesNoComponents(t *testing.T) {
+	assert.Empty(t, moduleTierNames(&v1beta1.Application{}))
 }
 
 func TestModuleAppNames(t *testing.T) {
@@ -159,18 +118,19 @@ func moduleDeployClient(t *testing.T, registries ...string) client.Client {
 	return fake.NewClientBuilder().WithScheme(common.Scheme).WithObjects(cm).Build()
 }
 
-// stubModule is the module the fetch seam returns in tests: an XRD plus one
-// enabled line with a Composition and one definition.
+// stubModule is the module the fetch seam returns in tests: a module-level
+// auxiliary XRD plus one enabled line with an auxiliary Composition and one
+// definition.
 func stubModule() *pkgmodule.Module {
 	return &pkgmodule.Module{
-		Name:    "s3",
-		Version: "1.0.0",
-		XRD:     map[string]interface{}{"kind": "CompositeResourceDefinition"},
+		Name:      "s3",
+		Version:   "1.0.0",
+		Auxiliary: []map[string]interface{}{{"kind": "CompositeResourceDefinition"}},
 		Lines: map[string]pkgmodule.Line{
 			"v1": {
 				APIVersion:  "v1",
 				Enabled:     true,
-				Composition: map[string]interface{}{"kind": "Composition"},
+				Auxiliary:   []map[string]interface{}{{"kind": "Composition"}},
 				Definitions: []map[string]interface{}{{"kind": "ComponentDefinition"}},
 			},
 		},
@@ -301,18 +261,27 @@ func TestModuleCommandMountsDeploy(t *testing.T) {
 }
 
 // moduleApps returns the deploy Application in the given phase and the owned
-// module Application with the given tier services.
-func moduleApps(phase oamcommon.ApplicationPhase, services []oamcommon.ApplicationComponentStatus) []client.Object {
+// module Application with the given tiers (as spec components, the way the
+// render service actually creates them) and their reported tier services.
+func moduleApps(phase oamcommon.ApplicationPhase, tiers []string, services []oamcommon.ApplicationComponentStatus) []client.Object {
 	deployApp := &v1beta1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "module-s3-deploy", Namespace: velatypes.DefaultKubeVelaNS},
 		Status:     oamcommon.AppStatus{Phase: phase},
 	}
+	comps := make([]oamcommon.ApplicationComponent, 0, len(tiers))
+	for _, tier := range tiers {
+		comps = append(comps, oamcommon.ApplicationComponent{Name: tier, Type: "k8s-objects"})
+	}
 	ownedApp := &v1beta1.Application{
 		ObjectMeta: metav1.ObjectMeta{Name: "module-s3", Namespace: velatypes.DefaultKubeVelaNS},
+		Spec:       v1beta1.ApplicationSpec{Components: comps},
 		Status:     oamcommon.AppStatus{Services: services},
 	}
 	return []client.Object{deployApp, ownedApp}
 }
+
+// moduleTiers is the s3 stub module's install tier names, in render order.
+var moduleTiers = []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}
 
 func healthyTierServices() []oamcommon.ApplicationComponentStatus {
 	return []oamcommon.ApplicationComponentStatus{
@@ -378,11 +347,11 @@ func TestFirstUnhealthyTier(t *testing.T) {
 
 func TestWaitForModuleSucceeds(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
-		WithObjects(moduleApps(oamcommon.ApplicationRunning, healthyTierServices())...).Build()
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, moduleTiers, healthyTierServices())...).Build()
 	var out bytes.Buffer
 	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: time.Second, pollInterval: time.Millisecond}
 
-	err := o.waitForModule(context.Background(), cli, []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}, &out)
+	err := o.waitForModule(context.Background(), cli, &out)
 
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "s3-v1-defs")
@@ -395,11 +364,11 @@ func TestWaitForModuleBecomesHealthy(t *testing.T) {
 		{Name: "s3-v1-comp", Healthy: false, Message: "waiting for s3-xrd"},
 	}
 	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
-		WithObjects(moduleApps(oamcommon.ApplicationRunning, pending)...).Build()
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, moduleTiers, pending)...).Build()
 
 	gets := 0
 	watched := fake.NewClientBuilder().WithScheme(common.Scheme).
-		WithObjects(moduleApps(oamcommon.ApplicationRunning, pending)...).
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, moduleTiers, pending)...).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if err := c.Get(ctx, key, obj, opts...); err != nil {
@@ -420,7 +389,7 @@ func TestWaitForModuleBecomesHealthy(t *testing.T) {
 	var out bytes.Buffer
 	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: 2 * time.Second, pollInterval: time.Millisecond}
 
-	err := o.waitForModule(context.Background(), watched, []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}, &out)
+	err := o.waitForModule(context.Background(), watched, &out)
 
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "waiting for s3-xrd", "the intermediate state is reported")
@@ -432,11 +401,11 @@ func TestWaitForModuleTimesOut(t *testing.T) {
 		{Name: "s3-v1-comp", Healthy: false, Message: "composition not ready"},
 	}
 	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
-		WithObjects(moduleApps(oamcommon.ApplicationRunning, stuck)...).Build()
+		WithObjects(moduleApps(oamcommon.ApplicationRunning, moduleTiers, stuck)...).Build()
 	var out bytes.Buffer
 	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: 30 * time.Millisecond, pollInterval: time.Millisecond}
 
-	err := o.waitForModule(context.Background(), cli, []string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"}, &out)
+	err := o.waitForModule(context.Background(), cli, &out)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "s3-v1-comp")
@@ -445,14 +414,34 @@ func TestWaitForModuleTimesOut(t *testing.T) {
 
 func TestWaitForModuleStopsOnFailedWorkflow(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
-		WithObjects(moduleApps(oamcommon.ApplicationWorkflowFailed, nil)...).Build()
+		WithObjects(moduleApps(oamcommon.ApplicationWorkflowFailed, []string{"s3-xrd"}, nil)...).Build()
 	var out bytes.Buffer
 	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: time.Minute, pollInterval: time.Millisecond}
 
 	start := time.Now()
-	err := o.waitForModule(context.Background(), cli, []string{"s3-xrd"}, &out)
+	err := o.waitForModule(context.Background(), cli, &out)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), string(oamcommon.ApplicationWorkflowFailed))
 	assert.Less(t, time.Since(start), 5*time.Second, "a terminal phase must not wait out the timeout")
+}
+
+// TestWaitForModuleWaitsForOwnedApp confirms the deploy CLI does not assume a
+// tier shape before the owned Application exists: with no owned Application
+// yet, it reports a rendering state and keeps polling instead of failing or
+// treating "no tiers" as "install complete".
+func TestWaitForModuleWaitsForOwnedApp(t *testing.T) {
+	deployApp := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "module-s3-deploy", Namespace: velatypes.DefaultKubeVelaNS},
+		Status:     oamcommon.AppStatus{Phase: oamcommon.ApplicationRendering},
+	}
+	cli := fake.NewClientBuilder().WithScheme(common.Scheme).WithObjects(deployApp).Build()
+	var out bytes.Buffer
+	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: 30 * time.Millisecond, pollInterval: time.Millisecond}
+
+	err := o.waitForModule(context.Background(), cli, &out)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "was not created")
+	assert.Contains(t, out.String(), "Rendering module")
 }
