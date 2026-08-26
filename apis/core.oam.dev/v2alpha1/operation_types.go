@@ -60,6 +60,13 @@ type OperationSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
+
+	// TTLSecondsAfterFinished bounds how long a terminal Operation is kept
+	// before the controller deletes it. Unset uses the cluster default
+	// (--default-operation-ttl-seconds); explicit 0 disables TTL for this
+	// Operation.
+	// +optional
+	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
 
 // OperationPhase is the terminal/non-terminal phase of an Operation run.
@@ -76,7 +83,39 @@ const (
 	// OperationPhaseFailed means the Operation's workflow finished with an
 	// error. Terminal -- re-execution isn't supported yet.
 	OperationPhaseFailed OperationPhase = "Failed"
+	// OperationPhaseSuspended means the workflow is paused (a `suspend` step,
+	// or a manual `vela operation suspend`). Non-terminal: the concurrency
+	// lease keeps renewing.
+	OperationPhaseSuspended OperationPhase = "Suspended"
+	// OperationPhaseCancelled means a human stopped the operation before it
+	// reached a natural terminal phase. Terminal.
+	OperationPhaseCancelled OperationPhase = "Cancelled"
 )
+
+// OperationStepAttempt records one execution of a single workflow step. The
+// embedded WorkflowRunStatus.Steps (from github.com/kubevela/workflow) only
+// ever holds the latest attempt; this is where prior attempts that a
+// restart's snapshot-then-reset would otherwise discard get preserved.
+type OperationStepAttempt struct {
+	// AttemptNumber is the 1-based ordinal of this attempt for the step.
+	AttemptNumber int64 `json:"attemptNumber"`
+	// Phase is the step's WorkflowStepPhase at the time it was superseded.
+	// +optional
+	Phase workflowv1alpha1.WorkflowStepPhase `json:"phase,omitempty"`
+	// Message carries the step's message at the time it was superseded.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// Reason carries the step's reason at the time it was superseded.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// StartTime is when this attempt of the step first executed.
+	// +optional
+	StartTime metav1.Time `json:"startTime,omitempty"`
+	// TriggeredBy names how this attempt started, e.g.
+	// "vela operation restart --step backup". Empty for the original run.
+	// +optional
+	TriggeredBy string `json:"triggeredBy,omitempty"`
+}
 
 // OperationWorkflowStatus is the workflow status for one cluster. Only a
 // single entry is populated so far, but the shape already matches
@@ -90,6 +129,12 @@ type OperationWorkflowStatus struct {
 	// WorkflowRunStatus is the status of the embedded workflow engine run,
 	// reused verbatim from github.com/kubevela/workflow.
 	workflowv1alpha1.WorkflowRunStatus `json:",inline"`
+
+	// StepAttempts is prior-attempt history per step name. Populated only on
+	// restart, immediately before the corresponding entries in the embedded
+	// Steps are reset.
+	// +optional
+	StepAttempts map[string][]OperationStepAttempt `json:"stepAttempts,omitempty"`
 }
 
 // OperationStatus is the status of Operation.
@@ -121,6 +166,11 @@ type OperationStatus struct {
 	// against. Only a single cluster is resolved so far.
 	// +optional
 	Workflows []OperationWorkflowStatus `json:"workflows,omitempty"`
+
+	// Attempts is how many times this Operation's workflow has been
+	// (re)started, including the original run (starts at 1).
+	// +optional
+	Attempts int64 `json:"attempts,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -160,7 +210,12 @@ type OperationList struct {
 }
 
 // IsTerminal reports whether the Operation has reached a phase from which
-// it will not progress further (restart/re-execution isn't supported yet).
+// it will not progress further without an explicit restart.
 func (o *Operation) IsTerminal() bool {
-	return o.Status.Phase == OperationPhaseSucceeded || o.Status.Phase == OperationPhaseFailed
+	switch o.Status.Phase {
+	case OperationPhaseSucceeded, OperationPhaseFailed, OperationPhaseCancelled:
+		return true
+	default:
+		return false
+	}
 }

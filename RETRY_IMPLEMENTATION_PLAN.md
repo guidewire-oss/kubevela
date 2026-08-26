@@ -122,13 +122,47 @@ No changes needed to `apis/core.oam.dev/v1beta1/workflow_step_definition.go`
 untouched by this plan.
 
 ### Codegen
+
+Status: **done**. `make manifests` itself wasn't run (it re-kustomizes and
+redispatches CRDs for every group, a much bigger diff than this change
+needs); instead ran the two steps it composes, scoped to
+`apis/core.oam.dev/v2alpha1/...` only:
 ```
-make manifests
+go run -tags generate sigs.k8s.io/controller-tools/cmd/controller-gen \
+  object:headerFile=./hack/boilerplate.go.txt paths=./apis/core.oam.dev/v2alpha1/...
+go run -tags generate sigs.k8s.io/controller-tools/cmd/controller-gen \
+  crd:crdVersions=v1,generateEmbeddedObjectMeta=true \
+  paths=./apis/core.oam.dev/v2alpha1/... output:crd:dir=/tmp/crdout
+cp /tmp/crdout/core.oam.dev_operations.yaml charts/vela-core/crds/core.oam.dev_operations.yaml
 ```
-(`go generate ./pkg/... ./apis/...` + CRD dispatch into `charts/vela-core/crds`
- — confirmed as the single Makefile target that does both deepcopy and CRD YAML).
+This regenerated `zz_generated.deepcopy.go` for the new/changed types and
+refreshed `charts/vela-core/crds/core.oam.dev_operations.yaml` (which also
+picked up doc-comment drift already present in the Go source but not yet
+reflected in the checked-in CRD -- unrelated pre-existing staleness, not
+introduced by this change).
 
 ## New file: `pkg/workflow/operation/operation_v2alpha1.go`
+
+Status: **done**. Implemented as planned below, with two adjustments made
+while implementing:
+- `restartFromStep`'s underlying helper (`cleanOperationStatusFromStep`)
+  returns the affected `WorkflowStepStatus`/`StepStatus` entries and the
+  dependency name set directly, rather than mutating a ConfigMap in place
+  like upstream's `CleanStatusFromStep` -- so the caller can snapshot them
+  into `StepAttempts` before they're discarded, then separately clear the
+  context-backend ConfigMap using the returned dependency names.
+- The whole-workflow `Restart(ctx)` path also deletes the old
+  `ContextBackend` ConfigMap before wiping `ws.WorkflowRunStatus` -- the
+  plan's sketch of this path (mirroring the "Restart: snapshot-then-reset"
+  section above) omitted this, but upstream's `RestartWorkflow` does it for
+  exactly this case, and skipping it would leak the ConfigMap object once
+  the wipe drops its only reference.
+- `TriggeredBy` on `OperationStepAttempt` is left unset by every call site:
+  `Restart(ctx)`/`Restart(ctx, step)` are fixed by the `wfUtils.WorkflowOperator`/
+  `WorkflowStepOperator` interfaces (no room for a caller-supplied string),
+  so there's no way to plumb "vela operation restart --step backup" through
+  without breaking interface conformance. Not attempted; noted as a known
+  gap rather than worked around.
 
 Mirrors `operation.go`'s existing Application-side structure exactly.
 
@@ -291,6 +325,27 @@ comparison, since step order is defined by `Steps[]` position, not name.)
 
 ## Controller changes: `pkg/controller/core.oam.dev/v2alpha1/operation/operation_controller.go`
 
+Status: **done**, with two deviations from the sketch below (both necessary
+for correctness, not style choices):
+- The plan's tail snippet calls `r.sweepTTL(logCtx, op)` only from the
+  bottom of `Reconcile` once `op.IsTerminal()` right after execution. But
+  `Reconcile`'s *existing* top-of-function early return
+  (`if op.IsTerminal() { return ctrl.Result{}, nil }`, for every subsequent
+  reconcile of an Operation that was already terminal) would otherwise never
+  call `sweepTTL` again -- the very first `RequeueAfter: remaining` it
+  returns would fire, hit that early return, and go straight back to doing
+  nothing forever. Changed that early return to `return r.sweepTTL(logCtx, op)`
+  as well.
+- `finish` (called from both the success/failure paths and now also holds
+  the `sweepTTL` call) returns `r.sweepTTL(ctx, op)` as its final result
+  instead of a bare `ctrl.Result{}, nil`, so the requeue-driven TTL sweep
+  starts immediately on the reconcile that first makes the Operation
+  terminal, not only on some later reconcile triggered by something else.
+- Also set `op.Status.Attempts = 1` at the same place `op.Status.Template`/
+  `Phase`/`StartTime` are first set (the "starts at 1" contract from the
+  field's own doc comment, added in the API stage) -- not spelled out as a
+  separate task item below, but required by that doc comment.
+
 **`Reconcile`'s phase switch** — add the missing case:
 ```go
 switch phase {
@@ -344,6 +399,8 @@ constructor-injected fields rather than reading globals.
 
 ## Config: threading a new flag through `core.Args`
 
+Status: **done**, following the sketch below exactly.
+
 Exact pattern already used for `--application-revision-limit`
 (`cmd/core/app/config/controller.go`):
 
@@ -369,6 +426,14 @@ No changes needed to `pkg/controller/core.oam.dev/v2alpha1/setup.go` — it
 already forwards `args` opaquely to every registered controller's `Setup`.
 
 ## CLI changes: `references/cli/operation.go`
+
+Status: **done**. `run`/`status`'s namespace resolution and Get-by-name were
+also folded into the new `operationNamespace`/`getOperationByName` helpers
+(they existed as three separate inline copies before this change; now
+five commands share them), and `pollOperationUntilSuspended` breaks out
+early on any terminal phase too, not only `Suspended` -- otherwise a race
+where the workflow finishes on its own while the CLI is waiting to observe
+`Suspended` would hang forever.
 
 New commands, registered alongside the existing three in
 `NewOperationCommand`:
@@ -445,7 +510,15 @@ target yet — see `RETRY_PLAN.md`'s out-of-scope list).
    output changes.
 5. **Tests + docs** — e2e scenarios from `RETRY_PLAN.md`, `POC.md` checkbox.
 
+Status: stages 1-4 done as described above (with the deviations called out
+in each stage's own status note). Stage 5's unit tests are done; its e2e
+scenarios are not -- see `RETRY_PLAN.md`'s Tests section for why.
+
 ## Test plan specifics
+
+Status: both unit sections below are implemented as described, with one
+scope adjustment to the CLI suspend test -- see its note. The e2e section
+was not run or written; see `RETRY_PLAN.md`'s Tests section for why.
 
 - **Unit** (`pkg/workflow/operation/operation_v2alpha1_test.go`): snapshot
   correctness (attempt numbers increment, prior message/phase preserved),
@@ -468,6 +541,19 @@ target yet — see `RETRY_PLAN.md`'s out-of-scope list).
   reaches `Suspended` should time out/not return, proving it isn't using the
   terminal check), and surfaces the operator's error (e.g. unknown step name)
   without swallowing it.
+  **Adjustment made while implementing:** `pollOperationUntilSuspended`
+  deliberately also stops on any terminal phase, not only `Suspended` (a
+  production safety net against hanging forever if the workflow finishes on
+  its own mid-poll) -- so a fake client sitting at a non-terminal,
+  non-`Suspended` phase forever is what actually distinguishes "waits for
+  Suspended" from "uses IsTerminal()", not a fake client that never reaches
+  either. Proving that with a plain fake client means either hanging the
+  test forever or racing a goroutine against `operationPollInterval` (2s,
+  not injectable) — both a bad trade for a unit test. Written instead:
+  `TestPollOperationUntilSuspendedAlreadyDone`/`TestOperationRestartOnlyWarning`
+  covering the bounded happy paths and the extracted `--only` warning logic;
+  the actual "does it wait" property is covered by e2e's suspend/resume
+  round-trip once that's written (see `RETRY_PLAN.md`).
 - **Unit** (`pkg/controller/.../operation/ttl_test.go`): `sweepTTL` table test
   — no TTL set, cluster default only, per-Operation override, already
   expired, not yet expired (asserts `RequeueAfter` equals the remaining

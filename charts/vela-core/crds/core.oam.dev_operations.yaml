@@ -42,10 +42,9 @@ spec:
           Operation is the Schema for the Operation API: one run-to-completion
           invocation of an OperationTemplate against a target.
 
-          POC ONLY: ships without the KEP's permission model. Any RBAC principal
-          able to create an Operation can invoke any OperationTemplate against any
-          target in its namespace. Do not release or promote this code path until
-          the full permission model lands.
+          principal able to create an Operation can invoke any OperationTemplate
+          against any target in its namespace. Do not release or promote this
+          code path until the permission model lands.
         properties:
           apiVersion:
             description: |-
@@ -69,19 +68,19 @@ spec:
             properties:
               clusters:
                 description: |-
-                  Clusters is reserved for the full implementation's multi-cluster
-                  dispatch. The POC only ever resolves a single (local) cluster; a
-                  non-empty value beyond that is rejected at reconcile time rather than
-                  silently ignored, so the field can be adopted later without a
-                  behavior change for existing single-cluster Operations.
+                  Clusters is reserved for multi-cluster dispatch (KEP 2.15). Only a
+                  single (local) cluster is resolved so far; a non-empty value beyond
+                  that is rejected at reconcile time rather than silently ignored, so
+                  the field can be adopted later without a behavior change for
+                  existing single-cluster Operations.
                 items:
                   type: string
                 type: array
               parameters:
                 description: |-
                   Parameters are literal values merged into `context.operationParams`.
-                  No schema validation is performed in the POC -- see the "Admission"
-                  row in the POC scope doc.
+                  this is the raw JSON the caller sent, unified against the
+                  OperationTemplate's parameter schema once admission lands.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               target:
@@ -93,8 +92,8 @@ spec:
                     minLength: 1
                     type: string
                   component:
-                    description: Component is the name of the target Component
-                      within App.
+                    description: Component is the name of the target Component within
+                      App.
                     minLength: 1
                     type: string
                 required:
@@ -107,6 +106,14 @@ spec:
                   the Operation's own namespace first, then "vela-system".
                 minLength: 1
                 type: string
+              ttlSecondsAfterFinished:
+                description: |-
+                  TTLSecondsAfterFinished bounds how long a terminal Operation is kept
+                  before the controller deletes it. Unset uses the cluster default
+                  (--default-operation-ttl-seconds); explicit 0 disables TTL for this
+                  Operation.
+                format: int32
+                type: integer
             required:
             - target
             - template
@@ -114,6 +121,12 @@ spec:
           status:
             description: OperationStatus is the status of Operation.
             properties:
+              attempts:
+                description: |-
+                  Attempts is how many times this Operation's workflow has been
+                  (re)started, including the original run (starts at 1).
+                format: int64
+                type: integer
               completionTime:
                 description: CompletionTime is when the Operation reached a terminal
                   phase.
@@ -152,8 +165,8 @@ spec:
                       scope:
                         default: Component
                         description: |-
-                          Scope is the kind of target this template attaches to. The POC only
-                          supports "Component".
+                          Scope is the kind of target this template attaches to. Only
+                          "Component" is supported so far.
                         enum:
                         - Component
                         type: string
@@ -323,18 +336,18 @@ spec:
               workflows:
                 description: |-
                   Workflows holds one entry per cluster the Operation's workflow ran
-                  against. The POC only ever resolves a single cluster.
+                  against. Only a single cluster is resolved so far.
                 items:
                   description: |-
-                    OperationWorkflowStatus is the workflow status for one cluster. The POC
-                    only ever populates a single entry, but keeps the shape of the full
-                    implementation's per-cluster dispatch (status.workflows[]) so a later
+                    OperationWorkflowStatus is the workflow status for one cluster. Only a
+                    single entry is populated so far, but the shape already matches
+                    multi-cluster dispatch (status.workflows[], KEP 2.15) so a later
                     multi-cluster Operation doesn't need a status-shape migration.
                   properties:
                     cluster:
                       description: |-
                         Cluster is the resolved cluster this workflow ran against. Always
-                        populated, even though the POC only ever resolves one.
+                        populated, even though only one is ever resolved so far.
                       type: string
                     conditions:
                       description: Conditions of the resource.
@@ -442,6 +455,51 @@ spec:
                       description: WorkflowRunPhase is a label for the condition of
                         a WorkflowRun at the current time
                       type: string
+                    stepAttempts:
+                      additionalProperties:
+                        items:
+                          description: |-
+                            OperationStepAttempt records one execution of a single workflow step. The
+                            embedded WorkflowRunStatus.Steps (from github.com/kubevela/workflow) only
+                            ever holds the latest attempt; this is where prior attempts that a
+                            restart's snapshot-then-reset would otherwise discard get preserved.
+                          properties:
+                            attemptNumber:
+                              description: AttemptNumber is the 1-based ordinal of
+                                this attempt for the step.
+                              format: int64
+                              type: integer
+                            message:
+                              description: Message carries the step's message at the
+                                time it was superseded.
+                              type: string
+                            phase:
+                              description: Phase is the step's WorkflowStepPhase at
+                                the time it was superseded.
+                              type: string
+                            reason:
+                              description: Reason carries the step's reason at the
+                                time it was superseded.
+                              type: string
+                            startTime:
+                              description: StartTime is when this attempt of the step
+                                first executed.
+                              format: date-time
+                              type: string
+                            triggeredBy:
+                              description: |-
+                                TriggeredBy names how this attempt started, e.g.
+                                "vela operation restart --step backup". Empty for the original run.
+                              type: string
+                          required:
+                          - attemptNumber
+                          type: object
+                        type: array
+                      description: |-
+                        StepAttempts is prior-attempt history per step name. Populated only on
+                        restart, immediately before the corresponding entries in the embedded
+                        Steps are reset.
+                      type: object
                     steps:
                       items:
                         description: WorkflowStepStatus record the status of a workflow

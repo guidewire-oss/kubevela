@@ -114,37 +114,37 @@ freely restarted; the operator is trusted to know what they're doing.
 ## Tasks
 
 **API — `apis/core.oam.dev/v2alpha1/operation_types.go`**
-- [ ] `OperationPhase`: add `Suspended`, `Cancelled`
-- [ ] `OperationStatus`: add `Attempts int64`
-- [ ] new `OperationStepAttempt` type; `OperationWorkflowStatus.StepAttempts map[string][]OperationStepAttempt`
-- [ ] `IsTerminal()`: include `Cancelled`
-- [ ] `OperationSpec`: optional `TTLSecondsAfterFinished *int32` (per-Operation override, same shape/name as the Job field template authors already use)
-- [ ] regenerate deepcopy + CRD YAML
+- [x] `OperationPhase`: add `Suspended`, `Cancelled`
+- [x] `OperationStatus`: add `Attempts int64`
+- [x] new `OperationStepAttempt` type; `OperationWorkflowStatus.StepAttempts map[string][]OperationStepAttempt`
+- [x] `IsTerminal()`: include `Cancelled`
+- [x] `OperationSpec`: optional `TTLSecondsAfterFinished *int32` (per-Operation override, same shape/name as the Job field template authors already use)
+- [x] regenerate deepcopy + CRD YAML
 
 **Controller — `pkg/controller/core.oam.dev/v2alpha1/operation/`**
-- [ ] `OperationWorkflowOperator`/`OperationWorkflowStepOperator` (new file), backed by `wfUtils.OperateSteps` + `r.Status().Update`
-- [ ] snapshot-before-reset helper (populates `StepAttempts`, bumps `Attempts`)
-- [ ] `Reconcile`: map `WorkflowStateSuspending` → `OperationPhaseSuspended`; slower requeue while suspended
-- [ ] TTL sweep: once `IsTerminal()` and `CompletionTime + ttl` has passed, delete the `Operation`; ttl = `spec.ttlSecondsAfterFinished` if set, else a new cluster-wide default flag (see Config below); requeue at the remaining TTL window instead of hot-looping
+- [x] `OperationWorkflowOperator`/`OperationWorkflowStepOperator`, backed by `wfUtils.OperateSteps` + `cli.Status().Update` -- lives in `pkg/workflow/operation/operation_v2alpha1.go` instead of this controller package (see RETRY_IMPLEMENTATION_PLAN.md's "Key implementation decision"): one implementation shared by CLI and controller, no import cycle
+- [x] snapshot-before-reset helper (populates `StepAttempts`, bumps `Attempts`) -- `snapshotAttempts`/`recordAttempt` in the same file
+- [x] `Reconcile`: map `WorkflowStateSuspending` → `OperationPhaseSuspended`; slower requeue while suspended
+- [x] TTL sweep: once `IsTerminal()` and `CompletionTime + ttl` has passed, delete the `Operation`; ttl = `spec.ttlSecondsAfterFinished` if set, else a new cluster-wide default flag (see Config below); requeue at the remaining TTL window instead of hot-looping
 
 **CLI — `references/cli/operation.go`**
-- [ ] `vela operation restart <name> [--step s] [--only] [--cluster c]` (no `--failed-only` yet — no children to re-run; no `--force` — there's nothing to force past) — calls the operator's `Restart` directly, same as `resume`/`suspend`
-- [ ] `vela operation resume <name>`
-- [ ] `vela operation suspend <name> [--step s]` — mirrors `vela workflow suspend`; the underlying operator method is already required by the `wfUtils.WorkflowOperator` interface regardless, so this is close to free once `restart`/`resume` exist
-- [ ] `restart`/`resume` reuse the existing poll-until-terminal loop + `printOperationStatus`; `suspend` polls until phase reaches `Suspended` instead (it's non-terminal, so `IsTerminal()` won't do)
-- [ ] `--only` warning when the target step is currently `Succeeded` — its output is about to change and, under `--only`, nothing downstream re-reads it (data-consistency advisory, not a safety gate)
-- [ ] `status` prints `Attempts` + per-step attempt history
+- [x] `vela operation restart <name> [--step s] [--only] [--cluster c]` (no `--failed-only` yet — no children to re-run; no `--force` — there's nothing to force past) — calls the operator's `Restart` directly, same as `resume`/`suspend`
+- [x] `vela operation resume <name>`
+- [x] `vela operation suspend <name> [--step s]` — mirrors `vela workflow suspend`; the underlying operator method is already required by the `wfUtils.WorkflowOperator` interface regardless, so this is close to free once `restart`/`resume` exist
+- [x] `restart`/`resume` reuse the existing poll-until-terminal loop + `printOperationStatus` (also refactored `run` onto the same shared helper, `pollOperationUntilTerminal`); `suspend` polls until phase reaches `Suspended` instead (it's non-terminal, so `IsTerminal()` won't do) via `pollOperationUntilSuspended`
+- [x] `--only` warning when the target step is currently `Succeeded` — its output is about to change and, under `--only`, nothing downstream re-reads it (data-consistency advisory, not a safety gate)
+- [x] `status` prints `Attempts` + per-step attempt history
 
 **Config — `cmd/core/app` flags / `core.oam.dev` controller Args**
-- [ ] new `--default-operation-ttl-seconds` flag (mirrors the naming precedent of `--application-revision-limit` and the permissions story's `--default-operation-service-account`), threaded into `core.Args` and read by the TTL sweep above. `0`/unset = no default TTL (today's behavior, so this ships opt-in)
+- [x] new `--default-operation-ttl-seconds` flag (mirrors the naming precedent of `--application-revision-limit` and the permissions story's `--default-operation-service-account`), threaded into `core.Args` and read by the TTL sweep above. `0`/unset = no default TTL (today's behavior, so this ships opt-in)
 
 **Tests**
-- [ ] unit: snapshot-then-reset, suspended-phase mapping, `Suspend`/`Resume` phase-transition correctness (whole-workflow and `--step`-scoped), restarting a step regardless of its current phase, and the `suspend` CLI command polling on phase `== Suspended` rather than `IsTerminal()`
-- [ ] e2e: restart a failed step (attempts grows, prior failure retained), suspend/resume round-trip, terminal `Operation` deleted after its TTL elapses and NOT deleted while still restartable within the window
+- [x] unit: snapshot-then-reset, suspended-phase mapping, `Suspend`/`Resume` phase-transition correctness (whole-workflow and `--step`-scoped), restarting a step regardless of its current phase, and the `suspend` CLI command polling on phase `== Suspended` rather than `IsTerminal()` — `pkg/workflow/operation/operation_v2alpha1_test.go`, `pkg/controller/core.oam.dev/v2alpha1/operation/ttl_test.go`, `references/cli/operation_test.go`. All pass (`CGO_ENABLED=0 go test ./pkg/workflow/operation/... ./pkg/controller/core.oam.dev/v2alpha1/operation/... ./references/cli/...` — `CGO_ENABLED=0` works around this sandbox's missing linker, not a code requirement). The suspend-CLI test only covers the bounded happy paths (already-`Suspended`, raced-to-terminal) -- see the e2e note below for why the "does it truly wait, not just check IsTerminal()" property needs a live controller, not a fake client.
+- [ ] **e2e: not run.** `test/e2e-test/operation_test.go` needs a live cluster with this branch's image (`ginkgo -v --focus "Operation" ./test/e2e-test/...` per `POC.md`) -- unavailable in this sandbox. New fixtures this would need (a step that fails exactly once, a two-step template with an `inputs`/`outputs` dependency, a `suspend`-type step) weren't added either: writing them without any way to run them risks shipping fixture bugs that look done but aren't. The four scenarios from the sequencing plan below are still open: restart a failed step (attempts grows, prior failure retained), suspend/resume round-trip, `--step --only` re-reading a prior step's output correctly, and TTL deletion timing.
 
 **Docs**
-- [ ] check off "Re-execution" in `POC.md`
-- [ ] document the new `--default-operation-ttl-seconds` flag alongside the KEP's other cluster-wide settings (`AuthenticateOperation`, `OperationsRunAsInvoker`)
+- [x] check off "Re-execution" in `POC.md`
+- [x] document the new `--default-operation-ttl-seconds` flag -- no existing doc section covers `AuthenticateOperation`/`OperationsRunAsInvoker` (those are KEP-text-only, not yet implemented in this codebase), so documented via the flag's own `--help` text (`cmd/core/app/config/controller.go`) and this plan instead
 
 ## Open questions
 
