@@ -31,14 +31,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	velatypes "github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/addon"
+	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 )
 
 // gitRegistry builds a git-sourced registry entry for the tests.
-func gitRegistry(name string) addon.Registry {
-	return addon.Registry{
+func gitRegistry(name string) pkgaddon.Registry {
+	return pkgaddon.Registry{
 		Name: name,
-		Git: &addon.GitAddonSource{
+		Git: &pkgaddon.GitAddonSource{
 			URL:  "https://github.com/org/" + name,
 			Path: DefaultGitPath,
 		},
@@ -49,10 +49,10 @@ func gitRegistry(name string) addon.Registry {
 // entry, but not one modules can use. The module ConfigMap shares its format
 // with the addon one, so this can show up hand-edited or written by
 // `vela addon registry` if pointed at the module ConfigMap.
-func helmRegistry(name string) addon.Registry {
-	return addon.Registry{
+func helmRegistry(name string) pkgaddon.Registry {
+	return pkgaddon.Registry{
 		Name: name,
-		Helm: &addon.HelmSource{URL: "https://charts.example.com/" + name},
+		Helm: &pkgaddon.HelmSource{URL: "https://charts.example.com/" + name},
 	}
 }
 
@@ -61,11 +61,11 @@ func helmRegistry(name string) addon.Registry {
 // only ListRegistries keeps this to the one method the read-failure test
 // needs, without fabricating a fake client that fails in some specific way.
 type failingListStore struct {
-	addon.RegistryDataStore
+	pkgaddon.RegistryDataStore
 	err error
 }
 
-func (f failingListStore) ListRegistries(context.Context) ([]addon.Registry, error) {
+func (f failingListStore) ListRegistries(context.Context) ([]pkgaddon.Registry, error) {
 	return nil, f.err
 }
 
@@ -73,14 +73,14 @@ func (f failingListStore) ListRegistries(context.Context) ([]addon.Registry, err
 // registry ConfigMap populated with the given entries. With no entries, the
 // ConfigMap is absent entirely, which is what a cluster looks like before the
 // chart is installed.
-func moduleStoreWith(t *testing.T, registries ...addon.Registry) addon.RegistryDataStore {
+func moduleStoreWith(t *testing.T, registries ...pkgaddon.Registry) pkgaddon.RegistryDataStore {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 
 	builder := fake.NewClientBuilder().WithScheme(scheme)
 	if len(registries) > 0 {
-		byName := map[string]addon.Registry{}
+		byName := map[string]pkgaddon.Registry{}
 		for _, reg := range registries {
 			byName[reg.Name] = reg
 		}

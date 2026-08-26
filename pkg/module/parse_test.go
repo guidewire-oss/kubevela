@@ -41,6 +41,19 @@ func writeFile(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
+// findByKind returns the first object of kind in objs, or nil if none match.
+// Auxiliary objects carry no name convention (that is the point of the
+// generalized auxiliary/ read), so tests locate the object they care about by
+// its "kind" field instead of assuming it is the only or the first entry.
+func findByKind(objs []map[string]interface{}, kind string) map[string]interface{} {
+	for _, obj := range objs {
+		if k, _ := obj["kind"].(string); k == kind {
+			return obj
+		}
+	}
+	return nil
+}
+
 func TestParseModule_WellFormedModule(t *testing.T) {
 	mod, err := ParseModuleDir("testdata/modules/s3")
 	require.NoError(t, err)
@@ -49,9 +62,10 @@ func TestParseModule_WellFormedModule(t *testing.T) {
 	assert.Equal(t, "s3", mod.Name)
 	assert.Equal(t, "1.0.0", mod.Version)
 
-	require.NotEmpty(t, mod.XRD)
-	assert.Equal(t, "CompositeResourceDefinition", mod.XRD["kind"])
-	xrdMetadata, ok := mod.XRD["metadata"].(map[string]interface{})
+	require.NotEmpty(t, mod.Auxiliary)
+	xrd := findByKind(mod.Auxiliary, "CompositeResourceDefinition")
+	require.NotNil(t, xrd, "expected a CompositeResourceDefinition among the module's auxiliary objects")
+	xrdMetadata, ok := xrd["metadata"].(map[string]interface{})
 	require.True(t, ok, "xrd metadata must be a map")
 	assert.Equal(t, "xs3.objectstore.atmos.guidewire.com", xrdMetadata["name"])
 
@@ -59,9 +73,10 @@ func TestParseModule_WellFormedModule(t *testing.T) {
 	line := mod.Lines["v1"]
 	assert.Equal(t, "v1", line.APIVersion)
 
-	require.NotEmpty(t, line.Composition)
-	assert.Equal(t, "Composition", line.Composition["kind"])
-	compMetadata, ok := line.Composition["metadata"].(map[string]interface{})
+	require.NotEmpty(t, line.Auxiliary)
+	comp := findByKind(line.Auxiliary, "Composition")
+	require.NotNil(t, comp, "expected a Composition among the line's auxiliary objects")
+	compMetadata, ok := comp["metadata"].(map[string]interface{})
 	require.True(t, ok, "composition metadata must be a map")
 	assert.Equal(t, "s3.objectstore.atmos.guidewire.com", compMetadata["name"])
 
@@ -188,10 +203,10 @@ func TestParseModule_OptionalAuxiliaryResources(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, mod)
 
-		assert.Nil(t, mod.XRD)
+		assert.Empty(t, mod.Auxiliary)
 		require.Contains(t, mod.Lines, "v1")
 		line := mod.Lines["v1"]
-		assert.NotEmpty(t, line.Composition)
+		assert.NotEmpty(t, line.Auxiliary)
 		require.Len(t, line.Definitions, 1)
 	})
 
@@ -203,10 +218,10 @@ func TestParseModule_OptionalAuxiliaryResources(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, mod)
 
-		assert.NotEmpty(t, mod.XRD)
+		assert.NotEmpty(t, mod.Auxiliary)
 		require.Contains(t, mod.Lines, "v1")
 		line := mod.Lines["v1"]
-		assert.Nil(t, line.Composition)
+		assert.Empty(t, line.Auxiliary)
 		require.Len(t, line.Definitions, 1)
 	})
 }
@@ -223,10 +238,115 @@ func TestParseModule_FS(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "s3", mod.Name)
 	require.Equal(t, "1.0.0", mod.Version)
-	require.NotNil(t, mod.XRD)
+	require.NotEmpty(t, mod.Auxiliary)
 	require.Contains(t, mod.Lines, "v1")
-	require.NotNil(t, mod.Lines["v1"].Composition)
+	require.NotEmpty(t, mod.Lines["v1"].Auxiliary)
 	require.Len(t, mod.Lines["v1"].Definitions, 1)
+}
+
+// TestParseModule_AuxiliaryReadsEveryFile is the core generalization test:
+// auxiliary/ is not read by fixed filename (xrd.yaml, composition.yaml).
+// Every file in it is read and installed, in filename order, regardless of
+// what it is named. This covers both a module shipping more than one
+// auxiliary object and a line doing the same.
+func TestParseModule_AuxiliaryReadsEveryFile(t *testing.T) {
+	fsys := fstest.MapFS{
+		"_module.cue": {Data: []byte("module: \"s3\"\nversion: \"1.0.0\"")},
+		// Neither file is named "xrd.yaml": both are still read.
+		"auxiliary/a-config.yaml": {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: s3-defaults\n")},
+		"auxiliary/b-xrd.yaml":    {Data: []byte("apiVersion: apiextensions.crossplane.io/v1\nkind: CompositeResourceDefinition\nmetadata:\n  name: xs3\n")},
+		"v1/_version.cue":         {Data: []byte("apiVersion: \"v1\"")},
+		// Neither file is named "composition.yaml".
+		"v1/auxiliary/extra.yaml":    {Data: []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: s3-v1-extra\n")},
+		"v1/auxiliary/the-comp.yaml": {Data: []byte("apiVersion: apiextensions.crossplane.io/v1\nkind: Composition\nmetadata:\n  name: s3\n")},
+		"v1/definitions/bucket.yaml": {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n")},
+	}
+
+	mod, err := ParseModule(fsys)
+	require.NoError(t, err)
+
+	require.Len(t, mod.Auxiliary, 2, "both module-level auxiliary files are read")
+	assert.NotNil(t, findByKind(mod.Auxiliary, "ConfigMap"))
+	assert.NotNil(t, findByKind(mod.Auxiliary, "CompositeResourceDefinition"))
+	// a-config.yaml sorts before b-xrd.yaml.
+	assert.Equal(t, "ConfigMap", mod.Auxiliary[0]["kind"])
+
+	line := mod.Lines["v1"]
+	require.Len(t, line.Auxiliary, 2, "both line-level auxiliary files are read")
+	assert.NotNil(t, findByKind(line.Auxiliary, "ConfigMap"))
+	assert.NotNil(t, findByKind(line.Auxiliary, "Composition"))
+}
+
+// TestParseModule_AuxiliaryCUEFile covers a .cue auxiliary file: it is a
+// single plain Kubernetes object at its root (apiVersion/kind/metadata
+// directly), not wrapped the way definitions/*.cue is.
+func TestParseModule_AuxiliaryCUEFile(t *testing.T) {
+	fsys := fstest.MapFS{
+		"_module.cue": {Data: []byte("module: \"s3\"\nversion: \"1.0.0\"")},
+		"auxiliary/xrd.cue": {Data: []byte(`
+apiVersion: "apiextensions.crossplane.io/v1"
+kind:       "CompositeResourceDefinition"
+metadata: name: "xs3"
+`)},
+		"v1/_version.cue":            {Data: []byte("apiVersion: \"v1\"")},
+		"v1/definitions/bucket.yaml": {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n")},
+	}
+
+	mod, err := ParseModule(fsys)
+	require.NoError(t, err)
+
+	require.Len(t, mod.Auxiliary, 1)
+	xrd := mod.Auxiliary[0]
+	assert.Equal(t, "CompositeResourceDefinition", xrd["kind"])
+	meta, ok := xrd["metadata"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "xs3", meta["name"])
+}
+
+// TestParseModule_AuxiliaryMultiDocumentYAML covers a single auxiliary file
+// holding several "---"-separated documents: each becomes its own object,
+// the same way a plain Kubernetes manifest can bundle several resources.
+func TestParseModule_AuxiliaryMultiDocumentYAML(t *testing.T) {
+	fsys := fstest.MapFS{
+		"_module.cue": {Data: []byte("module: \"s3\"\nversion: \"1.0.0\"")},
+		"auxiliary/bundle.yaml": {Data: []byte(`
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xs3
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: s3-defaults
+`)},
+		"v1/_version.cue":            {Data: []byte("apiVersion: \"v1\"")},
+		"v1/definitions/bucket.yaml": {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n")},
+	}
+
+	mod, err := ParseModule(fsys)
+	require.NoError(t, err)
+
+	require.Len(t, mod.Auxiliary, 2, "one file with two documents yields two objects")
+	assert.NotNil(t, findByKind(mod.Auxiliary, "CompositeResourceDefinition"))
+	assert.NotNil(t, findByKind(mod.Auxiliary, "ConfigMap"))
+}
+
+// TestParseModule_AuxiliaryUnsupportedExtension is the failure-mode guard
+// this whole generalization exists for: an auxiliary file the parser cannot
+// decode is a loud error naming the file, never a silent skip.
+func TestParseModule_AuxiliaryUnsupportedExtension(t *testing.T) {
+	fsys := fstest.MapFS{
+		"_module.cue":                {Data: []byte("module: \"s3\"\nversion: \"1.0.0\"")},
+		"auxiliary/xrd.txt":          {Data: []byte("not yaml or cue\n")},
+		"v1/_version.cue":            {Data: []byte("apiVersion: \"v1\"")},
+		"v1/definitions/bucket.yaml": {Data: []byte("apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n")},
+	}
+
+	mod, err := ParseModule(fsys)
+	require.Error(t, err)
+	require.Nil(t, mod)
+	assert.Contains(t, err.Error(), "xrd.txt")
 }
 
 func TestParseModule_EnabledDefaultsTrue(t *testing.T) {

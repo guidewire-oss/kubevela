@@ -37,26 +37,39 @@ func definition(name string) map[string]interface{} {
 	}
 }
 
-// fixtureModule is an s3 module with a module-wide XRD and one enabled line
-// carrying a Composition and one definition.
+// xrdObject builds a minimal CompositeResourceDefinition object with the given
+// name. This is the one kind the renderer waits on Established for.
+func xrdObject(name string) map[string]interface{} {
+	return map[string]interface{}{
+		"apiVersion": "apiextensions.crossplane.io/v1",
+		"kind":       "CompositeResourceDefinition",
+		"metadata":   map[string]interface{}{"name": name},
+	}
+}
+
+// compositionObject builds a minimal Composition object with the given name.
+// It is not a CompositeResourceDefinition, so it lands in the readiness
+// "rest" group: install and healthy once applied.
+func compositionObject(name string) map[string]interface{} {
+	return map[string]interface{}{
+		"apiVersion": "apiextensions.crossplane.io/v1",
+		"kind":       "Composition",
+		"metadata":   map[string]interface{}{"name": name},
+	}
+}
+
+// fixtureModule is an s3 module with a module-wide auxiliary XRD and one
+// enabled line carrying an auxiliary Composition and one definition.
 func fixtureModule() *module.Module {
 	return &module.Module{
-		Name:    "s3",
-		Version: "1.0.0",
-		XRD: map[string]interface{}{
-			"apiVersion": "apiextensions.crossplane.io/v1",
-			"kind":       "CompositeResourceDefinition",
-			"metadata":   map[string]interface{}{"name": "xbuckets.aws.platform.io"},
-		},
+		Name:      "s3",
+		Version:   "1.0.0",
+		Auxiliary: []map[string]interface{}{xrdObject("xbuckets.aws.platform.io")},
 		Lines: map[string]module.Line{
 			"v1": {
-				APIVersion: "v1",
-				Enabled:    true,
-				Composition: map[string]interface{}{
-					"apiVersion": "apiextensions.crossplane.io/v1",
-					"kind":       "Composition",
-					"metadata":   map[string]interface{}{"name": "xbuckets-v1"},
-				},
+				APIVersion:  "v1",
+				Enabled:     true,
+				Auxiliary:   []map[string]interface{}{compositionObject("xbuckets-v1")},
 				Definitions: []map[string]interface{}{definition("bucket")},
 			},
 		},
@@ -91,8 +104,8 @@ func TestRenderApplication_OwnedApplicationShape(t *testing.T) {
 
 	comps := components(t, app)
 	require.Len(t, comps, 3)
-	require.Equal(t, "s3-xrd", comps[0]["name"])
-	require.Equal(t, "s3-v1-comp", comps[1]["name"])
+	require.Equal(t, "s3-aux-established", comps[0]["name"])
+	require.Equal(t, "s3-v1-aux", comps[1]["name"])
 	require.Equal(t, "s3-v1-defs", comps[2]["name"])
 }
 
@@ -116,28 +129,21 @@ func TestRenderApplication_HonorsChosenNamespace(t *testing.T) {
 	require.Equal(t, "team-a", meta["namespace"])
 }
 
-// twoLineModule ships v1 and v2, both with a Composition and a definition.
+// twoLineModule ships v1 and v2, both with an auxiliary Composition and a
+// definition.
 func twoLineModule(v1Enabled, v2Enabled bool) *module.Module {
 	line := func(v string, enabled bool) module.Line {
 		return module.Line{
-			APIVersion: v,
-			Enabled:    enabled,
-			Composition: map[string]interface{}{
-				"apiVersion": "apiextensions.crossplane.io/v1",
-				"kind":       "Composition",
-				"metadata":   map[string]interface{}{"name": "xbuckets-" + v},
-			},
+			APIVersion:  v,
+			Enabled:     enabled,
+			Auxiliary:   []map[string]interface{}{compositionObject("xbuckets-" + v)},
 			Definitions: []map[string]interface{}{definition("bucket")},
 		}
 	}
 	return &module.Module{
-		Name:    "s3",
-		Version: "1.0.0",
-		XRD: map[string]interface{}{
-			"apiVersion": "apiextensions.crossplane.io/v1",
-			"kind":       "CompositeResourceDefinition",
-			"metadata":   map[string]interface{}{"name": "xbuckets.aws.platform.io"},
-		},
+		Name:      "s3",
+		Version:   "1.0.0",
+		Auxiliary: []map[string]interface{}{xrdObject("xbuckets.aws.platform.io")},
 		Lines: map[string]module.Line{
 			"v1": line("v1", v1Enabled),
 			"v2": line("v2", v2Enabled),
@@ -158,9 +164,9 @@ func TestRenderApplication_BothEnabledLinesInstall(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, []string{
-		"s3-xrd",
-		"s3-v1-comp", "s3-v1-defs",
-		"s3-v2-comp", "s3-v2-defs",
+		"s3-aux-established",
+		"s3-v1-aux", "s3-v1-defs",
+		"s3-v2-aux", "s3-v2-defs",
 	}, names(components(t, app)))
 }
 
@@ -169,7 +175,7 @@ func TestRenderApplication_DisabledLineIsSkipped(t *testing.T) {
 	require.NoError(t, err)
 
 	got := names(components(t, app))
-	require.Equal(t, []string{"s3-xrd", "s3-v2-comp", "s3-v2-defs"}, got)
+	require.Equal(t, []string{"s3-aux-established", "s3-v2-aux", "s3-v2-defs"}, got)
 	require.NotContains(t, got, "s3-v1-defs")
 }
 
@@ -182,48 +188,49 @@ func TestRenderApplication_LinesAreSiblingsNotAChain(t *testing.T) {
 		byName[c["name"].(string)] = c
 	}
 
-	// Both lines hang off the XRD; v2 must not wait on v1.
-	require.Equal(t, []interface{}{"s3-xrd"}, byName["s3-v1-comp"]["dependsOn"])
-	require.Equal(t, []interface{}{"s3-xrd"}, byName["s3-v2-comp"]["dependsOn"])
-	require.Equal(t, []interface{}{"s3-v1-comp"}, byName["s3-v1-defs"]["dependsOn"])
-	require.Equal(t, []interface{}{"s3-v2-comp"}, byName["s3-v2-defs"]["dependsOn"])
+	// Both lines hang off the module-level established tier; v2 must not wait on v1.
+	require.Equal(t, []interface{}{"s3-aux-established"}, byName["s3-v1-aux"]["dependsOn"])
+	require.Equal(t, []interface{}{"s3-aux-established"}, byName["s3-v2-aux"]["dependsOn"])
+	require.Equal(t, []interface{}{"s3-v1-aux"}, byName["s3-v1-defs"]["dependsOn"])
+	require.Equal(t, []interface{}{"s3-v2-aux"}, byName["s3-v2-defs"]["dependsOn"])
 	// The first tier gates on nothing.
-	require.NotContains(t, byName["s3-xrd"], "dependsOn")
+	require.NotContains(t, byName["s3-aux-established"], "dependsOn")
 }
 
-func TestRenderApplication_NoXRDOmitsTheXRDTier(t *testing.T) {
+func TestRenderApplication_NoEstablishedAuxiliaryOmitsThatTier(t *testing.T) {
 	mod := fixtureModule()
-	mod.XRD = nil
+	mod.Auxiliary = nil
 
 	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	comps := components(t, app)
-	require.Equal(t, []string{"s3-v1-comp", "s3-v1-defs"}, names(comps))
-	// With no XRD above it, the Composition tier gates on nothing.
+	require.Equal(t, []string{"s3-v1-aux", "s3-v1-defs"}, names(comps))
+	// With no module-level established tier above it, the line's rest tier
+	// gates on nothing.
 	require.NotContains(t, comps[0], "dependsOn")
 }
 
-func TestRenderApplication_NoCompositionOmitsTheCompositionTier(t *testing.T) {
+func TestRenderApplication_NoLineAuxiliaryOmitsThatTier(t *testing.T) {
 	mod := fixtureModule()
 	line := mod.Lines["v1"]
-	line.Composition = nil
+	line.Auxiliary = nil
 	mod.Lines["v1"] = line
 
 	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
 	comps := components(t, app)
-	require.Equal(t, []string{"s3-xrd", "s3-v1-defs"}, names(comps))
-	// The definitions tier falls back to gating on the XRD.
-	require.Equal(t, []interface{}{"s3-xrd"}, comps[1]["dependsOn"])
+	require.Equal(t, []string{"s3-aux-established", "s3-v1-defs"}, names(comps))
+	// The definitions tier falls back to gating on the module-level established tier.
+	require.Equal(t, []interface{}{"s3-aux-established"}, comps[1]["dependsOn"])
 }
 
 func TestRenderApplication_KROStyleModuleHasNoGates(t *testing.T) {
 	mod := fixtureModule()
-	mod.XRD = nil
+	mod.Auxiliary = nil
 	line := mod.Lines["v1"]
-	line.Composition = nil
+	line.Auxiliary = nil
 	mod.Lines["v1"] = line
 
 	app, err := RenderApplication(mod, "")
@@ -234,11 +241,11 @@ func TestRenderApplication_KROStyleModuleHasNoGates(t *testing.T) {
 	require.NotContains(t, comps[0], "dependsOn")
 }
 
-func TestRenderApplication_AllLinesDisabledYieldsOnlyTheXRDTier(t *testing.T) {
+func TestRenderApplication_AllLinesDisabledYieldsOnlyTheEstablishedTier(t *testing.T) {
 	app, err := RenderApplication(twoLineModule(false, false), "")
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"s3-xrd"}, names(components(t, app)))
+	require.Equal(t, []string{"s3-aux-established"}, names(components(t, app)))
 }
 
 // TestRenderApplication_TierNamesComeFromTheMapKey documents current behaviour,
@@ -257,7 +264,7 @@ func TestRenderApplication_TierNamesComeFromTheMapKey(t *testing.T) {
 	app, err := RenderApplication(mod, "")
 	require.NoError(t, err)
 
-	require.Equal(t, []string{"s3-xrd", "s3-v9beta1-comp", "s3-v9beta1-defs"}, names(components(t, app)))
+	require.Equal(t, []string{"s3-aux-established", "s3-v9beta1-aux", "s3-v9beta1-defs"}, names(components(t, app)))
 }
 
 func TestRenderApplication_TierCarriesReadyCondition(t *testing.T) {
@@ -269,22 +276,57 @@ func TestRenderApplication_TierCarriesReadyCondition(t *testing.T) {
 		byName[c["name"].(string)] = c
 	}
 
-	xrd := byName["s3-xrd"]
-	require.Equal(t, "k8s-objects", xrd["type"])
-	xrdProps := xrd["properties"].(map[string]interface{})
-	require.Equal(t, "Established", xrdProps["readyConditionType"])
-	require.Len(t, xrdProps["objects"], 1)
+	established := byName["s3-aux-established"]
+	require.Equal(t, "k8s-objects", established["type"])
+	establishedProps := established["properties"].(map[string]interface{})
+	require.Equal(t, "Established", establishedProps["readyConditionType"])
+	require.Len(t, establishedProps["objects"], 1)
 
 	// Crossplane's Composition has no status.conditions, so this hop cannot
 	// gate on a real condition; empty readyConditionType means healthy once applied.
-	comp := byName["s3-v1-comp"]
-	require.Equal(t, "k8s-objects", comp["type"])
-	require.Equal(t, "", comp["properties"].(map[string]interface{})["readyConditionType"])
+	rest := byName["s3-v1-aux"]
+	require.Equal(t, "k8s-objects", rest["type"])
+	require.Equal(t, "", rest["properties"].(map[string]interface{})["readyConditionType"])
 
 	// The definitions tier sets no readyConditionType: nothing gates on it.
 	require.Equal(t, "k8s-objects", byName["s3-v1-defs"]["type"])
 	_, hasReady := byName["s3-v1-defs"]["properties"].(map[string]interface{})["readyConditionType"]
 	require.False(t, hasReady)
+}
+
+// TestRenderApplication_MixedReadinessInOneScope covers a scope (here the
+// module level) that ships both a CompositeResourceDefinition and a plain
+// object in the same auxiliary/ folder: the CRD still gates on Established,
+// the plain object installs alongside it in the "rest" tier, and both land
+// ahead of the lines beneath them.
+func TestRenderApplication_MixedReadinessInOneScope(t *testing.T) {
+	configMap := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   map[string]interface{}{"name": "s3-defaults"},
+	}
+	mod := fixtureModule()
+	mod.Auxiliary = []map[string]interface{}{xrdObject("xbuckets.aws.platform.io"), configMap}
+
+	app, err := RenderApplication(mod, "")
+	require.NoError(t, err)
+
+	comps := components(t, app)
+	require.Equal(t, []string{"s3-aux-established", "s3-aux", "s3-v1-aux", "s3-v1-defs"}, names(comps))
+
+	byName := map[string]map[string]interface{}{}
+	for _, c := range comps {
+		byName[c["name"].(string)] = c
+	}
+	establishedProps := byName["s3-aux-established"]["properties"].(map[string]interface{})
+	require.Len(t, establishedProps["objects"], 1, "only the CRD gates on Established")
+
+	restProps := byName["s3-aux"]["properties"].(map[string]interface{})
+	require.Len(t, restProps["objects"], 1, "the ConfigMap installs in the rest tier")
+	require.Equal(t, []interface{}{"s3-aux-established"}, byName["s3-aux"]["dependsOn"])
+	// The line hangs off the module's rest tier, since that is the last
+	// module-level tier once both are present.
+	require.Equal(t, []interface{}{"s3-aux"}, byName["s3-v1-aux"]["dependsOn"])
 }
 
 func TestRenderApplication_StampsDefinitionIdentity(t *testing.T) {
