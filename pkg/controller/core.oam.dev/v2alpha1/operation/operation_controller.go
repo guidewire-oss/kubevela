@@ -148,6 +148,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{{
 		Cluster:           localCluster,
 		WorkflowRunStatus: instance.Status,
+		StepAttempts:      carryForwardStepAttempts(op),
 	}}
 
 	switch phase {

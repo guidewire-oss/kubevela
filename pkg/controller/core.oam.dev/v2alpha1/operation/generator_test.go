@@ -147,3 +147,37 @@ func TestBuildWorkflowInstanceCarriesForwardPreviousStatus(t *testing.T) {
 	require.Len(t, instance.ChildOwnerReferences, 1)
 	assert.Equal(t, v2alpha1.OperationKind, instance.ChildOwnerReferences[0].Kind)
 }
+
+// TestCarryForwardStepAttempts is a regression test: Reconcile's
+// `op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{{...}}` literal
+// (after executing the workflow) used to silently drop StepAttempts every
+// time, since that literal only ever set Cluster/WorkflowRunStatus --
+// confirmed live: a --step restart's StepAttempts never survived the very
+// next reconcile.
+func TestCarryForwardStepAttempts(t *testing.T) {
+	t.Run("no workflow yet", func(t *testing.T) {
+		op := &v2alpha1.Operation{}
+		assert.Nil(t, carryForwardStepAttempts(op))
+	})
+
+	t.Run("carries forward existing StepAttempts", func(t *testing.T) {
+		attempts := map[string][]v2alpha1.OperationStepAttempt{
+			"step-three": {{AttemptNumber: 1, Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
+		}
+		op := &v2alpha1.Operation{
+			Status: v2alpha1.OperationStatus{
+				Workflows: []v2alpha1.OperationWorkflowStatus{{StepAttempts: attempts}},
+			},
+		}
+		assert.Equal(t, attempts, carryForwardStepAttempts(op))
+	})
+
+	t.Run("nil when none recorded yet", func(t *testing.T) {
+		op := &v2alpha1.Operation{
+			Status: v2alpha1.OperationStatus{
+				Workflows: []v2alpha1.OperationWorkflowStatus{{}},
+			},
+		}
+		assert.Nil(t, carryForwardStepAttempts(op))
+	})
+}

@@ -29,6 +29,7 @@ import (
 	"cuelang.org/go/cue/format"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	oamv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
@@ -302,6 +303,20 @@ func (wo operationWorkflowOperator) restartFromStep(ctx context.Context, ws *v2a
 	if op.Status.Template == nil {
 		return fmt.Errorf("operation %q has not resolved a template yet", op.Name)
 	}
+
+	// Mirrors RestartFromStep exactly: a step-scoped restart still has to
+	// clear the whole-run flags a prior terminal run left behind, not just
+	// the target step's own status. Missing this left Terminated (or
+	// Suspend/Finished) stuck at true from the original run, so the engine
+	// reported the workflow terminated/failed again on the very next
+	// reconcile regardless of how the restarted step itself turned out.
+	ws.Terminated = false
+	ws.Suspend = false
+	ws.Finished = false
+	if !ws.EndTime.IsZero() {
+		ws.EndTime = metav1.Time{}
+	}
+
 	steps := op.Status.Template.Workflow.Steps
 
 	stepStatus, affected, dependency, err := cleanOperationStatusFromStep(steps, ws.Steps, ws.Mode, stepName)

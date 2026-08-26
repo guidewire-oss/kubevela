@@ -219,3 +219,17 @@ func buildWorkflowInstance(op *v2alpha1.Operation) *wfTypes.WorkflowInstance {
 	}
 	return instance
 }
+
+// carryForwardStepAttempts returns op's currently-persisted StepAttempts, so
+// Reconcile can thread it through its rebuild of op.Status.Workflows.
+// StepAttempts is populated by a CLI-triggered restart
+// (pkg/workflow/operation), not by Reconcile itself -- without this, the
+// literal `op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{{...}}`
+// Reconcile does after every execution would silently wipe it back to nil,
+// since that literal only sets Cluster/WorkflowRunStatus.
+func carryForwardStepAttempts(op *v2alpha1.Operation) map[string][]v2alpha1.OperationStepAttempt {
+	if len(op.Status.Workflows) == 0 {
+		return nil
+	}
+	return op.Status.Workflows[0].StepAttempts
+}

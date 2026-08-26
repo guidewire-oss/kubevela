@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -409,6 +410,15 @@ func TestOperationRestartFromStep(t *testing.T) {
 				Workflows: []v2alpha1.OperationWorkflowStatus{{
 					WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
 						ContextBackend: &corev1.ObjectReference{Name: name + "-context", Namespace: "default"},
+						// A real terminal run leaves these set -- a --step
+						// restart has to clear them itself (see the
+						// "resets whole-run flags" subtest below), the same
+						// way the whole-workflow path's full wipe does
+						// implicitly.
+						Terminated: true,
+						Finished:   true,
+						Suspend:    true,
+						EndTime:    metav1.Time{Time: time.Now()},
 						Steps: []workflowv1alpha1.WorkflowStepStatus{
 							{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
 							{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: phase}},
@@ -466,6 +476,18 @@ func TestOperationRestartFromStep(t *testing.T) {
 
 			r.EqualValues(1, got.Status.Attempts)
 			r.Equal(v2alpha1.OperationPhaseRunning, got.Status.Phase)
+
+			// Regression: a --step restart must clear the whole-run
+			// Terminated/Suspend/Finished/EndTime flags left by the prior
+			// terminal run, exactly like RestartFromStep does upstream --
+			// otherwise the engine reports the run terminated/failed again
+			// on the very next reconcile no matter how the restarted step
+			// itself turns out.
+			ws := got.Status.Workflows[0]
+			r.False(ws.Terminated, "Terminated must be cleared by a --step restart")
+			r.False(ws.Suspend, "Suspend must be cleared by a --step restart")
+			r.False(ws.Finished, "Finished must be cleared by a --step restart")
+			r.True(ws.EndTime.IsZero(), "EndTime must be cleared by a --step restart")
 		})
 	}
 

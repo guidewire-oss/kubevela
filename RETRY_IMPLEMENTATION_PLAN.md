@@ -157,6 +157,45 @@ while implementing:
   section above) omitted this, but upstream's `RestartWorkflow` does it for
   exactly this case, and skipping it would leak the ConfigMap object once
   the wipe drops its only reference.
+- **Bug found via live-cluster testing, fixed**: `restartFromStep` never
+  reset `ws.Terminated`/`ws.Suspend`/`ws.Finished`/`ws.EndTime` -- it only
+  touched `ws.Steps` and the context-backend ConfigMap. Upstream's
+  `RestartFromStep` explicitly clears all four before touching step status;
+  I mirrored the step/ConfigMap handling but dropped this part in
+  translation. Concretely: a terminal (failed) run leaves `Terminated:
+  true`; a `--step` restart that resets only the target step's status but
+  leaves `Terminated: true` in place causes the embedded engine to report
+  the *whole run* terminated/failed again on the very next reconcile,
+  regardless of whether the restarted step itself succeeds -- confirmed
+  against a live cluster: all three steps showed `phase: succeeded` in
+  `status.workflows[0].steps`, `status.attempts` correctly read `2`, yet
+  `status.phase` stayed `Failed` because `status.workflows[0].terminated`
+  was still `true` from the original run. Fixed by clearing all four at the
+  top of `restartFromStep`, mirroring `RestartFromStep` exactly. (The
+  whole-workflow `Restart(ctx)` path was never affected -- its full
+  `ws.WorkflowRunStatus = workflowv1alpha1.WorkflowRunStatus{}` wipe already
+  zeroes these implicitly.) Added a regression test
+  (`TestOperationRestartFromStep`, extended with `Terminated`/`Finished`/
+  `Suspend: true` and a non-zero `EndTime` in the fixture, plus assertions
+  that all four are cleared after restart) -- confirmed it fails without the
+  fix and passes with it.
+- **Second bug found via the same live-cluster session, in the controller
+  this time**: `pkg/controller/core.oam.dev/v2alpha1/operation/operation_controller.go`'s
+  `Reconcile`, after every execution, rebuilds `op.Status.Workflows` with a
+  struct literal that only sets `Cluster`/`WorkflowRunStatus`. This predates
+  the retry work -- harmless before `StepAttempts` existed, since there was
+  nothing to preserve. Once `StepAttempts` was added (this plan's API
+  stage), that literal silently dropped it on every reconcile that actually
+  executes the workflow. Confirmed live: a `--step` restart's operator
+  correctly wrote `StepAttempts`, but by the time the restarted step
+  finished and the Operation went terminal, it was gone -- the very next
+  reconcile after the restart's status write had already wiped it back to
+  nil. Fixed by extracting a `carryForwardStepAttempts(op)` helper
+  (`generator.go`, next to `buildWorkflowInstance`, the same carry-forward
+  pattern that function already uses for `WorkflowRunStatus`) and threading
+  it into the literal. Added `TestCarryForwardStepAttempts`
+  (`generator_test.go`) covering no-workflow, populated, and
+  empty-but-present cases.
 - `TriggeredBy` on `OperationStepAttempt` is left unset by every call site:
   `Restart(ctx)`/`Restart(ctx, step)` are fixed by the `wfUtils.WorkflowOperator`/
   `WorkflowStepOperator` interfaces (no room for a caller-supplied string),
