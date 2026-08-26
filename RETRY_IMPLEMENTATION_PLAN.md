@@ -5,6 +5,15 @@ This document is the execution plan: exact type changes, new files, function
 signatures, and sequencing, verified against the current code on
 `feat/kep-2.15-add-retry-logic` (== the PR #29 merge commit).
 
+**Idempotency gating was considered and explicitly rejected** (`RETRY_PLAN.md`
+design decision #5). An earlier draft of this plan had `Idempotent` on
+`WorkflowStepDefinitionSpec`, an `OperationSpec.Restart` trigger field, an
+admission webhook extending GWCP-108269's to enforce acknowledgment, a
+`--force` flag, and audit fields (`ForcedNonIdempotent`/`RequestedBy`) for
+all of it — plus a whole companion doc (`RETRY_EDGE_CASES.md`) of edge cases
+around forcing non-idempotent steps. All of that is removed below. Restart
+is unguarded: any step, whatever its nature, can be rerun on request.
+
 ## Key implementation decision: reuse `pkg/workflow/operation`, don't create a new package
 
 `references/cli/workflow.go` already gets its `Suspend`/`Resume`/`Restart`/
@@ -61,18 +70,6 @@ type OperationStepAttempt struct {
 	// TriggeredBy names how this attempt started, e.g.
 	// "vela operation restart --step backup". Empty for the original run.
 	TriggeredBy string `json:"triggeredBy,omitempty"`
-	// ForcedNonIdempotent is true when this attempt re-ran a step that was
-	// not idempotent, i.e. it required an explicit acknowledgment in
-	// spec.Restart.AcknowledgedNonIdempotent to be admitted at all. False
-	// for the original run and for any restart of an idempotent step.
-	// +optional
-	ForcedNonIdempotent bool `json:"forcedNonIdempotent,omitempty"`
-	// RequestedBy is the identity that requested this attempt, taken from
-	// the admission request's UserInfo -- not client-supplied, so it can't
-	// be spoofed the way a free-text TriggeredBy could be. Empty for the
-	// original run.
-	// +optional
-	RequestedBy string `json:"requestedBy,omitempty"`
 }
 ```
 
@@ -106,35 +103,6 @@ type OperationWorkflowStatus struct {
 	// Operation.
 	// +optional
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
-
-	// Restart requests a re-execution of this Operation's workflow. Setting
-	// it is the ONLY way to trigger a restart -- there is deliberately no
-	// client-side path that mutates .status directly (see "Restart moves
-	// server-side" below). The controller clears this field once processed,
-	// so its mere presence means "a restart is pending admission/execution."
-	// +optional
-	Restart *OperationRestart `json:"restart,omitempty"`
-```
-
-```go
-// OperationRestart is a one-shot restart request. Cleared by the controller
-// once processed -- it is a trigger, not persistent state.
-type OperationRestart struct {
-	// Step restarts from this step onward. Empty means the whole workflow.
-	// +optional
-	Step string `json:"step,omitempty"`
-
-	// Only restarts Step alone; downstream steps keep their prior results.
-	// Only meaningful when Step is set.
-	// +optional
-	Only bool `json:"only,omitempty"`
-
-	// AcknowledgedNonIdempotent must name every non-idempotent step that
-	// this restart would re-run, or the admission webhook rejects it. This
-	// is the actual enforcement point -- see "Restart moves server-side".
-	// +optional
-	AcknowledgedNonIdempotent []string `json:"acknowledgedNonIdempotent,omitempty"`
-}
 ```
 
 `IsTerminal()` changes from a two-way to a three-way check:
@@ -149,26 +117,9 @@ func (o *Operation) IsTerminal() bool {
 }
 ```
 
-### `apis/core.oam.dev/v1beta1/workflow_step_definition.go`
-
-```go
-type WorkflowStepDefinitionSpec struct {
-	Reference common.DefinitionReference `json:"definitionRef,omitempty"`
-	Schematic *common.Schematic          `json:"schematic,omitempty"`
-	Version   string                     `json:"version,omitempty"`
-
-	// Idempotent declares whether re-executing this step is safe, i.e. has
-	// no effect beyond its first successful run. Consulted only by the
-	// Operation controller's restart gate (KEP-2.15) — the Application and
-	// WorkflowRun controllers do not read it. Unset is treated as false for
-	// an Operation-scoped restart.
-	// +optional
-	Idempotent *bool `json:"idempotent,omitempty"`
-}
-```
-This is a shared CRD (Application/WorkflowRun/Operation steps all use
-`WorkflowStepDefinition`) — additive and optional, but flag for review by
-whoever owns those controllers since it's not Operation-exclusive real estate.
+No changes needed to `apis/core.oam.dev/v1beta1/workflow_step_definition.go`
+— there is no `Idempotent` field, so `WorkflowStepDefinitionSpec` is
+untouched by this plan.
 
 ### Codegen
 ```
@@ -210,7 +161,9 @@ type operationWorkflowStepOperator struct {
 }
 ```
 
-Methods, and what each does against `op.Status.Workflows[0]`:
+Methods, and what each does against `op.Status.Workflows[0]`, all called
+directly by the CLI — there is no controller-side trigger handling anywhere
+in this plan, since there's no gate that would need one:
 
 - **`Suspend(ctx)` / `Suspend(ctx, step)`** — same `wfUtils.OperateSteps`
   transition to `WorkflowStepPhaseSuspending` the Application-side code
@@ -227,16 +180,10 @@ Methods, and what each does against `op.Status.Workflows[0]`:
 
 ### `Restart`: snapshot-then-reset
 
-**Called by the controller now, not the CLI.** The CLI's job ends at
-patching `spec.Restart` (see the CLI section below); once the webhook admits
-it, `Reconcile` is what actually invokes
-`operation.NewOperationWorkflowOperator(r.Client, io.Discard, op).Restart(ctx)`
-/ `.Restart(ctx, step)`. The method bodies below are unchanged by this shift
-— only the caller moved. This is also why `Suspend`/`Resume` deliberately
-stay CLI-invoked direct status patches while `Restart` alone goes through
-`spec.Restart` + admission: only `Restart` needs a safety gate, so only
-`Restart` needs the trigger indirection that makes a gate possible. Don't
-"fix" that asymmetry into uniformity later without re-deriving why it's there.
+**Called directly by the CLI**, exactly the way `Suspend`/`Resume` already
+are — `NewOperationRestartCommand` builds the operator and calls
+`.Restart(ctx)` / `.Restart(ctx, step)` itself, no intermediate trigger
+field, no admission step in between.
 
 ```go
 func (wo operationWorkflowOperator) Restart(ctx context.Context) error {
@@ -272,15 +219,12 @@ func (wo operationWorkflowOperator) restartFrom(ctx context.Context, step string
 		//      step's already-recorded output via `inputs: [{from: ...}]`.
 		// DELIBERATE DIVERGENCE from CleanStatusFromStep: upstream refuses
 		// to restart a step that isn't currently Failed ("can not restart
-		// from a non-failed step"). We don't carry that precondition —
-		// an operator should be able to force a re-run of a Succeeded or
-		// Skipped step too (e.g. "redo the health check anyway", "this
-		// step's `if:` condition would evaluate differently now"). That's
-		// safe here in a way it wouldn't be for Applications/WorkflowRun,
-		// because CheckIdempotent is already the actual safety gate,
-		// independent of the step's current phase — a non-idempotent step
-		// requires --force whether it's being restarted because it failed
-		// or because someone just wants it redone.
+		// from a non-failed step"). We don't carry that precondition — an
+		// operator can force a re-run of a Succeeded or Skipped step too
+		// (e.g. "redo the health check anyway", "this step's `if:`
+		// condition would evaluate differently now"). There is no gate of
+		// any kind standing behind this decision (see RETRY_PLAN.md #5 and
+		// #7) — the operator is trusted, full stop.
 		if err := restartFromStep(ctx, wo.cli, op, ws, step); err != nil {
 			return err
 		}
@@ -308,16 +252,13 @@ see the divergence note above. This is real engine-integration work, not a
 thin wrapper — budget for it accordingly in the sequencing below rather than
 assuming it's a small delta over the whole-restart path.
 
-**`--only` needs a sharper warning now that any step can be the restart
-target, not just a failed one.** The KEP already flags `--only` as able to
-leave the record "internally inconsistent" when a failed step's downstream
-already ran against a partial result; that risk is just as real — arguably
-more likely to be hit in practice — when the target step had already
-*succeeded*: its output is about to change, `--only` means nothing
-downstream re-reads the new value, so the CLI should say so explicitly
-rather than only warning about non-idempotent steps. Add this to
-`NewOperationRestartCommand`'s confirmation text (see CLI section below),
-not just the idempotency prompt — they're two different risks.
+**`--only` still needs its own warning**, unrelated to idempotency: the KEP
+already flags `--only` as able to leave the record "internally inconsistent"
+when a failed step's downstream already ran against a partial result. That
+risk is just as real — arguably more likely to be hit in practice — when the
+target step had already *succeeded*: its output is about to change, `--only`
+means nothing downstream re-reads the new value. This is a data-consistency
+warning the CLI should print, not a safety gate; see the CLI section below.
 
 `snapshotAttempts` (new, same file or a `snapshot.go` alongside) — used
 directly by the whole-workflow path above; `restartFromStep` needs the same
@@ -348,58 +289,6 @@ func snapshotAttempts(ws *v2alpha1.OperationWorkflowStatus, fromStep string) {
 restart point" — actual implementation needs positional index, not string
 comparison, since step order is defined by `Steps[]` position, not name.)
 
-### Idempotency gate: enforced server-side, not by the CLI
-
-**The CLI must not be the thing deciding whether a restart is safe.** A
-client-side-only check is not a control, it is a courtesy — anything that
-talks to the API directly (a script, a different tool, `kubectl edit`)
-bypasses it entirely, taking with it any hope of an audit trail. This has to
-be enforced where it can't be skipped: admission.
-
-```go
-// pkg/workflow/operation/idempotency.go
-func NonIdempotentSteps(ctx context.Context, cli client.Client, op *v2alpha1.Operation, fromStep string) ([]string, error)
-```
-Same resolution as before — walk `op.Status.Template.Workflow.Steps` at/after
-`fromStep`, resolve each `WorkflowStepDefinition` the two-tier way
-`generator.go`'s `resolveTemplate` already does, collect names where
-`Spec.Idempotent` is nil-or-false. What changes is **who calls it**: the
-`Operation` validating admission webhook (extending the one GWCP-108269 is
-already building, now also validating *updates* where `spec.Restart`
-transitions from empty to set, not just creates), not the CLI and not the
-CLI-invoked operator.
-
-**Webhook logic on an `Operation` update that sets `spec.Restart`:**
-1. Call `NonIdempotentSteps` for the requested `Step`/whole-workflow scope.
-2. Any name not present in `spec.Restart.AcknowledgedNonIdempotent` →
-   reject, via `admission.Denied` with `Result.Details.Causes` listing the
-   unacknowledged step names (a structured field, not just a message string
-   — see the CLI section below for why that matters).
-3. Otherwise admit. The webhook does not itself write anything — the
-   controller does the actual restart work once the (now-admitted) object is
-   observed, exactly as `restartFromStep`/the whole-workflow path already
-   describe, then clears `spec.Restart`.
-
-**Getting the requester's identity onto `RequestedBy`** needs one more
-piece: a *mutating* handler (the validating check above can run alongside
-it, same as KubeVela's existing Application webhook does both) stamps the
-admission request's `UserInfo` onto an annotation —
-`operation.oam.dev/restart-requested-by` — mirroring exactly how
-`app.oam.dev/username` already gets stamped for `runAs` identity resolution
-(`pkg/webhook/core.oam.dev/v1beta1/application/mutating_handler.go`). The
-controller reads that annotation when writing `OperationStepAttempt`, rather
-than trying to derive identity itself — by the time `Reconcile` runs
-asynchronously, there is no request context left to read a user from.
-
-This runs identically regardless of the target step's current phase — since
-restart isn't gated on phase (see the divergence note above), this webhook
-check is the *only* thing standing between an operator and silently redoing
-a step that already succeeded, so it has to fire on every restart request,
-not just ones following a failure. It also means `AcknowledgedNonIdempotent`
-is a one-shot acknowledgment tied to one `spec.Restart` object, not a
-standing permission — see `RETRY_EDGE_CASES.md` for what that implies when
-the same non-idempotent step fails and gets restarted repeatedly.
-
 ## Controller changes: `pkg/controller/core.oam.dev/v2alpha1/operation/operation_controller.go`
 
 **`Reconcile`'s phase switch** — add the missing case:
@@ -426,37 +315,9 @@ if op.IsTerminal() {
 return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 ```
 
-**New restart-trigger handling in `Reconcile`**, before the `IsTerminal()`
-check that currently runs first: if `op.Spec.Restart != nil`, the webhook
-has already admitted it (idempotency-acknowledged), so just execute it —
-```go
-if op.Spec.Restart != nil {
-	operator := operation.NewOperationWorkflowOperator(r.Client, io.Discard, op)
-	var err error
-	if op.Spec.Restart.Step != "" {
-		err = operation.NewOperationWorkflowStepOperator(r.Client, io.Discard, op).Restart(logCtx, op.Spec.Restart.Step)
-	} else {
-		err = operator.Restart(logCtx)
-	}
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	// Restart(ctx) above already wrote .status (new Attempts/StepAttempts/
-	// Phase) via cli.Status().Update. Clearing spec.Restart is a SEPARATE
-	// write to a different subresource -- sequence it after the status
-	// write succeeds, not before and not in the same call. If the
-	// controller crashes between the two, spec.Restart is still set on the
-	// next reconcile and this block just runs again; Restart(ctx) has to be
-	// safe to invoke twice in a row for exactly that reason (it already is,
-	// structurally -- see whether attempt-numbering stays correct on a
-	// re-invocation with no new failure in between as an explicit test case).
-	op.Spec.Restart = nil
-	if err := r.Update(logCtx, op); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-}
-```
+No other `Reconcile` changes are needed for restart/resume/suspend — the CLI
+writes `.status` directly via the operator, and the next reconcile just
+observes the new state the same way it observes any other status change.
 
 **New `sweepTTL` method** (new file `ttl.go` in the same package):
 ```go
@@ -525,58 +386,31 @@ cmd.AddCommand(
 `NewOperationRestartCommand`:
 - `Use: "restart <name>"`, flags: `--step`, `--only` (bool), `--cluster`
   (accepted but only `"local"` valid until multi-cluster lands — matches
-  `OperationSpec.Clusters`'s current single-cluster restriction), `--force`.
+  `OperationSpec.Clusters`'s current single-cluster restriction). No
+  `--force` — there's nothing to force past.
 - Fetch the `Operation` (same `k8sClient.Get` + namespace/env resolution as
-  `NewOperationRunCommand`) — read-only, just to build the patch and to
-  check the `--only`-on-`Succeeded` warning below. **No idempotency
-  resolution happens here** — that's the point of moving the check server-
-  side.
-- Patch `spec.restart = {step, only}` (no `acknowledgedNonIdempotent` on the
-  first attempt, unless `--force` was already passed — see below) and
-  submit.
-- **If the webhook denies it**: the denial's `Result.Details.Causes` names
-  the unacknowledged non-idempotent steps (a structured field is what makes
-  this reliable — parsing a free-text message to find step names would be
-  fragile the moment the wording changes). Print them, prompt for an
-  interactive confirmation naming them (reuse `cmdutil.IOStreams`'s prompt
-  helper if one exists — check `references/cli/util.go`), then resubmit the
-  *same* patch with `acknowledgedNonIdempotent` set to exactly that denial's
-  list. `--force` skips the prompt and resubmits with the denial's list
-  immediately — it does not change what gets sent on the *first* attempt,
-  it only skips asking after a denial. This also means `--force` on a
-  restart that turns out to need no acknowledgment (nothing non-idempotent
-  in scope) is a silent no-op, which is correct.
-- A denial for any other reason (Operation currently `Running`, permission
-  denied, unknown step) is a real error — surface it plainly, `--force`
-  must never swallow a rejection that isn't specifically about
-  unacknowledged non-idempotent steps.
+  `NewOperationRunCommand`).
 - If `--only` is set and the target step's current phase is `Succeeded`
-  (not `Failed`), print a separate, CLI-side warning before submitting: its
-  output is about to be recomputed but, under `--only`, nothing downstream
-  will re-read the new value. This one stays client-side deliberately — it's
-  advisory UX, not a safety gate, so there's nothing wrong with it living
-  in the CLI the way the idempotency check no longer does.
-- Poll until the restart is either processed (`spec.Restart` cleared by the
-  controller and phase moved off `Suspended`/terminal) or the Operation
-  reaches a new terminal phase — reuse the polling shape `run` already has,
-  factored into a shared helper (duplicated three ways otherwise: `run`,
-  `restart`, `resume`), but note the loop's exit condition is different here
-  than a plain "wait for `IsTerminal()`": right after submitting, the object
-  briefly still shows the *previous* run's terminal phase until the
-  controller picks up `spec.Restart`, so polling on phase alone risks a
-  false-positive exit before the restart even started.
+  (not `Failed`), print a warning before proceeding: its output is about to
+  be recomputed but, under `--only`, nothing downstream will re-read the
+  new value. Advisory UX, not a gate.
+- Build the operator via `operation.NewOperationWorkflowOperator(k8sClient, cmd.OutOrStdout(), op)` (or the step operator if `--step` given), call
+  `.Restart(ctx)` / `.Restart(ctx, step)` directly — this writes `.status`
+  immediately, so there's no round-trip to wait on before polling.
+- Reuse the exact poll-until-terminal loop + `printOperationStatus` already
+  in `NewOperationRunCommand` (factor it out into a shared helper — it's
+  duplicated three ways otherwise: `run`, `restart`, `resume`).
 
-`NewOperationResumeCommand`: same shape, no idempotency gate (resuming isn't
-re-executing anything), calls `.Resume(ctx)`.
+`NewOperationResumeCommand`: same shape, calls `.Resume(ctx)`.
 
 `NewOperationSuspendCommand`: same shape again, mirrors
 `NewWorkflowSuspendCommand` (`references/cli/workflow.go`) almost exactly —
-`Use: "suspend <name>"`, optional `--step`, no idempotency gate (pausing
-isn't re-executing anything either), calls `.Suspend(ctx)` / `.Suspend(ctx, step)`.
-This one is essentially free: `Suspend` is part of the `wfUtils.WorkflowOperator`/
-`WorkflowStepOperator` interfaces, so the operator method has to exist the
-moment `pkg/workflow/operation/operation_v2alpha1.go` is written regardless
-of whether a CLI command calls it — the marginal cost is only the ~20-line
+`Use: "suspend <name>"`, optional `--step`, calls `.Suspend(ctx)` /
+`.Suspend(ctx, step)`. This one is essentially free: `Suspend` is part of
+the `wfUtils.WorkflowOperator`/`WorkflowStepOperator` interfaces, so the
+operator method has to exist the moment
+`pkg/workflow/operation/operation_v2alpha1.go` is written regardless of
+whether a CLI command calls it — the marginal cost is only the ~20-line
 cobra wrapper and its registration, not new operator logic. Worth including
 in the same pass as `restart`/`resume` rather than deferring: leaving it out
 would mean an `Operation` could be suspended by the underlying workflow
@@ -590,64 +424,26 @@ existing table/formatting rather than add a second output mode).
 **Not implemented in this pass:** `--failed-only` (no dispatch/children to
 target yet — see `RETRY_PLAN.md`'s out-of-scope list).
 
-## Dependency: the safety gate is only as real as the webhook that enforces it
-
-This POC ships with **no admission webhooks at all** (`POC.md`: "neither of
-the required SubjectAccessReview checks is implemented"). GWCP-108269 is
-what adds one. Server-side idempotency enforcement as designed above is a
-new validation rule on that same webhook, extended to also cover `Operation`
-*updates* where `spec.Restart` is being set (today's webhook, once it
-exists, would otherwise only need to validate creates). That means:
-
-- If GWCP-108269 hasn't landed yet when this work ships, there is no
-  admission path at all, and the controller would execute any
-  `spec.Restart` unconditionally — silently defeating the whole point of
-  moving the check server-side.
-- **Interim fallback, if sequencing forces this to ship first:** have
-  `Reconcile` itself run `NonIdempotentSteps` and refuse to execute an
-  unacknowledged restart (log + leave `spec.Restart` untouched, or set a
-  status condition explaining why). This is still *not bypassable* — the
-  controller is the only thing that ever turns `spec.Restart` into an actual
-  re-run, so no client can skip it by avoiding the CLI — it just loses the
-  KEP's stated preference that "a refusal costs a `kubectl apply` and
-  nothing else" (rejection surfaces on the next status read instead of
-  immediately). Note this doesn't need the webhook for the *audit* half
-  either — Kubernetes audit logging on the `Update` call already captures
-  who set `spec.Restart`, webhook or not; only the fail-fast-at-apply-time
-  property is what the webhook specifically buys.
-- Track this as a real cross-story dependency, not a footnote — coordinate
-  sequencing with GWCP-108269 rather than assuming this can land fully
-  independently.
-
 ## Suggested sequencing (each stage independently buildable/testable)
 
 1. **API only** — type changes + `make manifests` + regenerated CRDs. No
    behavior change yet; `Reconcile` doesn't read the new fields. Safe to land
    alone, unblocks everything else.
-2. **`pkg/workflow/operation` additions** — the new operator + snapshot +
-   idempotency-check functions, with unit tests against a fake client. Still
-   no wiring into the controller or CLI, so still behavior-inert.
+2. **`pkg/workflow/operation` additions** — the new operator + snapshot
+   functions, with unit tests against a fake client. Still no wiring into
+   the controller or CLI, so still behavior-inert.
    `restartFromStep`'s context-backend ConfigMap handling (mirroring
    `CleanStatusFromStep`/`clearContextVars`) is the highest-risk piece of
    this whole plan to get wrong silently — a bug here doesn't fail loudly,
    it just makes a downstream step read a stale or missing prior-step
    output. Test it explicitly, not just through the happy-path e2e case.
 3. **Controller wiring** — `Suspended` phase mapping, TTL sweep,
-   `spec.Restart` trigger handling, `core.Args`/flag threading. This is the
-   first stage with an observable behavior change (suspend surfaces
-   correctly; TTL deletes things if the flag is set — default keeps it off).
-   Ship the interim controller-side idempotency check here (see the
-   "Dependency" section above) if GWCP-108269's webhook isn't ready yet —
-   don't ship `spec.Restart` processing with *no* enforcement at all even
-   temporarily.
-4. **Admission webhook** — extend GWCP-108269's `Operation` webhook to also
-   validate updates that set `spec.Restart`, per the idempotency-gate
-   section above. Coordinate timing with that story explicitly; if it lands
-   first, stage 3 can skip the interim fallback entirely.
-5. **CLI wiring** — `restart`/`resume`/`suspend` commands (restart's denial-
-   handling flow depends on stage 4 existing to actually deny anything),
-   `status`/`list` output changes.
-6. **Tests + docs** — e2e scenarios from `RETRY_PLAN.md`, `POC.md` checkbox.
+   `core.Args`/flag threading. This is the first stage with an observable
+   behavior change (suspend surfaces correctly; TTL deletes things if the
+   flag is set — default keeps it off).
+4. **CLI wiring** — `restart`/`resume`/`suspend` commands, `status`/`list`
+   output changes.
+5. **Tests + docs** — e2e scenarios from `RETRY_PLAN.md`, `POC.md` checkbox.
 
 ## Test plan specifics
 
@@ -656,38 +452,22 @@ exists, would otherwise only need to validate creates). That means:
   `--step`/`--only` trimming boundaries, `restartFromStep` preserving an
   upstream step's context-backend entry while clearing the restarted step's
   own (and anything positioned after it) — assert directly against the
-  ConfigMap contents, not just against `ws.Steps`, `NonIdempotentSteps`
-  allow/deny against a fake `WorkflowStepDefinition` fixture with/without
-  `Idempotent`, restarting a step regardless of its current phase
-  (`Succeeded`/`Skipped`, not just `Failed` — confirming there's no phase
-  check left over from `CleanStatusFromStep`), and
-  `Suspend`/`Resume` phase-transition correctness against a fake client —
-  whole-workflow `Suspend(ctx)` moves every `Running` step to `Suspending`
-  (and `SubStepsStatus` entries too), `Suspend(ctx, step)` moves only the
-  named step and errors with "can not find step" on an unknown one, and
-  `op.Status.Phase`/the persisted object reflect the change after
-  `cli.Status().Update`.
+  ConfigMap contents, not just against `ws.Steps` — restarting a step
+  regardless of its current phase (`Succeeded`/`Skipped`, not just
+  `Failed` — confirming there's no phase check left over from
+  `CleanStatusFromStep`), and `Suspend`/`Resume` phase-transition
+  correctness against a fake client — whole-workflow `Suspend(ctx)` moves
+  every `Running` step to `Suspending` (and `SubStepsStatus` entries too),
+  `Suspend(ctx, step)` moves only the named step and errors with "can not
+  find step" on an unknown one, and `op.Status.Phase`/the persisted object
+  reflect the change after `cli.Status().Update`.
 - **Unit** (`references/cli/operation_test.go`, extending the existing file):
   `NewOperationSuspendCommand` — invokes `operationWorkflowOperator.Suspend`
   vs. the step-scoped variant depending on whether `--step` is set, polls on
   phase `== Suspended` rather than `IsTerminal()` (a fake client that never
   reaches `Suspended` should time out/not return, proving it isn't using the
   terminal check), and surfaces the operator's error (e.g. unknown step name)
-  without swallowing it. `NewOperationRestartCommand` never calls
-  `NonIdempotentSteps` itself (assert this directly — e.g. a fake client with
-  no `WorkflowStepDefinition` fixtures installed at all must still be able to
-  submit a restart without erroring on a missing lookup); on a denial, it
-  parses `Result.Details.Causes` (not the message string) to get the step
-  list, prompts, and resubmits with exactly that list; `--force` skips the
-  prompt but a non-idempotency denial (any other reason) is never swallowed
-  by `--force`.
-- **Unit** (webhook package, wherever GWCP-108269 lands its validator):
-  an `Operation` update setting `spec.Restart` with an incomplete
-  `acknowledgedNonIdempotent` is denied with `Causes` naming exactly the
-  missing steps, not just a generic message; a create (no prior restart
-  history) is unaffected by this new rule; a step-scoped restart only
-  evaluates the steps actually in scope for that `--step`/`--only`
-  combination, not the whole template's step list.
+  without swallowing it.
 - **Unit** (`pkg/controller/.../operation/ttl_test.go`): `sweepTTL` table test
   — no TTL set, cluster default only, per-Operation override, already
   expired, not yet expired (asserts `RequeueAfter` equals the remaining
@@ -697,8 +477,7 @@ exists, would otherwise only need to validate creates). That means:
   (`test/e2e-test/testdata/operation/vela-system/workflowstepdefinition.yaml`'s
   restart step, or a new fixture step designed to fail on attempt 1) and
   assert `status.attempts == 2` with the first attempt's failure preserved in
-  `stepAttempts`; suspend/resume round-trip via a `suspend` step type;
-  `restart --step` on a non-idempotent step refused without `--force`; a
+  `stepAttempts`; suspend/resume round-trip via a `suspend` step type; a
   two-step template where step 2 consumes step 1's `outputs` via `inputs`,
   step 2 fails, `restart --step <step2> --only`, and step 2 re-reads step 1's
   original output correctly (the actual scenario this section exists for);
