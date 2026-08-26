@@ -54,9 +54,7 @@ type scaffoldFile struct {
 // valid, ready-to-edit module directory: the module identity, the v1 API
 // line, a definition, and empty auxiliary/ directories documented by a
 // README, then validates the result against the module parser so the
-// skeleton always parses. The scaffold is backend-agnostic: it carries no
-// Crossplane-specific (or any other backend-specific) placeholder content,
-// so there is nothing for a --type flag to select between.
+// skeleton always parses.
 func NewModuleInitCommand(_ common.Args, _ cmdutil.IOStreams) *cobra.Command {
 	o := &moduleInitOptions{}
 	cmd := &cobra.Command{
@@ -158,10 +156,7 @@ func scaffoldFiles(name string) []scaffoldFile {
 }
 
 // moduleAuxiliaryDirs are the empty auxiliary directories init creates
-// alongside the scaffold files. Nothing writes into them by default (a
-// module needs no infrastructure to be valid), so they are created
-// explicitly rather than as a side effect of writing a file into them;
-// README.md documents what belongs in each.
+// alongside the scaffold files.
 func moduleAuxiliaryDirs() []string {
 	return []string{"auxiliary", filepath.Join("v1", "auxiliary")}
 }
@@ -191,32 +186,17 @@ const versionCUETemplate = `apiVersion: "v1"
 enabled:    true
 `
 
-const definitionCUETemplate = `// TODO: rename this file and the top-level key below to the capability this
-// defines (for example "bucket"). The key becomes the definition's metadata.name,
-// and the module installs it as <module>-<apiVersion>-<capability>.
+const definitionCUETemplate = `// TODO: rename this file and the "example" key below to the capability this
+// module offers (for example "bucket"). The key becomes the definition's
+// metadata.name, and the module installs it as <module>-<apiVersion>-<capability>.
+// See README.md for what a ComponentDefinition needs.
 "example": {
 	type: "component"
-	attributes: {
-		workload: definition: {
-			// TODO: the apiVersion and kind of the claim/CR this module offers.
-			apiVersion: "example.com/v1alpha1"
-			kind:       "Example"
-		}
-	}
 }
 
 template: {
-	// TODO: map the parameters below onto the claim/CR you output.
-	output: {
-		apiVersion: "example.com/v1alpha1"
-		kind:       "Example"
-		metadata: name: parameter.name
-		spec: {}
-	}
-	// TODO: the parameters a consumer of this component sets.
-	parameter: {
-		name: string
-	}
+	// TODO: define what this capability creates.
+	output: {}
 }
 `
 
@@ -256,6 +236,26 @@ File format:
   separated by "---", the same as a normal manifest.
 - A .cue file is a single plain object at its root.
 - Every file in a scope is installed.
+
+## What goes in v1/definitions/
+
+Each file here is a capability this API line offers to consumers, as a
+KubeVela ComponentDefinition. The definition's name comes from its own
+content, not the filename: the module installs it as
+__MODULE__-v1-<capability>, where <capability> is the top-level key inside
+the file. Add one file per capability; a line with no files here is not valid,
+every line must offer at least one capability.
+
+A ComponentDefinition CUE file needs two things:
+
+- A top-level key (its name) whose value sets type: "component".
+- A template: {...} block with at least one field, typically an output:
+  {...} describing what this capability creates and a parameter: {...}
+  block for what a consumer of it sets.
+
+The scaffolded example.cue has the smallest shape that satisfies both; fill
+in the output and parameter to match what your capability actually
+provisions.
 
 ## Next steps
 
