@@ -29,6 +29,7 @@ import (
 	"k8s.io/utils/strings/slices"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 	process "github.com/kubevela/workflow/pkg/cue/process"
 	wfTypes "github.com/kubevela/workflow/pkg/types"
 
@@ -215,7 +216,129 @@ func buildWorkflowInstance(op *v2alpha1.Operation) *wfTypes.WorkflowInstance {
 		Steps: op.Status.Template.Workflow.Steps,
 	}
 	if len(op.Status.Workflows) > 0 {
-		instance.Status = op.Status.Workflows[0].WorkflowRunStatus
+		instance.Status = toEngineStatus(op.Status.Workflows[0])
 	}
 	return instance
+}
+
+// toEngineStatus converts ws to the shape the embedded engine understands,
+// unwrapping each step back to its plain WorkflowStepStatus -- the engine
+// has no notion of our own per-step Attempts history.
+func toEngineStatus(ws v2alpha1.OperationWorkflowStatus) workflowv1alpha1.WorkflowRunStatus {
+	var steps []workflowv1alpha1.WorkflowStepStatus
+	if len(ws.Steps) > 0 {
+		steps = make([]workflowv1alpha1.WorkflowStepStatus, len(ws.Steps))
+		for i, s := range ws.Steps {
+			steps[i] = s.WorkflowStepStatus
+		}
+	}
+	return workflowv1alpha1.WorkflowRunStatus{
+		Mode:           ws.Mode,
+		Phase:          ws.Phase,
+		Message:        ws.Message,
+		Suspend:        ws.Suspend,
+		SuspendState:   ws.SuspendState,
+		Terminated:     ws.Terminated,
+		Finished:       ws.Finished,
+		ContextBackend: ws.ContextBackend,
+		Steps:          steps,
+		StartTime:      ws.StartTime,
+		EndTime:        ws.EndTime,
+	}
+}
+
+// operationWorkflowStatusFromEngine converts the embedded engine's own
+// status (just returned by ExecuteRunners) back into our shape, wrapping
+// each step, reattaching its Attempts history from previous -- either
+// carried forward from that same step's own live entry (a step that
+// stayed live across this reconcile) or, for a step a restart just
+// removed and the engine is only now recreating, from previous's pending
+// StepAttempts (see that field's doc on OperationWorkflowStatus) -- and
+// recording this step's own completion into Attempts if it just reached a
+// terminal phase (see recordStepCompletion).
+func operationWorkflowStatusFromEngine(cluster string, engineStatus workflowv1alpha1.WorkflowRunStatus, previous v2alpha1.OperationWorkflowStatus) v2alpha1.OperationWorkflowStatus {
+	attemptsByName := make(map[string][]v2alpha1.OperationStepAttempt, len(previous.Steps)+len(previous.StepAttempts))
+	for _, s := range previous.Steps {
+		if len(s.Attempts) > 0 {
+			attemptsByName[s.Name] = s.Attempts
+		}
+	}
+	for name, attempts := range previous.StepAttempts {
+		attemptsByName[name] = attempts
+	}
+
+	consumed := make(map[string]bool, len(engineStatus.Steps))
+	var steps []v2alpha1.OperationWorkflowStepStatus
+	if len(engineStatus.Steps) > 0 {
+		steps = make([]v2alpha1.OperationWorkflowStepStatus, len(engineStatus.Steps))
+		for i, s := range engineStatus.Steps {
+			consumed[s.Name] = true
+			steps[i] = v2alpha1.OperationWorkflowStepStatus{
+				WorkflowStepStatus: s,
+				Attempts:           recordStepCompletion(attemptsByName[s.Name], s),
+			}
+		}
+	}
+
+	// op.Status.Template.Workflow.Steps is a one-time snapshot (never
+	// re-resolved after the first reconcile -- see resolveTemplate), so a
+	// step name that ever had a pending attempt is guaranteed to reappear
+	// in engineStatus.Steps eventually -- but "eventually" isn't "this
+	// reconcile": if the workflow suspends, fails, or is otherwise not
+	// progressed before that happens, whatever in attemptsByName wasn't
+	// just reattached above has to be carried forward here, or it's lost
+	// for good the moment this return value replaces op.Status.Workflows.
+	var pending map[string][]v2alpha1.OperationStepAttempt
+	for name, attempts := range attemptsByName {
+		if consumed[name] {
+			continue
+		}
+		if pending == nil {
+			pending = make(map[string][]v2alpha1.OperationStepAttempt, len(attemptsByName))
+		}
+		pending[name] = attempts
+	}
+
+	return v2alpha1.OperationWorkflowStatus{
+		Cluster:        cluster,
+		Mode:           engineStatus.Mode,
+		Phase:          engineStatus.Phase,
+		Message:        engineStatus.Message,
+		Suspend:        engineStatus.Suspend,
+		SuspendState:   engineStatus.SuspendState,
+		Terminated:     engineStatus.Terminated,
+		Finished:       engineStatus.Finished,
+		ContextBackend: engineStatus.ContextBackend,
+		Steps:          steps,
+		StartTime:      engineStatus.StartTime,
+		EndTime:        engineStatus.EndTime,
+		StepAttempts:   pending,
+	}
+}
+
+// recordStepCompletion appends a new attempt to attempts the moment s
+// reaches a terminal phase (succeeded, failed, or skipped -- the same
+// check the embedded engine itself uses, wfTypes.IsStepFinish, to decide a
+// step is done), so every completed execution gets logged exactly once --
+// the original run included, not only ones later superseded by a restart.
+// s.ID (stable for one execution, see OperationWorkflowStepStatus's doc) is
+// what makes "exactly once" possible: a step sitting in the same terminal
+// phase across many reconciles has the same ID each time, so comparing
+// against the last recorded attempt's ID is enough to avoid duplicates
+// without any other bookkeeping.
+func recordStepCompletion(attempts []v2alpha1.OperationStepAttempt, s workflowv1alpha1.WorkflowStepStatus) []v2alpha1.OperationStepAttempt {
+	if !wfTypes.IsStepFinish(s.Phase, s.Reason) {
+		return attempts
+	}
+	if last := len(attempts) - 1; last >= 0 && attempts[last].ID == s.ID {
+		return attempts
+	}
+	return append(attempts, v2alpha1.OperationStepAttempt{
+		AttemptNumber: int64(len(attempts) + 1),
+		ID:            s.ID,
+		Phase:         s.Phase,
+		Message:       s.Message,
+		Reason:        s.Reason,
+		StartTime:     s.FirstExecuteTime,
+	})
 }
