@@ -22,8 +22,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	wfv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
@@ -31,6 +33,7 @@ import (
 	wfTypes "github.com/kubevela/workflow/pkg/types"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
+	veloperation "github.com/oam-dev/kubevela/pkg/workflow/operation"
 )
 
 func newTestScheme(t *testing.T) *runtime.Scheme {
@@ -279,4 +282,86 @@ func TestToEngineStatusUnwrapsSteps(t *testing.T) {
 	assert.True(t, got.Terminated)
 	require.Len(t, got.Steps, 1)
 	assert.Equal(t, "step-one", got.Steps[0].Name)
+}
+
+// TestStepRestartAttemptHistoryRoundTrip drives the full fail -> restart ->
+// succeed sequence across both packages -- this controller's
+// operationWorkflowStatusFromEngine (simulating what two reconciles would
+// each produce) and pkg/workflow/operation's real, exported Restart (the
+// same code `vela operation restart` calls) -- without a live cluster or
+// the embedded CUE engine. Answers directly whether a step that fails then
+// succeeds ends up with two recorded attempts, not one.
+func TestStepRestartAttemptHistoryRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	r := require.New(t)
+	scheme := newTestScheme(t)
+	require.NoError(t, corev1.AddToScheme(scheme))
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v2alpha1.Operation{}).Build()
+
+	steps := []wfv1alpha1.WorkflowStep{
+		{WorkflowStepBase: wfv1alpha1.WorkflowStepBase{Name: "step-one", Type: "ok-step"}},
+		{WorkflowStepBase: wfv1alpha1.WorkflowStepBase{Name: "step-two", Type: "ok-step"}},
+		{WorkflowStepBase: wfv1alpha1.WorkflowStepBase{Name: "step-three", Type: "flaky-step"}},
+	}
+	op := &v2alpha1.Operation{
+		ObjectMeta: metav1.ObjectMeta{Name: "flaky-step-abc", Namespace: "default"},
+		Status: v2alpha1.OperationStatus{
+			Template: &v2alpha1.OperationTemplateSpec{Workflow: wfv1alpha1.WorkflowSpec{Steps: steps}},
+		},
+	}
+	r.NoError(cli.Create(ctx, op))
+
+	// Reconcile #1: all three steps run, step-three fails for good (a real
+	// terminal reason, not the still-retrying StatusReasonExecute).
+	engineStatus1 := workflowv1alpha1.WorkflowRunStatus{
+		Mode: wfv1alpha1.WorkflowExecuteMode{Steps: workflowv1alpha1.WorkflowModeStep},
+		Steps: []workflowv1alpha1.WorkflowStepStatus{
+			{StepStatus: workflowv1alpha1.StepStatus{ID: "id-1", Name: "step-one", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+			{StepStatus: workflowv1alpha1.StepStatus{ID: "id-2", Name: "step-two", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+			{StepStatus: workflowv1alpha1.StepStatus{ID: "id-3", Name: "step-three", Phase: workflowv1alpha1.WorkflowStepPhaseFailed, Reason: wfTypes.StatusReasonAction, Message: "shouldFail=true"}},
+		},
+	}
+	op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{operationWorkflowStatusFromEngine(localCluster, engineStatus1, v2alpha1.OperationWorkflowStatus{})}
+	op.Status.Phase = v2alpha1.OperationPhaseFailed
+	now := metav1.Now()
+	op.Status.CompletionTime = &now
+	r.NoError(cli.Status().Update(ctx, op))
+
+	// Sanity check on reconcile #1's own result before restarting.
+	step3 := op.Status.Workflows[0].Steps[2]
+	r.Len(step3.Attempts, 1, "step-three's own failure should already be recorded before any restart")
+	r.Equal(workflowv1alpha1.WorkflowStepPhaseFailed, step3.Attempts[0].Phase)
+
+	// vela operation restart flaky-step-abc --step step-three (the real,
+	// exported code path -- not a hand-simulation of it).
+	fetched := &v2alpha1.Operation{}
+	r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), fetched))
+	r.NoError(veloperation.NewOperationWorkflowStepOperator(cli, nil, fetched).Restart(ctx, "step-three"))
+
+	afterRestart := &v2alpha1.Operation{}
+	r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), afterRestart))
+	r.Len(afterRestart.Status.Workflows[0].Steps, 2, "step-three's live entry should be gone, pending re-execution")
+	r.Len(afterRestart.Status.Workflows[0].StepAttempts["step-three"], 1, "its one recorded failure should be waiting in the pending map")
+
+	// Reconcile #2: the engine reruns just step-three (a fresh ID, since
+	// its old entry was removed), and this time it succeeds.
+	engineStatus2 := toEngineStatus(afterRestart.Status.Workflows[0])
+	engineStatus2.Steps = append(engineStatus2.Steps, workflowv1alpha1.WorkflowStepStatus{
+		StepStatus: workflowv1alpha1.StepStatus{ID: "id-4", Name: "step-three", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded},
+	})
+	afterRestart.Status.Workflows = []v2alpha1.OperationWorkflowStatus{operationWorkflowStatusFromEngine(localCluster, engineStatus2, afterRestart.Status.Workflows[0])}
+	afterRestart.Status.Phase = v2alpha1.OperationPhaseSucceeded
+	r.NoError(cli.Status().Update(ctx, afterRestart))
+
+	final := &v2alpha1.Operation{}
+	r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), final))
+	require.Len(t, final.Status.Workflows[0].Steps, 3)
+	finalStep3 := final.Status.Workflows[0].Steps[2]
+	assert.Equal(t, workflowv1alpha1.WorkflowStepPhaseSucceeded, finalStep3.Phase, "step-three's live status is the latest (successful) run")
+
+	require.Len(t, finalStep3.Attempts, 2, "expected both the original failure and the successful retry logged")
+	assert.Equal(t, workflowv1alpha1.WorkflowStepPhaseFailed, finalStep3.Attempts[0].Phase)
+	assert.Equal(t, workflowv1alpha1.WorkflowStepPhaseSucceeded, finalStep3.Attempts[1].Phase)
+	assert.EqualValues(t, 1, finalStep3.Attempts[0].AttemptNumber)
+	assert.EqualValues(t, 2, finalStep3.Attempts[1].AttemptNumber)
 }
