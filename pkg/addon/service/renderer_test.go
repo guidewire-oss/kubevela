@@ -19,7 +19,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -174,6 +176,47 @@ func TestRenderAddonCachesByKey(t *testing.T) {
 	_, err = r.RenderAddon(context.Background(), api.AddonRequest{Name: "example", Version: "1.0.0", Properties: map[string]interface{}{"replicas": 2}})
 	require.NoError(t, err)
 	assert.Equal(t, 3, calls, "distinct requests must each resolve")
+}
+
+// TestRenderAddonConcurrentMissesResolveOnce pins the singleflight collapse:
+// concurrent requests for the same not-yet-cached key must not each pay the
+// full registry/render cost. Without it, N concurrent misses race resolveFn
+// N times before any of them observes another's cache write.
+func TestRenderAddonConcurrentMissesResolveOnce(t *testing.T) {
+	r := &rendererImpl{cli: fakeClientWithRegistry(t)}
+	var calls int32
+	release := make(chan struct{})
+	r.resolveFn = func(_ context.Context, req api.AddonRequest) (*api.AddonResult, error) {
+		atomic.AddInt32(&calls, 1)
+		<-release
+		return &api.AddonResult{ResolvedVersion: req.Version}, nil
+	}
+
+	req := api.AddonRequest{Name: "example", Version: "1.0.0", Properties: map[string]interface{}{"replicas": 1}}
+	const concurrency = 10
+	results := make(chan *api.AddonResult, concurrency)
+	errs := make(chan error, concurrency)
+	for range concurrency {
+		go func() {
+			res, err := r.RenderAddon(context.Background(), req)
+			results <- res
+			errs <- err
+		}()
+	}
+
+	// Give every goroutine a chance to reach resolveFn and block on release
+	// before letting the single in-flight call complete.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+
+	first := <-results
+	require.NoError(t, <-errs)
+	for i := 1; i < concurrency; i++ {
+		res := <-results
+		require.NoError(t, <-errs)
+		assert.Same(t, first, res, "every concurrent caller must observe the same resolved result")
+	}
+	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "concurrent misses on the same key must resolve exactly once")
 }
 
 func TestRenderAddonDoesNotCacheLatest(t *testing.T) {

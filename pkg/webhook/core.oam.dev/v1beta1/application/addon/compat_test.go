@@ -104,11 +104,13 @@ func TestDefaultCompatCheckerFailsOpenWithoutRegistry(t *testing.T) {
 // FindAddonPackagesDetailFromRegistry, and a name that matches nothing still
 // fails open exactly like the unscoped ("") case.
 func TestDefaultCompatCheckerRegistryNameFiltersRegistries(t *testing.T) {
+	// Snapshot and restore rather than KubeClient.Reload: Reload rebuilds the
+	// client from singleton.KubeConfig, used elsewhere in this package, panics
+	// on a nil *rest.Config.
+	originalKubeClient := singleton.KubeClient.Get()
+	defer singleton.KubeClient.Set(originalKubeClient)
 	singleton.KubeClient.Set(fake.NewClientBuilder().WithScheme(scheme.Scheme).Build())
 
-	// See TestDefaultCompatCheckerAgainstResolvedAddon for why this restores
-	// the singleton rather than leaving it nil: KubeClient.Reload, used
-	// elsewhere in this package, panics on a nil *rest.Config.
 	originalKubeConfig := singleton.KubeConfig.Get()
 	singleton.KubeConfig.Set(nil)
 	defer singleton.KubeConfig.Set(originalKubeConfig)
@@ -201,6 +203,13 @@ func TestDefaultCompatCheckerAgainstResolvedAddon(t *testing.T) {
 	// panics on a nil config -- so leaving a subtest's nil or broken
 	// *rest.Config behind would break whichever test runs next.
 	originalKubeConfig := singleton.KubeConfig.Get()
+
+	// Likewise snapshot KubeClient: each subtest sets its own fake client
+	// (whose registry server is torn down at the end of that subtest), and
+	// leaving the last one behind would hand a later test in this package a
+	// stale client pointed at a closed server instead of the lazy default.
+	originalKubeClient := singleton.KubeClient.Get()
+	t.Cleanup(func() { singleton.KubeClient.Set(originalKubeClient) })
 
 	// Neither config is ever actually dialed: every case below that supplies
 	// one also denies on the vela-core version check first, which returns

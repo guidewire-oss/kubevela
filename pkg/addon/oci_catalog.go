@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/pkg/errors"
@@ -198,10 +199,51 @@ func classifyCatalogAbsenceProbe(repoRef string, tags []string, probeErr error) 
 	}
 }
 
+// maxCatalogPublishAttempts bounds the read-merge-publish retry loop in
+// updateOCIAddonCatalog. The OCI distribution API has no conditional-put or
+// ETag primitive to serialize catalog publication on, so concurrent `vela
+// addon push` runs detect and back off from each other by re-reading and
+// retrying instead of being prevented from racing in the first place.
+const maxCatalogPublishAttempts = 5
+
+// catalogPublishBackoff returns the delay before retrying a catalog publish
+// that lost a race, growing with each attempt so repeatedly-colliding
+// publishers spread out rather than immediately re-racing.
+func catalogPublishBackoff(attempt int) time.Duration {
+	return time.Duration(50*(attempt+1)) * time.Millisecond
+}
+
+// updateOCIAddonCatalogOnceFn is a seam so tests can exercise the retry loop
+// in updateOCIAddonCatalog without a real OCI registry. Production always
+// uses updateOCIAddonCatalogOnce.
+var updateOCIAddonCatalogOnceFn = updateOCIAddonCatalogOnce
+
 // updateOCIAddonCatalog upserts an addon after it has been pushed and publishes
 // a new catalog chart version. The fixed catalog repository makes discovery
 // portable across OCI registries.
 func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addonMeta *chart.Metadata, plainHTTP bool) error {
+	var lastErr error
+	for attempt := range maxCatalogPublishAttempts {
+		conflict, err := updateOCIAddonCatalogOnceFn(client, source, addonMeta, plainHTTP)
+		if err == nil {
+			return nil
+		}
+		if !conflict {
+			return err
+		}
+		lastErr = err
+		time.Sleep(catalogPublishBackoff(attempt))
+	}
+	return errors.Wrapf(lastErr, "failed to publish the portable OCI addon catalog after %d attempts: a concurrent publisher kept winning the race for the catalog tag", maxCatalogPublishAttempts)
+}
+
+// updateOCIAddonCatalogOnce runs one read-merge-publish attempt. conflict is
+// true when a concurrent publisher's tag appeared between this attempt's read
+// of the catalog tags and its publish; the caller retries from a fresh read
+// rather than surfacing that as a failure, since publishing over it here would
+// either collide on the same version tag or silently drop whichever addon the
+// other publisher just added.
+func updateOCIAddonCatalogOnce(client *registry.Client, source *OCIAddonSource, addonMeta *chart.Metadata, plainHTTP bool) (conflict bool, err error) {
 	pullFn := pullOCIChart
 	tagsFn := listOCITags
 	catalogFn := listOCIRepositories
@@ -229,7 +271,7 @@ func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addo
 		// read; rebuilding from an empty list would publish a catalog containing
 		// only this addon and silently drop every other entry.
 		if !errors.Is(err, ErrOCICatalogAbsent) {
-			return errors.Wrap(err, "refusing to rewrite the OCI addon catalog: cannot read the existing catalog")
+			return false, errors.Wrap(err, "refusing to rewrite the OCI addon catalog: cannot read the existing catalog")
 		}
 		// ErrOCICatalogAbsent is the right answer for readers -- there is nothing
 		// to list -- but it is too weak to authorise an overwrite. Several
@@ -238,7 +280,7 @@ func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addo
 		// not serve /v2/_catalog. Confirm the absence against the catalog
 		// repository itself before replacing what is published there.
 		if err := confirmPortableCatalogAbsent(source, plainHTTP); err != nil {
-			return err
+			return false, err
 		}
 		existing = nil
 	}
@@ -246,7 +288,7 @@ func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addo
 	addonRepo, host := ociRepoRef(source.URL, addonMeta.Name)
 	versions, err := listOCITagsWithTransport(addonRepo, host, source.Username, source.Token, plainHTTP)
 	if err != nil {
-		return errors.Wrapf(err, "failed to list versions for OCI addon %s", addonMeta.Name)
+		return false, errors.Wrapf(err, "failed to list versions for OCI addon %s", addonMeta.Name)
 	}
 
 	entries := make(map[string]OCIAddonCatalogEntry, len(existing)+1)
@@ -272,7 +314,7 @@ func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addo
 	})
 	catalogData, err := json.Marshal(catalog)
 	if err != nil {
-		return errors.Wrap(err, "failed to encode portable OCI addon catalog")
+		return false, errors.Wrap(err, "failed to encode portable OCI addon catalog")
 	}
 
 	catalogRepo, _ := ociRepoRef(source.URL, ociCatalogChartName)
@@ -281,7 +323,7 @@ func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addo
 	if tagErr == nil && len(catalogTags) > 0 {
 		current, parseErr := semver.NewVersion(catalogTags[0])
 		if parseErr != nil {
-			return errors.Wrap(parseErr, "failed to parse portable OCI catalog version")
+			return false, errors.Wrap(parseErr, "failed to parse portable OCI catalog version")
 		}
 		next := current.IncPatch()
 		catalogVersion = next.String()
@@ -302,21 +344,42 @@ func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addo
 	}
 	tmp, err := os.MkdirTemp("", "kubevela-oci-catalog-")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		_ = os.RemoveAll(tmp)
 	}()
 	archivePath, err := chartutil.Save(catalogChart, tmp)
 	if err != nil {
-		return errors.Wrap(err, "failed to package portable OCI addon catalog")
+		return false, errors.Wrap(err, "failed to package portable OCI addon catalog")
 	}
 	archive, err := os.ReadFile(filepath.Clean(archivePath))
 	if err != nil {
-		return errors.Wrap(err, "failed to read portable OCI addon catalog package")
+		return false, errors.Wrap(err, "failed to read portable OCI addon catalog package")
 	}
+
+	// Re-check the catalog tag right before publishing. If a concurrent
+	// publisher landed a new tag since the read above, this attempt's merge is
+	// stale -- it may be missing that publisher's addon, or about to publish
+	// the same version number as them -- so retry from a fresh read instead of
+	// overwriting it.
+	latestTags, latestErr := listOCITagsWithTransport(catalogRepo, host, source.Username, source.Token, plainHTTP)
+	if catalogTagHead(catalogTags, tagErr) != catalogTagHead(latestTags, latestErr) {
+		return true, errors.Errorf("a concurrent publisher updated the portable OCI addon catalog while this attempt was preparing %s", catalogVersion)
+	}
+
 	if _, err := client.Push(archive, catalogRepo+":"+catalogVersion); err != nil {
-		return errors.Wrap(err, "failed to push portable OCI addon catalog")
+		return false, errors.Wrap(err, "failed to push portable OCI addon catalog")
 	}
-	return nil
+	return false, nil
+}
+
+// catalogTagHead returns the highest catalog tag seen, or "" if the listing
+// failed or found none. Used only to detect whether the catalog tag changed
+// between two listings, not to resolve a real version.
+func catalogTagHead(tags []string, err error) string {
+	if err != nil || len(tags) == 0 {
+		return ""
+	}
+	return tags[0]
 }

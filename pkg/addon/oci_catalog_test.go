@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/registry"
 )
 
 // closedPortRegistryURL points listPortableOCICatalog* at a loopback port
@@ -72,4 +73,64 @@ func TestUpdateOCIAddonCatalog(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "refusing to rewrite the OCI addon catalog: cannot read the existing catalog")
 	}
+}
+
+// TestCatalogTagHead pins the comparison updateOCIAddonCatalogOnce's conflict
+// check depends on: a listing error or an empty list must both read as
+// "absent" (not as two different values that would falsely signal a
+// conflict), and the highest tag is what identifies a change.
+func TestCatalogTagHead(t *testing.T) {
+	boom := assert.AnError
+
+	assert.Equal(t, "", catalogTagHead(nil, nil), "no tags, no error: absent")
+	assert.Equal(t, "", catalogTagHead(nil, boom), "listing failed: treated as absent")
+	assert.Equal(t, "", catalogTagHead([]string{}, nil), "empty list: absent")
+	assert.Equal(t, "0.0.2", catalogTagHead([]string{"0.0.2", "0.0.1"}, nil), "highest tag identifies the head")
+}
+
+// TestUpdateOCIAddonCatalogRetriesOnConflict pins the retry loop itself:
+// every attempt reporting a conflict must be retried up to
+// maxCatalogPublishAttempts times, backing off between attempts, and then
+// surface a clear error rather than silently giving up after one collision.
+func TestUpdateOCIAddonCatalogRetriesOnConflict(t *testing.T) {
+	original := updateOCIAddonCatalogOnceFn
+	defer func() { updateOCIAddonCatalogOnceFn = original }()
+
+	t.Run("retries until a later attempt succeeds", func(t *testing.T) {
+		var calls int
+		updateOCIAddonCatalogOnceFn = func(*registry.Client, *OCIAddonSource, *chart.Metadata, bool) (bool, error) {
+			calls++
+			if calls < 3 {
+				return true, assert.AnError
+			}
+			return false, nil
+		}
+		err := updateOCIAddonCatalog(nil, &OCIAddonSource{URL: closedPortRegistryURL}, &chart.Metadata{Name: "fluxcd"}, false)
+		require.NoError(t, err)
+		assert.Equal(t, 3, calls, "must stop retrying as soon as an attempt succeeds")
+	})
+
+	t.Run("gives up after maxCatalogPublishAttempts and reports the last conflict", func(t *testing.T) {
+		var calls int
+		updateOCIAddonCatalogOnceFn = func(*registry.Client, *OCIAddonSource, *chart.Metadata, bool) (bool, error) {
+			calls++
+			return true, assert.AnError
+		}
+		err := updateOCIAddonCatalog(nil, &OCIAddonSource{URL: closedPortRegistryURL}, &chart.Metadata{Name: "fluxcd"}, false)
+		require.Error(t, err)
+		assert.Equal(t, maxCatalogPublishAttempts, calls)
+		assert.Contains(t, err.Error(), "a concurrent publisher kept winning the race")
+	})
+
+	t.Run("a non-conflict error returns immediately without retrying", func(t *testing.T) {
+		var calls int
+		updateOCIAddonCatalogOnceFn = func(*registry.Client, *OCIAddonSource, *chart.Metadata, bool) (bool, error) {
+			calls++
+			return false, assert.AnError
+		}
+		err := updateOCIAddonCatalog(nil, &OCIAddonSource{URL: closedPortRegistryURL}, &chart.Metadata{Name: "fluxcd"}, false)
+		require.Error(t, err)
+		assert.Equal(t, 1, calls, "a definitive failure must not be retried")
+		assert.Same(t, assert.AnError, err)
+	})
 }
