@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +36,22 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
 )
+
+// wrapSteps is the test-side counterpart to the package's own unwrapSteps --
+// builds fixture Steps from plain engine-shaped WorkflowStepStatus entries.
+func wrapSteps(steps ...workflowv1alpha1.WorkflowStepStatus) []v2alpha1.OperationWorkflowStepStatus {
+	out := make([]v2alpha1.OperationWorkflowStepStatus, len(steps))
+	for i, s := range steps {
+		out[i] = v2alpha1.OperationWorkflowStepStatus{WorkflowStepStatus: s}
+	}
+	return out
+}
+
+// engineShape extracts the subset of ws that used to live on the inlined
+// WorkflowRunStatus, for tests that assert against that shape directly.
+func engineShape(ws v2alpha1.OperationWorkflowStatus) workflowv1alpha1.WorkflowRunStatus {
+	return workflowv1alpha1.WorkflowRunStatus{Suspend: ws.Suspend, Steps: unwrapSteps(ws.Steps)}
+}
 
 func operationTestClient(t *testing.T) client.Client {
 	t.Helper()
@@ -69,19 +86,17 @@ func TestOperationSuspend(t *testing.T) {
 				Status: v2alpha1.OperationStatus{
 					Phase: v2alpha1.OperationPhaseRunning,
 					Workflows: []v2alpha1.OperationWorkflowStatus{{
-						WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-							Steps: []workflowv1alpha1.WorkflowStepStatus{
-								{
-									StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseRunning},
-									SubStepsStatus: []workflowv1alpha1.StepStatus{
-										{Name: "sub1", Phase: workflowv1alpha1.WorkflowStepPhaseRunning},
-									},
-								},
-								{
-									StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded},
+						Steps: wrapSteps(
+							workflowv1alpha1.WorkflowStepStatus{
+								StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseRunning},
+								SubStepsStatus: []workflowv1alpha1.StepStatus{
+									{Name: "sub1", Phase: workflowv1alpha1.WorkflowStepPhaseRunning},
 								},
 							},
-						},
+							workflowv1alpha1.WorkflowStepStatus{
+								StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded},
+							},
+						),
 					}},
 				},
 			},
@@ -107,12 +122,10 @@ func TestOperationSuspend(t *testing.T) {
 				Status: v2alpha1.OperationStatus{
 					Phase: v2alpha1.OperationPhaseRunning,
 					Workflows: []v2alpha1.OperationWorkflowStatus{{
-						WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-							Steps: []workflowv1alpha1.WorkflowStepStatus{
-								{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseRunning}},
-								{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseRunning}},
-							},
-						},
+						Steps: wrapSteps(
+							workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseRunning}},
+							workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseRunning}},
+						),
 					}},
 				},
 			},
@@ -165,7 +178,7 @@ func TestOperationSuspend(t *testing.T) {
 
 			got := &v2alpha1.Operation{}
 			r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(tc.op), got))
-			r.Equal(tc.expected, got.Status.Workflows[0].WorkflowRunStatus)
+			r.Equal(tc.expected, engineShape(got.Status.Workflows[0]))
 		})
 	}
 }
@@ -195,12 +208,10 @@ func TestOperationResume(t *testing.T) {
 				Status: v2alpha1.OperationStatus{
 					Phase: v2alpha1.OperationPhaseSuspended,
 					Workflows: []v2alpha1.OperationWorkflowStatus{{
-						WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-							Suspend: true,
-							Steps: []workflowv1alpha1.WorkflowStepStatus{
-								{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSuspending}},
-							},
-						},
+						Suspend: true,
+						Steps: wrapSteps(
+							workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSuspending}},
+						),
 					}},
 				},
 			},
@@ -217,13 +228,11 @@ func TestOperationResume(t *testing.T) {
 				Status: v2alpha1.OperationStatus{
 					Phase: v2alpha1.OperationPhaseSuspended,
 					Workflows: []v2alpha1.OperationWorkflowStatus{{
-						WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-							Suspend: true,
-							Steps: []workflowv1alpha1.WorkflowStepStatus{
-								{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSuspending}},
-								{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseSuspending}},
-							},
-						},
+						Suspend: true,
+						Steps: wrapSteps(
+							workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSuspending}},
+							workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseSuspending}},
+						),
 					}},
 				},
 			},
@@ -239,10 +248,8 @@ func TestOperationResume(t *testing.T) {
 			op: &v2alpha1.Operation{
 				ObjectMeta: metav1.ObjectMeta{Name: "resume-not-found"},
 				Status: v2alpha1.OperationStatus{
-					Phase: v2alpha1.OperationPhaseSuspended,
-					Workflows: []v2alpha1.OperationWorkflowStatus{{
-						WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{Suspend: true},
-					}},
+					Phase:     v2alpha1.OperationPhaseSuspended,
+					Workflows: []v2alpha1.OperationWorkflowStatus{{Suspend: true}},
 				},
 			},
 			expectedErr: "can not find step missing",
@@ -271,7 +278,7 @@ func TestOperationResume(t *testing.T) {
 			got := &v2alpha1.Operation{}
 			r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(tc.op), got))
 			r.False(got.Status.Workflows[0].Suspend)
-			r.Equal(tc.expected, got.Status.Workflows[0].WorkflowRunStatus)
+			r.Equal(tc.expected, engineShape(got.Status.Workflows[0]))
 		})
 	}
 }
@@ -288,10 +295,8 @@ func TestOperationTerminate(t *testing.T) {
 	op := &v2alpha1.Operation{
 		ObjectMeta: metav1.ObjectMeta{Name: "terminate-me"},
 		Status: v2alpha1.OperationStatus{
-			Phase: v2alpha1.OperationPhaseRunning,
-			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{Suspend: true},
-			}},
+			Phase:     v2alpha1.OperationPhaseRunning,
+			Workflows: []v2alpha1.OperationWorkflowStatus{{Suspend: true}},
 		},
 	}
 	r.NoError(cli.Create(ctx, op))
@@ -347,14 +352,23 @@ func TestOperationRestartWholeWorkflow(t *testing.T) {
 			Template:       &v2alpha1.OperationTemplateSpec{},
 			CompletionTime: &metav1.Time{},
 			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				Cluster: "local",
-				WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-					Terminated:     true,
-					Finished:       true,
-					ContextBackend: &corev1.ObjectReference{Name: "whole-restart-context", Namespace: "default"},
-					Steps: []workflowv1alpha1.WorkflowStepStatus{
-						{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded, Message: "ok"}},
-						{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseFailed, Message: "failed hard"}},
+				Cluster:        "local",
+				Terminated:     true,
+				Finished:       true,
+				ContextBackend: &corev1.ObjectReference{Name: "whole-restart-context", Namespace: "default"},
+				// .Attempts pre-populated on each entry, simulating what the
+				// controller's recordStepCompletion already logged when
+				// each step first finished (this test only exercises
+				// restartFrom's own snapshot-then-wipe logic, not that
+				// controller-side recording).
+				Steps: []v2alpha1.OperationWorkflowStepStatus{
+					{
+						WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded, Message: "ok"}},
+						Attempts:           []v2alpha1.OperationStepAttempt{{AttemptNumber: 1, Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded, Message: "ok"}},
+					},
+					{
+						WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseFailed, Message: "failed hard"}},
+						Attempts:           []v2alpha1.OperationStepAttempt{{AttemptNumber: 1, Phase: workflowv1alpha1.WorkflowStepPhaseFailed, Message: "failed hard"}},
 					},
 				},
 			}},
@@ -374,7 +388,14 @@ func TestOperationRestartWholeWorkflow(t *testing.T) {
 	r.Equal(v2alpha1.OperationPhaseRunning, got.Status.Phase)
 	r.Nil(got.Status.CompletionTime)
 	r.EqualValues(2, got.Status.Attempts)
-	r.Equal(workflowv1alpha1.WorkflowRunStatus{}, got.Status.Workflows[0].WorkflowRunStatus)
+	gotWS := got.Status.Workflows[0]
+	r.False(gotWS.Terminated)
+	r.False(gotWS.Finished)
+	r.False(gotWS.Suspend)
+	r.Nil(gotWS.ContextBackend)
+	r.Empty(gotWS.Steps)
+	r.True(gotWS.StartTime.IsZero())
+	r.True(gotWS.EndTime.IsZero())
 
 	// Prior attempts are preserved even though the live Steps were wiped.
 	r.Equal([]v2alpha1.OperationStepAttempt{{AttemptNumber: 1, Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded, Message: "ok"}},
@@ -408,21 +429,31 @@ func TestOperationRestartFromStep(t *testing.T) {
 				Phase:    v2alpha1.OperationPhaseFailed,
 				Template: &v2alpha1.OperationTemplateSpec{Workflow: oamv1alpha1.WorkflowSpec{Steps: steps}},
 				Workflows: []v2alpha1.OperationWorkflowStatus{{
-					WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-						ContextBackend: &corev1.ObjectReference{Name: name + "-context", Namespace: "default"},
-						// A real terminal run leaves these set -- a --step
-						// restart has to clear them itself (see the
-						// "resets whole-run flags" subtest below), the same
-						// way the whole-workflow path's full wipe does
-						// implicitly.
-						Terminated: true,
-						Finished:   true,
-						Suspend:    true,
-						EndTime:    metav1.Time{Time: time.Now()},
-						Steps: []workflowv1alpha1.WorkflowStepStatus{
-							{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
-							{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: phase}},
-							{StepStatus: workflowv1alpha1.StepStatus{Name: "step3", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
+					ContextBackend: &corev1.ObjectReference{Name: name + "-context", Namespace: "default"},
+					// A real terminal run leaves these set -- a --step
+					// restart has to clear them itself (see the
+					// "resets whole-run flags" subtest below), the same
+					// way the whole-workflow path's full wipe does
+					// implicitly.
+					Terminated: true,
+					Finished:   true,
+					Suspend:    true,
+					EndTime:    metav1.Time{Time: time.Now()},
+					// .Attempts pre-populated on each entry, simulating
+					// what the controller's recordStepCompletion already
+					// logged when each step first finished.
+					Steps: []v2alpha1.OperationWorkflowStepStatus{
+						{
+							WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+							Attempts:           []v2alpha1.OperationStepAttempt{{AttemptNumber: 1, Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+						},
+						{
+							WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: phase}},
+							Attempts:           []v2alpha1.OperationStepAttempt{{AttemptNumber: 1, Phase: phase}},
+						},
+						{
+							WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step3", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
+							Attempts:           []v2alpha1.OperationStepAttempt{{AttemptNumber: 1, Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
 						},
 					},
 				}},
@@ -457,11 +488,15 @@ func TestOperationRestartFromStep(t *testing.T) {
 			got := &v2alpha1.Operation{}
 			r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), got))
 
-			// step1 (before the restart point) is untouched; step2 and step3
-			// (the target and everything after it, in sequential mode) are gone
-			// from the live status -- they'll re-run from scratch.
-			r.Equal([]workflowv1alpha1.WorkflowStepStatus{
-				{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+			// step1 (before the restart point), including its already-
+			// recorded attempt, is untouched; step2 and step3 (the target
+			// and everything after it, in sequential mode) are gone from
+			// the live status -- they'll re-run from scratch.
+			r.Equal([]v2alpha1.OperationWorkflowStepStatus{
+				{
+					WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+					Attempts:           []v2alpha1.OperationStepAttempt{{AttemptNumber: 1, Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+				},
 			}, got.Status.Workflows[0].Steps)
 
 			r.Len(got.Status.Workflows[0].StepAttempts["step2"], 1)
@@ -498,5 +533,54 @@ func TestOperationRestartFromStep(t *testing.T) {
 		r.NoError(cli.Create(ctx, op))
 		err := NewOperationWorkflowStepOperator(cli, nil, op).Restart(ctx, "no-such-step")
 		r.ErrorContains(err, "no-such-step not found")
+	})
+
+	// Regression: a step restarted a *second* time must carry forward its
+	// full attempt history (1, 2, ...), not just the latest one --
+	// numbering itself is recordStepCompletion's job
+	// (pkg/controller/.../operation/generator.go, covered by
+	// TestRecordStepCompletion there); snapshotAttempts here only needs to
+	// preserve whatever it's handed.
+	t.Run("second restart of the same step: full attempt history carried forward, not just the latest", func(t *testing.T) {
+		r := require.New(t)
+		cli := operationTestClient(t)
+		op := newOp("restart-twice", workflowv1alpha1.WorkflowStepPhaseFailed)
+		r.NoError(cli.Create(ctx, op))
+
+		b, err := json.Marshal(vars)
+		r.NoError(err)
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: op.Name + "-context", Namespace: "default"},
+			Data:       map[string]string{"vars": string(b)},
+		}
+		r.NoError(cli.Create(ctx, cm))
+
+		r.NoError(NewOperationWorkflowStepOperator(cli, nil, op).Restart(ctx, "step2"))
+
+		got := &v2alpha1.Operation{}
+		r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), got))
+		r.Len(got.Status.Workflows[0].StepAttempts["step2"], 1)
+
+		// Simulate the controller's reconcile in between: step2 reappears,
+		// fails again, and recordStepCompletion appends attempt 2 onto the
+		// pending attempt 1 it reattached -- exactly what
+		// operationWorkflowStatusFromEngine does.
+		firstAttempt := got.Status.Workflows[0].StepAttempts["step2"]
+		got.Status.Workflows[0].Steps = append(got.Status.Workflows[0].Steps, v2alpha1.OperationWorkflowStepStatus{
+			WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step2", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
+			Attempts:           append(firstAttempt, v2alpha1.OperationStepAttempt{AttemptNumber: 2, Phase: workflowv1alpha1.WorkflowStepPhaseFailed}),
+		})
+		got.Status.Workflows[0].StepAttempts = nil
+		got.Status.Phase = v2alpha1.OperationPhaseFailed
+		r.NoError(cli.Status().Update(ctx, got))
+
+		r.NoError(NewOperationWorkflowStepOperator(cli, nil, got).Restart(ctx, "step2"))
+
+		final := &v2alpha1.Operation{}
+		r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), final))
+		attempts := final.Status.Workflows[0].StepAttempts["step2"]
+		require.Len(t, attempts, 2)
+		assert.EqualValues(t, 1, attempts[0].AttemptNumber)
+		assert.EqualValues(t, 2, attempts[1].AttemptNumber)
 	})
 }

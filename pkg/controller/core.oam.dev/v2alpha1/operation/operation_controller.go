@@ -145,11 +145,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		logCtx.Error(execErr, "execute operation workflow")
 	}
 
-	op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{{
-		Cluster:           localCluster,
-		WorkflowRunStatus: instance.Status,
-		StepAttempts:      carryForwardStepAttempts(op),
-	}}
+	var previousWorkflow v2alpha1.OperationWorkflowStatus
+	if len(op.Status.Workflows) > 0 {
+		previousWorkflow = op.Status.Workflows[0]
+	}
+	op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{
+		operationWorkflowStatusFromEngine(localCluster, instance.Status, previousWorkflow),
+	}
 
 	switch phase {
 	case workflowv1alpha1.WorkflowStateSucceeded:

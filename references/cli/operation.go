@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosuri/uitable"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -138,8 +139,10 @@ func validateOperationClusterFlag(cluster string) error {
 }
 
 // findOperationStepStatus looks up a step (or sub-step) by name in op's
-// (single, local-cluster) workflow status.
-func findOperationStepStatus(op *v2alpha1.Operation, step string) *workflowv1alpha1.WorkflowStepStatus {
+// (single, local-cluster) workflow status. A sub-step match is wrapped with
+// no Attempts -- sub-step attempt history isn't tracked (see
+// OperationWorkflowStepStatus's doc).
+func findOperationStepStatus(op *v2alpha1.Operation, step string) *v2alpha1.OperationWorkflowStepStatus {
 	if len(op.Status.Workflows) == 0 {
 		return nil
 	}
@@ -147,9 +150,9 @@ func findOperationStepStatus(op *v2alpha1.Operation, step string) *workflowv1alp
 		if s.Name == step {
 			return &op.Status.Workflows[0].Steps[i]
 		}
-		for j, sub := range s.SubStepsStatus {
+		for _, sub := range s.SubStepsStatus {
 			if sub.Name == step {
-				return &workflowv1alpha1.WorkflowStepStatus{StepStatus: op.Status.Workflows[0].Steps[i].SubStepsStatus[j]}
+				return &v2alpha1.OperationWorkflowStepStatus{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: sub}}
 			}
 		}
 	}
@@ -625,19 +628,20 @@ func printOperationStatus(cmd *cobra.Command, op *v2alpha1.Operation) {
 	}
 	cmd.Println(table)
 
-	stepAttempts := op.Status.Workflows[0].StepAttempts
-	if len(stepAttempts) == 0 {
-		return
-	}
-	cmd.Println("Attempt history:")
-	history := newUITable()
-	history.AddRow("STEP", "ATTEMPT", "PHASE", "MESSAGE")
+	var history *uitable.Table
 	for _, step := range op.Status.Workflows[0].Steps {
-		for _, attempt := range stepAttempts[step.Name] {
+		for _, attempt := range step.Attempts {
+			if history == nil {
+				history = newUITable()
+				history.AddRow("STEP", "ATTEMPT", "PHASE", "MESSAGE")
+			}
 			history.AddRow(step.Name, attempt.AttemptNumber, attempt.Phase, attempt.Message)
 		}
 	}
-	cmd.Println(history)
+	if history != nil {
+		cmd.Println("Attempt history:")
+		cmd.Println(history)
+	}
 }
 
 // parseOperationParams parses "key=value" flags into a map.

@@ -77,6 +77,30 @@ func (wo operationWorkflowStepOperator) asOperator() operationWorkflowOperator {
 	return operationWorkflowOperator{cli: wo.cli, outputWriter: wo.outputWriter, operation: wo.operation}
 }
 
+// unwrapSteps copies out the plain engine-shaped status wfUtils.OperateSteps
+// (the one vendored helper this file calls directly) expects -- it takes
+// []workflowv1alpha1.WorkflowStepStatus, not our own
+// []v2alpha1.OperationWorkflowStepStatus. Pair with rewrapSteps to write the
+// mutations back.
+func unwrapSteps(steps []v2alpha1.OperationWorkflowStepStatus) []workflowv1alpha1.WorkflowStepStatus {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]workflowv1alpha1.WorkflowStepStatus, len(steps))
+	for i, s := range steps {
+		out[i] = s.WorkflowStepStatus
+	}
+	return out
+}
+
+// rewrapSteps writes engineSteps (as mutated in place by wfUtils.OperateSteps)
+// back into ws, preserving each entry's own Attempts.
+func rewrapSteps(ws []v2alpha1.OperationWorkflowStepStatus, engineSteps []workflowv1alpha1.WorkflowStepStatus) {
+	for i := range ws {
+		ws[i].WorkflowStepStatus = engineSteps[i]
+	}
+}
+
 // workflowStatus returns the single (local-cluster) workflow status entry --
 // multi-cluster dispatch isn't implemented yet, so index 0 is always the
 // right (and only) entry once a workflow has started.
@@ -112,7 +136,7 @@ func (wo operationWorkflowOperator) suspend(ctx context.Context, step string) er
 	}
 
 	ws.Suspend = true
-	steps := ws.Steps
+	steps := unwrapSteps(ws.Steps)
 	found := step == ""
 
 	for i, s := range steps {
@@ -142,6 +166,7 @@ func (wo operationWorkflowOperator) suspend(ctx context.Context, step string) er
 	if !found {
 		return fmt.Errorf("can not find step %s", step)
 	}
+	rewrapSteps(ws.Steps, steps)
 
 	if err := wo.cli.Status().Update(ctx, op); err != nil {
 		return err
@@ -179,7 +204,7 @@ func (wo operationWorkflowOperator) resume(ctx context.Context, step string) err
 	}
 
 	ws.Suspend = false
-	steps := ws.Steps
+	steps := unwrapSteps(ws.Steps)
 	found := step == ""
 
 	for i, s := range steps {
@@ -209,6 +234,7 @@ func (wo operationWorkflowOperator) resume(ctx context.Context, step string) err
 	if !found {
 		return fmt.Errorf("can not find step %s", step)
 	}
+	rewrapSteps(ws.Steps, steps)
 
 	if err := wo.cli.Status().Update(ctx, op); err != nil {
 		return err
@@ -275,7 +301,17 @@ func (wo operationWorkflowOperator) restartFrom(ctx context.Context, step string
 			}
 		}
 		snapshotAttempts(ws, ws.Steps)
-		ws.WorkflowRunStatus = workflowv1alpha1.WorkflowRunStatus{}
+		ws.Mode = oamv1alpha1.WorkflowExecuteMode{}
+		ws.Phase = ""
+		ws.Message = ""
+		ws.Suspend = false
+		ws.SuspendState = ""
+		ws.Terminated = false
+		ws.Finished = false
+		ws.ContextBackend = nil
+		ws.Steps = nil
+		ws.StartTime = metav1.Time{}
+		ws.EndTime = metav1.Time{}
 	}
 
 	op.Status.Phase = v2alpha1.OperationPhaseRunning
@@ -364,17 +400,29 @@ func (wo operationWorkflowOperator) Terminate(ctx context.Context) error {
 	return writeOutputF(wo.outputWriter, "Successfully terminate operation: %s\n", op.Name)
 }
 
-// snapshotAttempts copies the result of the run about to be discarded into
-// ws.StepAttempts, keyed by step name, before restartFrom/restartFromStep
-// clears it. affected lists the step (and sub-step) status entries being
-// reset -- for a whole-workflow restart that's every entry in ws.Steps; for
-// a --step restart it's only the target step and its dependency set.
-func snapshotAttempts(ws *v2alpha1.OperationWorkflowStatus, affected []workflowv1alpha1.WorkflowStepStatus) {
+// snapshotAttempts preserves affected steps' Attempts -- already recorded
+// by the controller the moment each one completed (see recordStepCompletion
+// in pkg/controller/.../operation/generator.go, called every reconcile, not
+// just at restart) -- into ws.StepAttempts (pending re-attachment once the
+// step's entry reappears -- see that field's doc), before
+// restartFrom/restartFromStep removes the live entry. affected lists the
+// step (and sub-step) status entries being reset -- for a whole-workflow
+// restart that's every entry in ws.Steps; for a --step restart it's only
+// the target step and its dependency set.
+//
+// Sub-steps aren't wrapped (no nested Attempts field of their own -- see
+// OperationWorkflowStepStatus's doc), so recordStepCompletion never runs
+// for them; their attempt history is still computed here, from their
+// current status directly, the way top-level steps' used to be before the
+// controller took over logging those.
+func snapshotAttempts(ws *v2alpha1.OperationWorkflowStatus, affected []v2alpha1.OperationWorkflowStepStatus) {
 	if ws.StepAttempts == nil {
 		ws.StepAttempts = map[string][]v2alpha1.OperationStepAttempt{}
 	}
 	for _, s := range affected {
-		recordAttempt(ws, s.Name, s.StepStatus)
+		if len(s.Attempts) > 0 {
+			ws.StepAttempts[s.Name] = s.Attempts
+		}
 		for _, sub := range s.SubStepsStatus {
 			recordAttempt(ws, sub.Name, sub)
 		}
@@ -399,9 +447,9 @@ func recordAttempt(ws *v2alpha1.OperationWorkflowStatus, name string, s workflow
 // the affected status entries (so the caller can snapshot them before
 // they're gone), and the dependency set by name (so the caller can clear
 // the same steps' recorded outputs from the context-backend ConfigMap).
-func cleanOperationStatusFromStep(steps []oamv1alpha1.WorkflowStep, stepStatus []workflowv1alpha1.WorkflowStepStatus, mode oamv1alpha1.WorkflowExecuteMode, stepName string) ([]workflowv1alpha1.WorkflowStepStatus, []workflowv1alpha1.WorkflowStepStatus, []string, error) {
+func cleanOperationStatusFromStep(steps []oamv1alpha1.WorkflowStep, stepStatus []v2alpha1.OperationWorkflowStepStatus, mode oamv1alpha1.WorkflowExecuteMode, stepName string) ([]v2alpha1.OperationWorkflowStepStatus, []v2alpha1.OperationWorkflowStepStatus, []string, error) {
 	found := false
-	var affected []workflowv1alpha1.WorkflowStepStatus
+	var affected []v2alpha1.OperationWorkflowStepStatus
 	dependency := make([]string, 0)
 
 	for i, step := range stepStatus {
@@ -415,10 +463,10 @@ func cleanOperationStatusFromStep(steps []oamv1alpha1.WorkflowStep, stepStatus [
 		for _, sub := range step.SubStepsStatus {
 			if sub.Name == stepName {
 				subDependency := operationStepDependency(steps, stepName, mode.SubSteps == workflowv1alpha1.WorkflowModeDAG)
-				affected = []workflowv1alpha1.WorkflowStepStatus{{StepStatus: sub}}
+				affected = []v2alpha1.OperationWorkflowStepStatus{{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: sub}}}
 				for _, s := range step.SubStepsStatus {
 					if slices.Contains(subDependency, s.Name) {
-						affected = append(affected, workflowv1alpha1.WorkflowStepStatus{StepStatus: s})
+						affected = append(affected, v2alpha1.OperationWorkflowStepStatus{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: s}})
 					}
 				}
 				stepStatus[i].SubStepsStatus = deleteOperationSubStepStatus(subDependency, step.SubStepsStatus, stepName)
@@ -445,8 +493,8 @@ func cleanOperationStatusFromStep(steps []oamv1alpha1.WorkflowStep, stepStatus [
 // selectStepStatus returns the status entries that deleteOperationStepStatus
 // would remove -- i.e. the ones being reset -- so the caller can snapshot
 // them first.
-func selectStepStatus(dependency []string, steps []workflowv1alpha1.WorkflowStepStatus, stepName string, group bool) []workflowv1alpha1.WorkflowStepStatus {
-	var selected []workflowv1alpha1.WorkflowStepStatus
+func selectStepStatus(dependency []string, steps []v2alpha1.OperationWorkflowStepStatus, stepName string, group bool) []v2alpha1.OperationWorkflowStepStatus {
+	var selected []v2alpha1.OperationWorkflowStepStatus
 	for _, step := range steps {
 		if group && slices.Contains(dependency, step.Name) {
 			selected = append(selected, step)
@@ -459,8 +507,8 @@ func selectStepStatus(dependency []string, steps []workflowv1alpha1.WorkflowStep
 	return selected
 }
 
-func deleteOperationStepStatus(dependency []string, steps []workflowv1alpha1.WorkflowStepStatus, stepName string, group bool) []workflowv1alpha1.WorkflowStepStatus {
-	status := make([]workflowv1alpha1.WorkflowStepStatus, 0, len(steps))
+func deleteOperationStepStatus(dependency []string, steps []v2alpha1.OperationWorkflowStepStatus, stepName string, group bool) []v2alpha1.OperationWorkflowStepStatus {
+	status := make([]v2alpha1.OperationWorkflowStepStatus, 0, len(steps))
 	for _, step := range steps {
 		if group && !slices.Contains(dependency, step.Name) {
 			status = append(status, step)

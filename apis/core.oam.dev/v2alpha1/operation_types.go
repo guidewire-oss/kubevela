@@ -17,9 +17,11 @@
 package v2alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	oamv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 )
 
@@ -92,20 +94,34 @@ const (
 	OperationPhaseCancelled OperationPhase = "Cancelled"
 )
 
-// OperationStepAttempt records one execution of a single workflow step. The
-// embedded WorkflowRunStatus.Steps (from github.com/kubevela/workflow) only
-// ever holds the latest attempt; this is where prior attempts that a
-// restart's snapshot-then-reset would otherwise discard get preserved.
+// OperationStepAttempt records one completed execution of a single workflow
+// step -- logged the moment that execution reaches a terminal phase
+// (succeeded, failed, or skipped), whether or not it's ever superseded by a
+// restart. A step that succeeds on its first try, with no restart ever
+// happening, still gets one recorded here. Nested under the step's own
+// entry in OperationWorkflowStatus.Steps (OperationWorkflowStepStatus.
+// Attempts) -- kept as its own type, rather than folded into
+// OperationWorkflowStepStatus directly, only because it's also the payload
+// type OperationWorkflowStatus.StepAttempts moves briefly during a restart
+// (see that field's doc).
 type OperationStepAttempt struct {
 	// AttemptNumber is the 1-based ordinal of this attempt for the step.
 	AttemptNumber int64 `json:"attemptNumber"`
-	// Phase is the step's WorkflowStepPhase at the time it was superseded.
+	// ID is the embedded engine's own execution ID for this attempt
+	// (WorkflowStepStatus.ID). Used to detect whether a given execution has
+	// already been recorded, so a step sitting in a terminal phase across
+	// many reconciles doesn't get logged more than once; also a
+	// correlation key back to whatever the step's own type named using
+	// context.stepSessionID (e.g. a Job name).
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Phase is this attempt's terminal WorkflowStepPhase.
 	// +optional
 	Phase workflowv1alpha1.WorkflowStepPhase `json:"phase,omitempty"`
-	// Message carries the step's message at the time it was superseded.
+	// Message carries this attempt's message, if any.
 	// +optional
 	Message string `json:"message,omitempty"`
-	// Reason carries the step's reason at the time it was superseded.
+	// Reason carries this attempt's reason, if any.
 	// +optional
 	Reason string `json:"reason,omitempty"`
 	// StartTime is when this attempt of the step first executed.
@@ -117,22 +133,90 @@ type OperationStepAttempt struct {
 	TriggeredBy string `json:"triggeredBy,omitempty"`
 }
 
+// OperationWorkflowStepStatus is one workflow step's live status, wrapping
+// the embedded engine's own per-step status (from github.com/kubevela/workflow)
+// with this step's attempt history. The controller appends to Attempts the
+// moment this step's execution reaches a terminal phase (see
+// recordStepCompletion in pkg/controller/.../operation/generator.go) --
+// every completed run gets logged, not only ones later superseded by a
+// restart. A restart of this step reuses the same step name but generates a
+// fresh embedded WorkflowStepStatus.ID (the engine looks up the ID by name
+// and only reuses it if a live entry with that name still exists -- see
+// generateStepID upstream -- which is also exactly why a restart must
+// remove, not reset in place, the target step's entry: reusing the ID would
+// reuse the prior attempt's Job name too). Attempts already recorded on the
+// entry a restart is about to remove get preserved via
+// OperationWorkflowStatus.StepAttempts until the step reappears.
+type OperationWorkflowStepStatus struct {
+	// WorkflowStepStatus is this step's live status, reused verbatim from
+	// github.com/kubevela/workflow.
+	workflowv1alpha1.WorkflowStepStatus `json:",inline"`
+
+	// Attempts is prior-attempt history for this step, most recent last.
+	// +optional
+	Attempts []OperationStepAttempt `json:"attempts,omitempty"`
+}
+
 // OperationWorkflowStatus is the workflow status for one cluster. Only a
 // single entry is populated so far, but the shape already matches
 // multi-cluster dispatch (status.workflows[], KEP 2.15) so a later
 // multi-cluster Operation doesn't need a status-shape migration.
+//
+// This does not inline workflowv1alpha1.WorkflowRunStatus verbatim the way
+// an early draft did -- Steps needs to be OperationWorkflowStepStatus
+// (attempts nested per-step) instead of the vendored WorkflowStepStatus, and
+// a Go JSON tag can only route to one field at a given nesting depth: had
+// Steps stayed inlined from the embed while also being redeclared here to
+// change its element type, the *embedded* copy (what
+// pkg/controller/.../operation.buildWorkflowInstance actually feeds back to
+// the engine to resume mid-workflow) would silently unmarshal as empty on
+// every read, and the engine would re-run every step from scratch on every
+// reconcile. So every other field WorkflowRunStatus carries is declared
+// explicitly below instead, mirroring its JSON shape field-for-field.
 type OperationWorkflowStatus struct {
 	// Cluster is the resolved cluster this workflow ran against. Always
 	// populated, even though only one is ever resolved so far.
 	Cluster string `json:"cluster,omitempty"`
 
-	// WorkflowRunStatus is the status of the embedded workflow engine run,
-	// reused verbatim from github.com/kubevela/workflow.
-	workflowv1alpha1.WorkflowRunStatus `json:",inline"`
+	// Mode is the embedded engine's own step/sub-step execution mode. Same
+	// JSON tag as upstream (no omitempty -- WorkflowExecuteMode is a
+	// struct, its own fields are what carry omitempty).
+	Mode oamv1alpha1.WorkflowExecuteMode `json:"mode"`
+	// Phase is the embedded engine's own workflow-run phase (its JSON tag
+	// is "status" upstream; kept identical here).
+	Phase workflowv1alpha1.WorkflowRunPhase `json:"status"`
+	// Message carries the embedded engine's own message, if any.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// Suspend mirrors the embedded engine's own suspend flag.
+	Suspend bool `json:"suspend"`
+	// +optional
+	SuspendState string `json:"suspendState,omitempty"`
+	// Terminated mirrors the embedded engine's own terminated flag.
+	Terminated bool `json:"terminated"`
+	// Finished mirrors the embedded engine's own finished flag.
+	Finished bool `json:"finished"`
+	// +optional
+	ContextBackend *corev1.ObjectReference `json:"contextBackend,omitempty"`
 
-	// StepAttempts is prior-attempt history per step name. Populated only on
-	// restart, immediately before the corresponding entries in the embedded
-	// Steps are reset.
+	// Steps is the per-step status. Unlike the embedded engine's own
+	// WorkflowStepStatus, each entry carries its own Attempts history
+	// alongside its live status -- see OperationWorkflowStepStatus.
+	// +optional
+	Steps []OperationWorkflowStepStatus `json:"steps,omitempty"`
+
+	// +optional
+	StartTime metav1.Time `json:"startTime,omitempty"`
+	// +optional
+	EndTime metav1.Time `json:"endTime,omitempty"`
+
+	// StepAttempts holds a step's attempt history only transiently, for the
+	// single reconcile between a restart removing that step's live entry
+	// (from Steps, above) and the engine recreating it: with nowhere on a
+	// (currently nonexistent) entry to nest Attempts, the history has to
+	// wait here until the step reappears, at which point it's merged into
+	// that entry's own Attempts and cleared from here. In steady state
+	// (nothing mid-restart) this is empty.
 	// +optional
 	StepAttempts map[string][]OperationStepAttempt `json:"stepAttempts,omitempty"`
 }

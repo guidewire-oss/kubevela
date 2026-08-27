@@ -68,9 +68,9 @@ func TestFindOperationStepStatus(t *testing.T) {
 	op := &v2alpha1.Operation{
 		Status: v2alpha1.OperationStatus{
 			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-					Steps: []workflowv1alpha1.WorkflowStepStatus{
-						{
+				Steps: []v2alpha1.OperationWorkflowStepStatus{
+					{
+						WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{
 							StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded},
 							SubStepsStatus: []workflowv1alpha1.StepStatus{
 								{Name: "sub1", Phase: workflowv1alpha1.WorkflowStepPhaseFailed},
@@ -172,10 +172,8 @@ func TestOperationRestartOnlyWarning(t *testing.T) {
 	succeededStep := &v2alpha1.Operation{
 		Status: v2alpha1.OperationStatus{
 			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-					Steps: []workflowv1alpha1.WorkflowStepStatus{
-						{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
-					},
+				Steps: []v2alpha1.OperationWorkflowStepStatus{
+					{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}}},
 				},
 			}},
 		},
@@ -183,10 +181,8 @@ func TestOperationRestartOnlyWarning(t *testing.T) {
 	failedStep := &v2alpha1.Operation{
 		Status: v2alpha1.OperationStatus{
 			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				WorkflowRunStatus: workflowv1alpha1.WorkflowRunStatus{
-					Steps: []workflowv1alpha1.WorkflowStepStatus{
-						{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
-					},
+				Steps: []v2alpha1.OperationWorkflowStepStatus{
+					{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}}},
 				},
 			}},
 		},

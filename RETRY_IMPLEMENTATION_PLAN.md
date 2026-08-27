@@ -602,12 +602,156 @@ was not run or written; see `RETRY_PLAN.md`'s Tests section for why.
   (`test/e2e-test/testdata/operation/vela-system/workflowstepdefinition.yaml`'s
   restart step, or a new fixture step designed to fail on attempt 1) and
   assert `status.attempts == 2` with the first attempt's failure preserved in
-  `stepAttempts`; suspend/resume round-trip via a `suspend` step type; a
-  two-step template where step 2 consumes step 1's `outputs` via `inputs`,
-  step 2 fails, `restart --step <step2> --only`, and step 2 re-reads step 1's
-  original output correctly (the actual scenario this section exists for);
-  `restart --step <step1>` on a step that already `Succeeded` is allowed
-  (not refused for being non-Failed) and correctly clears step 2's downstream
-  result too, forcing it to re-run against step 1's new output;
-  `--default-operation-ttl-seconds` causes a terminal `Operation` to
-  disappear after the window, and a `Suspended` one does not.
+  the restarted step's own `status.workflows[].steps[].attempts` (nested per
+  step as of the reshape below -- was a step-name-keyed `stepAttempts` map
+  when this line was first written); suspend/resume round-trip via a
+  `suspend` step type; a two-step template where step 2 consumes step 1's
+  `outputs` via `inputs`, step 2 fails, `restart --step <step2> --only`, and
+  step 2 re-reads step 1's original output correctly (the actual scenario
+  this section exists for); `restart --step <step1>` on a step that already
+  `Succeeded` is allowed (not refused for being non-Failed) and correctly
+  clears step 2's downstream result too, forcing it to re-run against step
+  1's new output; `--default-operation-ttl-seconds` causes a terminal
+  `Operation` to disappear after the window, and a `Suspended` one does not.
+
+## Post-implementation: attempts nested per-step, and two bugs found live
+
+Everything above shipped, got manually exercised on a real cluster (the
+first time any of this ran against a live controller, since e2e above was
+never written), and that surfaced two real bugs plus one deliberate API
+reshape. All three are now fixed/implemented and covered by unit tests;
+none required touching phase computation, the lock, or TTL logic.
+
+**Bug 1 -- `restartFromStep` didn't reset `Terminated`/`Suspend`/`Finished`/
+`EndTime`.** Confirmed live: after `restart --step step-three` on a 3-step
+template (step-one/step-two already `Succeeded`, step-three `Failed`), all
+three steps reached `succeeded`, but `status.phase` stayed `Failed` --
+`status.workflows[0].terminated` was still `true` from the original run.
+`restartFromStep` only ever touched `Steps` and the context-backend
+ConfigMap; upstream's `RestartFromStep` clears all four flags before
+touching step status, and that part didn't make it into the original
+translation. Fixed at the top of `restartFromStep`
+(`pkg/workflow/operation/operation_v2alpha1.go`). The whole-workflow
+`Restart(ctx)` path was never affected -- its full status wipe already
+zeroed these. Regression test: `TestOperationRestartFromStep` fixtures now
+set all four before restarting and assert all four are cleared after --
+confirmed failing without the fix, passing with it.
+
+**Bug 2 -- the controller silently dropped `StepAttempts` on every
+reconcile.** `operation_controller.go`'s `Reconcile`, after every
+execution, rebuilt `op.Status.Workflows` with a literal that only set
+`Cluster`/`WorkflowRunStatus` -- harmless before `StepAttempts` existed,
+since there was nothing to preserve; once it did, that literal wiped it
+back to nil on the very next reconcile after any restart wrote it. Fixed
+by extracting a carry-forward step in `generator.go` (superseded by
+`operationWorkflowStatusFromEngine` in the reshape below). Regression
+test: `TestCarryForwardStepAttempts` (`generator_test.go`) -- also later
+superseded, see below.
+
+**Reshape -- attempts moved from a `stepAttempts` map to
+`steps[].attempts`.** Requested after both bugs were fixed and confirmed
+live: nest each step's attempt history directly under that step's own
+entry in `status.workflows[].steps[]`, instead of a separate map keyed by
+name. See design decision 1 (revised) in `RETRY_PLAN.md` for the shape and
+why a naive approach (redeclaring `Steps` with a different element type
+while still inlining the vendored `WorkflowRunStatus`) doesn't work --
+verified directly with a throwaway Go program that Go's `encoding/json`
+routes a given key to the *shallowest* matching field only, so the
+embedded copy `buildWorkflowInstance` feeds back to the engine to resume
+mid-workflow would silently unmarshal empty on every read.
+
+Also verified directly against the engine source before implementing,
+not assumed: `generateStepID` (`kubevela/workflow/pkg/generator/generator.go`)
+reuses a step's existing ID if a live entry with that name is present,
+regardless of phase, and `context.stepSessionID` (used to name each
+step's Job) is that same ID. This is *why* a restart has to remove the
+target step's live entry rather than reset it in place -- resetting in
+place would keep reusing the same Job name across attempts. Which in turn
+is why nesting `Attempts` directly on the step's entry can't be the whole
+story: the entry a restart is about to discard has nowhere to go if it's
+about to not exist. `StepAttempts` on `OperationWorkflowStatus` (see its
+doc) is the resulting design: a transient hand-off for exactly the one
+reconcile between "removed" and "recreated," merged into the step's own
+`Attempts` the moment it reappears, empty otherwise.
+
+Files touched by the reshape:
+- `apis/core.oam.dev/v2alpha1/operation_types.go` -- new
+  `OperationWorkflowStepStatus`; `OperationWorkflowStatus` stops inlining
+  `WorkflowRunStatus`, declares every field explicitly; regenerated
+  deepcopy + CRD.
+- `pkg/controller/.../operation/generator.go` -- `toEngineStatus`
+  (our shape → engine shape, used by `buildWorkflowInstance`) and
+  `operationWorkflowStatusFromEngine` (engine shape → ours, reattaching
+  `Attempts` from either the step's own prior entry or the pending
+  `StepAttempts` map) replace the old direct embed and
+  `carryForwardStepAttempts`.
+- `pkg/workflow/operation/operation_v2alpha1.go` -- `suspend`/`resume` gained
+  `unwrapSteps`/`rewrapSteps` around the one vendored call
+  (`wfUtils.OperateSteps`, which takes the plain vendored slice type);
+  `restartFrom`'s whole-workflow wipe became explicit field resets instead
+  of one struct-zero assignment; `cleanOperationStatusFromStep` and its
+  helpers changed element type (logic unchanged -- they only ever touched
+  promoted fields); `snapshotAttempts` gained a seeding step so a step
+  restarted a *second* time numbers attempts 1, 2 rather than resetting to
+  1 (the one place with genuinely new logic, not just plumbing).
+- `references/cli/operation.go` -- `findOperationStepStatus` returns the
+  wrapped type; `printOperationStatus`'s attempt-history table now reads
+  `step.Attempts` directly instead of cross-referencing a separate map
+  (simpler than before, not harder).
+- Test files across all three packages updated for the new shape, plus new
+  cases: `TestOperationWorkflowStatusFromEngineCarriesForwardAttempts` /
+  `TestToEngineStatusUnwrapsSteps` (`generator_test.go`, replacing
+  `TestCarryForwardStepAttempts`), and a second-restart-of-the-same-step
+  case in `TestOperationRestartFromStep` pinning the attempt-numbering fix
+  above -- confirmed failing without it, passing with it.
+
+**Follow-up: attempts now log every completion, not only restart-superseded
+ones.** Requested after the reshape above landed: originally an attempt was
+only recorded when a restart was about to discard a step's status, so a
+step that succeeded (or failed) on its first try with no restart ever
+issued got no attempt entry at all. Fixed by moving the recording point
+from "the CLI, right before a restart wipes a step's status" to "the
+controller, the moment a step's execution reaches a terminal phase" --
+`recordStepCompletion` (`generator.go`), called from
+`operationWorkflowStatusFromEngine` for every step on every reconcile.
+Dedup uses the step's own execution ID (`WorkflowStepStatus.ID`, now also
+copied onto `OperationStepAttempt.ID`): the same ID showing up terminal
+across many reconciles is one attempt, not one per reconcile;
+`wfTypes.IsStepFinish(phase, reason)` -- the same check the embedded engine
+itself uses -- gates what counts as "terminal" at all, so a step whose
+underlying Job is still internally retrying (`reason ==
+StatusReasonExecute`) doesn't get logged prematurely.
+
+This simplified `pkg/workflow/operation`'s restart-time snapshot logic:
+`snapshotAttempts` no longer computes a new attempt from a step's current
+status -- the controller's already done that by the time any restart is
+possible (an Operation must be non-`Running` to restart at all, and by then
+its steps have already gone through a reconcile that recorded them) -- it
+just carries forward whatever `.Attempts` a step already has into the
+pending `StepAttempts` map. Sub-steps are the one exception: they're not
+wrapped (see `OperationWorkflowStepStatus`'s doc), so `recordStepCompletion`
+can't run for them; `snapshotAttempts` still computes their attempt record
+the old way, from current status, at restart time only.
+
+New tests: `TestRecordStepCompletion` (`generator_test.go`) covers the pure
+function directly -- running (not recorded), failed-but-still-retrying (not
+recorded), failed-for-good/skipped (recorded), same-ID-not-duplicated,
+different-ID-appended-as-next-number.
+`TestOperationWorkflowStatusFromEngineCarriesForwardAttempts` gained cases
+for "reaches terminal for the first time, no restart involved" and "pending
+attempt reattached, then this new execution recorded too" (numbering 1,
+then 2, across a simulated restart). Existing `operation_v2alpha1_test.go`
+fixtures updated to pre-populate `.Attempts` on steps (matching what the
+controller would already have recorded by the time any restart runs) --
+all passing.
+
+Runtime cost of the wrap/unwrap: `toEngineStatus`/
+`operationWorkflowStatusFromEngine` changed the per-reconcile cost of
+carrying `Steps` forward from O(1) (a slice-header copy, sharing the
+backing array, when it was a direct embedded-struct assignment) to O(n)
+(an explicit copy into a new slice), n = step count. Real, not "just
+negligible" -- but n is bounded by the workflow template's step count
+(realistically single digits to low tens, not user-scalable data), and the
+same reconcile already does at least one Kubernetes API call and one CUE
+compilation per step, each costing orders of magnitude more. Not a
+concern at any realistic scale for this feature.

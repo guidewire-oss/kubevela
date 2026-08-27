@@ -52,10 +52,26 @@ freely restarted; the operator is trusted to know what they're doing.
 
 ## Design decisions
 
-1. **Attempt history is a new KubeVela-owned field, not an extension of the
-   vendored type.** Add `Attempts int64` to `OperationStatus` and a
-   `StepAttempts map[string][]OperationStepAttempt` to `OperationWorkflowStatus`,
-   keyed by step name.
+1. **Attempt history is nested per-step, not a step-name-keyed sibling
+   map.** Superseded from an earlier draft of this decision (kept below in
+   spirit, revised in shape): `status.workflows[].steps[].attempts` reads
+   naturally next to the step it belongs to, which a separate
+   `stepAttempts` map didn't. Getting there means not inlining the
+   vendored `WorkflowRunStatus` wholesale anymore -- `OperationWorkflowStatus`
+   now declares its own `OperationWorkflowStepStatus` for `Steps` (the
+   vendored `WorkflowStepStatus` plus `Attempts`) and every other field
+   `WorkflowRunStatus` used to provide by embedding, explicitly. `Attempts
+   int64` stays on `OperationStatus` (a different concept: how many times
+   the *whole Operation* has been restarted, not one step's history).
+   `StepAttempts map[string][]OperationStepAttempt` also stays on
+   `OperationWorkflowStatus`, but demoted to a transient hand-off: a
+   restart removes the target step's live entry (see decision 7's note on
+   why removal, not reset-in-place, is required), so there's nowhere to
+   nest its Attempts until the engine recreates that entry on a later
+   reconcile -- StepAttempts is where that history waits in the meantime.
+   In steady state it's empty. See `pkg/controller/.../operation/generator.go`'s
+   `toEngineStatus`/`operationWorkflowStatusFromEngine` for the conversion
+   this requires at the Reconcile boundary.
 2. **Snapshot, then reset.** Any restart path copies the current `Steps`
    (and sub-steps) into `StepAttempts` and increments `Attempts` before
    clearing them, mirroring what `RestartWorkflow` does today but capturing
