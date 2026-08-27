@@ -43,6 +43,9 @@ func TestOperationCommandsRegisterEnvFlag(t *testing.T) {
 		NewOperationListCommand(args, io),
 		NewOperationRunCommand(args, io),
 		NewOperationStatusCommand(args, io),
+		NewOperationRestartCommand(args, io),
+		NewOperationResumeCommand(args, io),
+		NewOperationSuspendCommand(args, io),
 	} {
 		flag := cmd.Flag("env")
 		require.NotNil(t, flag, "%s must register --env (via addNamespaceAndEnvArg)", cmd.Name())
@@ -50,6 +53,101 @@ func TestOperationCommandsRegisterEnvFlag(t *testing.T) {
 			_ = flag.Value.String()
 		})
 	}
+}
+
+func TestValidateOperationClusterFlag(t *testing.T) {
+	assert.NoError(t, validateOperationClusterFlag(""))
+	assert.NoError(t, validateOperationClusterFlag("local"))
+	err := validateOperationClusterFlag("remote")
+	assert.ErrorContains(t, err, `only supports "local" so far, got "remote"`)
+}
+
+func TestGetOperationByName(t *testing.T) {
+	scheme := newOperationTestScheme(t)
+	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Name: "exists", Namespace: "default"}}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(op).Build()
+
+	got, err := getOperationByName(context.Background(), cli, "default", "exists")
+	require.NoError(t, err)
+	assert.Equal(t, "exists", got.Name)
+
+	_, err = getOperationByName(context.Background(), cli, "default", "missing")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `operation "missing" not found in namespace "default"`)
+}
+
+// TestPollOperationUntilTerminalAlreadyDone guards the bounded, no-hang
+// happy path: when the Operation is already terminal on the first Get,
+// pollOperationUntilTerminal must return immediately rather than sleeping.
+func TestPollOperationUntilTerminalAlreadyDone(t *testing.T) {
+	scheme := newOperationTestScheme(t)
+	cmd := &cobra.Command{}
+	initCommand(cmd)
+
+	t.Run("succeeded", func(t *testing.T) {
+		op := &v2alpha1.Operation{
+			ObjectMeta: metav1.ObjectMeta{Name: "done-ok", Namespace: "default"},
+			Status:     v2alpha1.OperationStatus{Phase: v2alpha1.OperationPhaseSucceeded},
+		}
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(op).Build()
+		err := pollOperationUntilTerminal(context.Background(), cmd, cli, op)
+		require.NoError(t, err)
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		op := &v2alpha1.Operation{
+			ObjectMeta: metav1.ObjectMeta{Name: "done-failed", Namespace: "default"},
+			Status:     v2alpha1.OperationStatus{Phase: v2alpha1.OperationPhaseFailed, Message: "boom"},
+		}
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(op).Build()
+		err := pollOperationUntilTerminal(context.Background(), cmd, cli, op)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "boom")
+	})
+}
+
+// TestPollOperationUntilSuspendedAlreadyDone mirrors the above for suspend:
+// bounded happy paths only -- exercising the "does it actually wait for
+// Suspended rather than any change" property needs a controller actually
+// driving state over time, which belongs in the e2e suite (RETRY_PLAN.md),
+// not a fake-client unit test that would otherwise hang forever waiting for
+// a transition nothing will ever make.
+func TestPollOperationUntilSuspendedAlreadyDone(t *testing.T) {
+	scheme := newOperationTestScheme(t)
+	cmd := &cobra.Command{}
+	initCommand(cmd)
+
+	t.Run("already suspended", func(t *testing.T) {
+		op := &v2alpha1.Operation{
+			ObjectMeta: metav1.ObjectMeta{Name: "already-suspended", Namespace: "default"},
+			Status:     v2alpha1.OperationStatus{Phase: v2alpha1.OperationPhaseSuspended},
+		}
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(op).Build()
+		require.NoError(t, pollOperationUntilSuspended(context.Background(), cmd, cli, op))
+	})
+
+	t.Run("finished before ever suspending", func(t *testing.T) {
+		op := &v2alpha1.Operation{
+			ObjectMeta: metav1.ObjectMeta{Name: "raced-to-terminal", Namespace: "default"},
+			Status:     v2alpha1.OperationStatus{Phase: v2alpha1.OperationPhaseSucceeded},
+		}
+		cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(op).Build()
+		require.NoError(t, pollOperationUntilSuspended(context.Background(), cmd, cli, op))
+	})
+}
+
+func TestValidateOperationRestartOnlyFlag(t *testing.T) {
+	assert.NoError(t, validateOperationRestartOnlyFlag("", false), "no flags at all: fine")
+	assert.NoError(t, validateOperationRestartOnlyFlag("step1", false), "--step without --only: fine")
+
+	err := validateOperationRestartOnlyFlag("", true)
+	assert.ErrorContains(t, err, "--only requires --step")
+
+	// --only is rejected outright, not silently downgraded to a full
+	// cascading restart -- see validateOperationRestartOnlyFlag's own doc.
+	err = validateOperationRestartOnlyFlag("step1", true)
+	assert.ErrorContains(t, err, "not implemented")
+	assert.ErrorContains(t, err, "step1")
 }
 
 func TestSplitComponentRef(t *testing.T) {

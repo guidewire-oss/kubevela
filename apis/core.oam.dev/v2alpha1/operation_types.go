@@ -17,9 +17,12 @@
 package v2alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	oamv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
+	"github.com/kubevela/workflow/api/condition"
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 )
 
@@ -60,6 +63,15 @@ type OperationSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +optional
 	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
+
+	// TTLSecondsAfterFinished bounds how long a terminal Operation is kept
+	// before the controller deletes it. Unset uses the cluster default
+	// (--default-operation-ttl-seconds); explicit 0 disables TTL for this
+	// Operation. Negative values are rejected -- 0 is the only way to
+	// disable it.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
 
 // OperationPhase is the terminal/non-terminal phase of an Operation run.
@@ -76,20 +88,149 @@ const (
 	// OperationPhaseFailed means the Operation's workflow finished with an
 	// error. Terminal -- re-execution isn't supported yet.
 	OperationPhaseFailed OperationPhase = "Failed"
+	// OperationPhaseSuspended means the workflow is paused (a `suspend` step,
+	// or a manual `vela operation suspend`). Non-terminal: the concurrency
+	// lease keeps renewing.
+	OperationPhaseSuspended OperationPhase = "Suspended"
+	// OperationPhaseCancelled means a human stopped the operation before it
+	// reached a natural terminal phase. Terminal.
+	OperationPhaseCancelled OperationPhase = "Cancelled"
 )
+
+// OperationStepAttempt records one completed execution of a single workflow
+// step -- logged the moment that execution reaches a terminal phase
+// (succeeded, failed, or skipped), whether or not it's ever superseded by a
+// restart. A step that succeeds on its first try, with no restart ever
+// happening, still gets one recorded here. Nested under the step's own
+// entry in OperationWorkflowStatus.Steps (OperationWorkflowStepStatus.
+// Attempts) -- kept as its own type, rather than folded into
+// OperationWorkflowStepStatus directly, only because it's also the payload
+// type OperationWorkflowStatus.StepAttempts moves briefly during a restart
+// (see that field's doc).
+type OperationStepAttempt struct {
+	// AttemptNumber is the 1-based ordinal of this attempt for the step.
+	AttemptNumber int64 `json:"attemptNumber"`
+	// ID is the embedded engine's own execution ID for this attempt
+	// (WorkflowStepStatus.ID). Used to detect whether a given execution has
+	// already been recorded, so a step sitting in a terminal phase across
+	// many reconciles doesn't get logged more than once; also a
+	// correlation key back to whatever the step's own type named using
+	// context.stepSessionID (e.g. a Job name).
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Phase is this attempt's terminal WorkflowStepPhase.
+	// +optional
+	Phase workflowv1alpha1.WorkflowStepPhase `json:"phase,omitempty"`
+	// Message carries this attempt's message, if any.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// Reason carries this attempt's reason, if any.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// StartTime is when this attempt of the step first executed.
+	// +optional
+	StartTime metav1.Time `json:"startTime,omitempty"`
+	// TriggeredBy names how this attempt started, e.g.
+	// "vela operation restart --step backup". Empty for the original run.
+	// +optional
+	TriggeredBy string `json:"triggeredBy,omitempty"`
+}
+
+// OperationWorkflowStepStatus is one workflow step's live status, wrapping
+// the embedded engine's own per-step status (from github.com/kubevela/workflow)
+// with this step's attempt history. The controller appends to Attempts the
+// moment this step's execution reaches a terminal phase (see
+// recordStepCompletion in pkg/controller/.../operation/generator.go) --
+// every completed run gets logged, not only ones later superseded by a
+// restart. A restart of this step reuses the same step name but generates a
+// fresh embedded WorkflowStepStatus.ID (the engine looks up the ID by name
+// and only reuses it if a live entry with that name still exists -- see
+// generateStepID upstream -- which is also exactly why a restart must
+// remove, not reset in place, the target step's entry: reusing the ID would
+// reuse the prior attempt's Job name too). Attempts already recorded on the
+// entry a restart is about to remove get preserved via
+// OperationWorkflowStatus.StepAttempts until the step reappears.
+type OperationWorkflowStepStatus struct {
+	// WorkflowStepStatus is this step's live status, reused verbatim from
+	// github.com/kubevela/workflow.
+	workflowv1alpha1.WorkflowStepStatus `json:",inline"`
+
+	// Attempts is prior-attempt history for this step, most recent last.
+	// +optional
+	Attempts []OperationStepAttempt `json:"attempts,omitempty"`
+}
 
 // OperationWorkflowStatus is the workflow status for one cluster. Only a
 // single entry is populated so far, but the shape already matches
 // multi-cluster dispatch (status.workflows[], KEP 2.15) so a later
 // multi-cluster Operation doesn't need a status-shape migration.
+//
+// This does not inline workflowv1alpha1.WorkflowRunStatus verbatim the way
+// an early draft did -- Steps needs to be OperationWorkflowStepStatus
+// (attempts nested per-step) instead of the vendored WorkflowStepStatus, and
+// a Go JSON tag can only route to one field at a given nesting depth: had
+// Steps stayed inlined from the embed while also being redeclared here to
+// change its element type, the *embedded* copy (what
+// pkg/controller/.../operation.buildWorkflowInstance actually feeds back to
+// the engine to resume mid-workflow) would silently unmarshal as empty on
+// every read, and the engine would re-run every step from scratch on every
+// reconcile. So every other field WorkflowRunStatus carries is declared
+// explicitly below instead, mirroring its JSON shape field-for-field.
 type OperationWorkflowStatus struct {
+	// ConditionedStatus carries this workflow's conditions, mirroring the
+	// same embed upstream's WorkflowRunStatus carries. Nothing currently
+	// populates it (the embedded engine's own executor never calls
+	// SetConditions on the status it returns), but it's kept here for API
+	// parity with upstream rather than silently dropped -- an external
+	// consumer reading this type shouldn't lose a field the un-reshaped
+	// version exposed.
+	condition.ConditionedStatus `json:",inline"`
+
 	// Cluster is the resolved cluster this workflow ran against. Always
 	// populated, even though only one is ever resolved so far.
 	Cluster string `json:"cluster,omitempty"`
 
-	// WorkflowRunStatus is the status of the embedded workflow engine run,
-	// reused verbatim from github.com/kubevela/workflow.
-	workflowv1alpha1.WorkflowRunStatus `json:",inline"`
+	// Mode is the embedded engine's own step/sub-step execution mode. Same
+	// JSON tag as upstream (no omitempty -- WorkflowExecuteMode is a
+	// struct, its own fields are what carry omitempty).
+	Mode oamv1alpha1.WorkflowExecuteMode `json:"mode"`
+	// Phase is the embedded engine's own workflow-run phase (its JSON tag
+	// is "status" upstream; kept identical here).
+	Phase workflowv1alpha1.WorkflowRunPhase `json:"status"`
+	// Message carries the embedded engine's own message, if any.
+	// +optional
+	Message string `json:"message,omitempty"`
+	// Suspend mirrors the embedded engine's own suspend flag.
+	Suspend bool `json:"suspend"`
+	// +optional
+	SuspendState string `json:"suspendState,omitempty"`
+	// Terminated mirrors the embedded engine's own terminated flag.
+	Terminated bool `json:"terminated"`
+	// Finished mirrors the embedded engine's own finished flag.
+	Finished bool `json:"finished"`
+	// +optional
+	ContextBackend *corev1.ObjectReference `json:"contextBackend,omitempty"`
+
+	// Steps is the per-step status. Unlike the embedded engine's own
+	// WorkflowStepStatus, each entry carries its own Attempts history
+	// alongside its live status -- see OperationWorkflowStepStatus.
+	// +optional
+	Steps []OperationWorkflowStepStatus `json:"steps,omitempty"`
+
+	// +optional
+	StartTime metav1.Time `json:"startTime,omitempty"`
+	// +optional
+	EndTime metav1.Time `json:"endTime,omitempty"`
+
+	// StepAttempts holds a step's attempt history only transiently, for the
+	// single reconcile between a restart removing that step's live entry
+	// (from Steps, above) and the engine recreating it: with nowhere on a
+	// (currently nonexistent) entry to nest Attempts, the history has to
+	// wait here until the step reappears, at which point it's merged into
+	// that entry's own Attempts and cleared from here. In steady state
+	// (nothing mid-restart) this is empty.
+	// +optional
+	StepAttempts map[string][]OperationStepAttempt `json:"stepAttempts,omitempty"`
 }
 
 // OperationStatus is the status of Operation.
@@ -121,6 +262,11 @@ type OperationStatus struct {
 	// against. Only a single cluster is resolved so far.
 	// +optional
 	Workflows []OperationWorkflowStatus `json:"workflows,omitempty"`
+
+	// Attempts is how many times this Operation's workflow has been
+	// (re)started, including the original run (starts at 1).
+	// +optional
+	Attempts int64 `json:"attempts,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -128,10 +274,10 @@ type OperationStatus struct {
 // Operation is the Schema for the Operation API: one run-to-completion
 // invocation of an OperationTemplate against a target.
 //
-// TODO(KEP 2.15): the permission model isn't implemented yet. Any RBAC
-// principal able to create an Operation can invoke any OperationTemplate
-// against any target in its namespace. Do not release or promote this
-// code path until the permission model lands.
+// KEP 2.15 permission model: not implemented yet. Any RBAC principal able
+// to create an Operation can invoke any OperationTemplate against any
+// target in its namespace. Do not release or promote this code path
+// until the permission model lands.
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories={oam},shortName={op,vop}
 // +kubebuilder:printcolumn:name="TEMPLATE",type=string,JSONPath=`.spec.template`
@@ -160,7 +306,12 @@ type OperationList struct {
 }
 
 // IsTerminal reports whether the Operation has reached a phase from which
-// it will not progress further (restart/re-execution isn't supported yet).
+// it will not progress further without an explicit restart.
 func (o *Operation) IsTerminal() bool {
-	return o.Status.Phase == OperationPhaseSucceeded || o.Status.Phase == OperationPhaseFailed
+	switch o.Status.Phase {
+	case OperationPhaseSucceeded, OperationPhaseFailed, OperationPhaseCancelled:
+		return true
+	default:
+		return false
+	}
 }

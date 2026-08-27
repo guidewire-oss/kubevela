@@ -56,6 +56,11 @@ type Reconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Recorder  event.Recorder
+	// DefaultOperationTTL is how long a terminal Operation is kept before
+	// being deleted, when the Operation itself sets no
+	// spec.ttlSecondsAfterFinished. Zero disables the default (no automatic
+	// deletion), threaded from core.Args.DefaultOperationTTLSeconds.
+	DefaultOperationTTL time.Duration
 }
 
 // +kubebuilder:rbac:groups=core.oam.dev,resources=operations,verbs=get;list;watch;create;update;patch;delete
@@ -63,9 +68,11 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=core.oam.dev,resources=operationtemplates,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
-// Reconcile runs an Operation's workflow to completion. Unlike the
-// Application controller, a terminal Operation never gets processed again --
-// restart/re-execution isn't supported yet.
+// Reconcile runs an Operation's workflow to completion. A terminal Operation
+// is only reprocessed to enforce its TTL (see sweepTTL) -- restart is
+// triggered by the CLI patching .status directly via
+// pkg/workflow/operation, which the next Reconcile just observes like any
+// other status change.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logCtx := monitorContext.NewTraceContext(ctx, "").AddTag("operation", req.String(), "controller", "operation")
 	logCtx.Info("start reconcile operation")
@@ -80,7 +87,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	if op.IsTerminal() {
-		return ctrl.Result{}, nil
+		return r.sweepTTL(logCtx, op)
 	}
 
 	if len(op.Spec.Clusters) > 1 || (len(op.Spec.Clusters) == 1 && op.Spec.Clusters[0] != localCluster) {
@@ -113,6 +120,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		op.Status.Template = &tmpl.Spec
 		op.Status.Phase = v2alpha1.OperationPhaseRunning
 		op.Status.StartTime = metav1.Now()
+		op.Status.Attempts = 1
 	}
 
 	pCtx, err := buildProcessContext(logCtx, op, target)
@@ -137,10 +145,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		logCtx.Error(execErr, "execute operation workflow")
 	}
 
-	op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{{
-		Cluster:           localCluster,
-		WorkflowRunStatus: instance.Status,
-	}}
+	var previousWorkflow v2alpha1.OperationWorkflowStatus
+	if len(op.Status.Workflows) > 0 {
+		previousWorkflow = op.Status.Workflows[0]
+	}
+	op.Status.Workflows = []v2alpha1.OperationWorkflowStatus{
+		operationWorkflowStatusFromEngine(localCluster, instance.Status, previousWorkflow),
+	}
 
 	switch phase {
 	case workflowv1alpha1.WorkflowStateSucceeded:
@@ -154,6 +165,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if execErr != nil {
 			op.Status.Message = execErr.Error()
 		}
+	case workflowv1alpha1.WorkflowStateSuspending:
+		op.Status.Phase = v2alpha1.OperationPhaseSuspended
 	default:
 		op.Status.Phase = v2alpha1.OperationPhaseRunning
 	}
@@ -164,12 +177,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Status().Update(logCtx, op); err != nil {
 		return ctrl.Result{}, err
 	}
+	if op.Status.Phase == v2alpha1.OperationPhaseSuspended {
+		// Non-terminal: the concurrency lease keeps renewing, but there's no
+		// point re-running ExecuteRunners every 5s while nothing can
+		// progress -- a `vela operation resume` is what moves this forward.
+		return ctrl.Result{RequeueAfter: suspendedRequeueInterval}, nil
+	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
+// suspendedRequeueInterval is how often a Suspended Operation is
+// reconciled purely to renew its target lock. Backoff strategy (fixed vs.
+// exponential) is an open question -- see RETRY_PLAN.md.
+const suspendedRequeueInterval = 30 * time.Second
+
 // finish persists op's already-set terminal status, then releases its
 // target lock -- only once the write succeeds, so a failed write can't
-// drop the lock before the terminal state is durable.
+// drop the lock before the terminal state is durable. The returned
+// ctrl.Result comes from sweepTTL, so a terminal Operation still gets
+// requeued to enforce its TTL rather than going fully idle.
 func (r *Reconciler) finish(ctx context.Context, op *v2alpha1.Operation) (ctrl.Result, error) {
 	if err := r.Status().Update(ctx, op); err != nil {
 		return ctrl.Result{}, err
@@ -179,7 +205,7 @@ func (r *Reconciler) finish(ctx context.Context, op *v2alpha1.Operation) (ctrl.R
 			lg.Error(err, "release operation lock")
 		}
 	}
-	return ctrl.Result{}, nil
+	return r.sweepTTL(ctx, op)
 }
 
 // fail marks the Operation Failed before any workflow step ran (template or
@@ -205,16 +231,17 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Setup adds the Operation Reconciler to Manager. args is accepted only to
-// match the shared per-version Setup signature (see
-// pkg/controller/core.oam.dev/v1beta1/setup.go) -- this controller has no
-// tunable options of its own.
-func Setup(mgr ctrl.Manager, _ core.Args) error {
+// Setup adds the Operation Reconciler to Manager.
+func Setup(mgr ctrl.Manager, args core.Args) error {
+	if args.DefaultOperationTTLSeconds < 0 {
+		return fmt.Errorf("--default-operation-ttl-seconds must be >= 0, got %d", args.DefaultOperationTTLSeconds)
+	}
 	r := Reconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-		Recorder:  event.NewAPIRecorder(mgr.GetEventRecorderFor("Operation")),
+		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            event.NewAPIRecorder(mgr.GetEventRecorderFor("Operation")),
+		DefaultOperationTTL: time.Duration(args.DefaultOperationTTLSeconds) * time.Second,
 	}
 	return r.SetupWithManager(mgr)
 }

@@ -32,10 +32,10 @@ spec:
         description: |-
           OperationTemplate is the Schema for the OperationTemplate API.
 
-          POC ONLY: ships without the KEP's permission model. Any RBAC principal
-          able to create an Operation can invoke any OperationTemplate against any
-          target in its namespace. Do not release or promote this code path until
-          the full permission model lands.
+          KEP 2.15 permission model: not implemented yet. Any RBAC principal able
+          to create an Operation can invoke any OperationTemplate against any
+          target in its namespace. Do not release or promote this code path
+          until the permission model lands.
         properties:
           apiVersion:
             description: |-
@@ -70,8 +70,8 @@ spec:
                   scope:
                     default: Component
                     description: |-
-                      Scope is the kind of target this template attaches to. The POC only
-                      supports "Component".
+                      Scope is the kind of target this template attaches to. Only
+                      "Component" is supported so far.
                     enum:
                     - Component
                     type: string
