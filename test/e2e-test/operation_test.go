@@ -436,7 +436,13 @@ var _ = Describe("Operation (v2alpha1)", func() {
 		applyOperationTargetApp(ctx, namespaceName)
 
 		By("creating a short-TTL Operation that will succeed")
-		ttl := int32(5)
+		// 20s, not 5s: waitForOperationPhase below only samples every 2s, so
+		// completion could already be a couple of seconds old by the time
+		// it's observed as Succeeded -- a short TTL left too little margin
+		// between that detection lag and the "not deleted immediately"
+		// check just after it, making the check flaky under any extra CI
+		// scheduling delay.
+		ttl := int32(20)
 		op := &v2alpha1.Operation{
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "ttl-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
@@ -475,8 +481,18 @@ var _ = Describe("Operation (v2alpha1)", func() {
 		By("verifying it is NOT deleted despite the TTL window elapsing -- Suspended is non-terminal")
 		Consistently(func() error {
 			return k8sClient.Get(ctx, client.ObjectKeyFromObject(suspendOp), &v2alpha1.Operation{})
-		}, 10*time.Second, 2*time.Second).Should(BeNil())
+		}, 22*time.Second, 2*time.Second).Should(BeNil())
 
+		By("resuming it, then confirming the resume actually took effect")
 		Expect(veloperation.NewOperationWorkflowOperator(k8sClient, GinkgoWriter, suspendOp).Resume(ctx)).Should(BeNil())
+		// A resume that silently no-op'd (phase stuck at Suspended, or an
+		// error from Resume that this test ignored) would otherwise still
+		// pass this scenario -- waiting for the same TTL-driven deletion
+		// the first half of this test already proved works is what
+		// actually proves the resume ran, not just that the call returned.
+		waitForOperationPhase(ctx, suspendOp, v2alpha1.OperationPhaseSucceeded)
+		Eventually(func() bool {
+			return kerrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(suspendOp), &v2alpha1.Operation{}))
+		}, 30*time.Second, 2*time.Second).Should(BeTrue())
 	})
 })

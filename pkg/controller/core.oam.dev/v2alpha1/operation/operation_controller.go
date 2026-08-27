@@ -233,6 +233,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Setup adds the Operation Reconciler to Manager.
 func Setup(mgr ctrl.Manager, args core.Args) error {
+	if args.DefaultOperationTTLSeconds < 0 {
+		return fmt.Errorf("--default-operation-ttl-seconds must be >= 0, got %d", args.DefaultOperationTTLSeconds)
+	}
 	r := Reconciler{
 		Client:              mgr.GetClient(),
 		APIReader:           mgr.GetAPIReader(),

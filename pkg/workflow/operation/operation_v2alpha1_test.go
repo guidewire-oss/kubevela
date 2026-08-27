@@ -33,6 +33,7 @@ import (
 
 	oamv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
+	wfTypes "github.com/kubevela/workflow/pkg/types"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
 )
@@ -193,6 +194,10 @@ func TestOperationResume(t *testing.T) {
 		expectedErr string
 	}{
 		"not suspended": {
+			// A hard error, not a silent no-op: the CLI unconditionally
+			// polls to terminal after Resume returns nil, so no-op'ing here
+			// would let that poll misreport some unrelated later
+			// completion as if this resume caused it.
 			op: &v2alpha1.Operation{
 				ObjectMeta: metav1.ObjectMeta{Name: "not-suspended"},
 				Status: v2alpha1.OperationStatus{
@@ -200,7 +205,7 @@ func TestOperationResume(t *testing.T) {
 					Workflows: []v2alpha1.OperationWorkflowStatus{{}},
 				},
 			},
-			expected: workflowv1alpha1.WorkflowRunStatus{},
+			expectedErr: "is not suspended",
 		},
 		"resume all": {
 			op: &v2alpha1.Operation{
@@ -295,8 +300,19 @@ func TestOperationTerminate(t *testing.T) {
 	op := &v2alpha1.Operation{
 		ObjectMeta: metav1.ObjectMeta{Name: "terminate-me"},
 		Status: v2alpha1.OperationStatus{
-			Phase:     v2alpha1.OperationPhaseRunning,
-			Workflows: []v2alpha1.OperationWorkflowStatus{{Suspend: true}},
+			Phase: v2alpha1.OperationPhaseRunning,
+			Workflows: []v2alpha1.OperationWorkflowStatus{{
+				Suspend: true,
+				Steps: []v2alpha1.OperationWorkflowStepStatus{
+					{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{
+						StepStatus:     workflowv1alpha1.StepStatus{Name: "running-step", Phase: workflowv1alpha1.WorkflowStepPhaseRunning},
+						SubStepsStatus: []workflowv1alpha1.StepStatus{{Name: "suspending-sub", Phase: workflowv1alpha1.WorkflowStepPhaseSuspending}},
+					}},
+					{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{
+						Name: "already-succeeded", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded,
+					}}},
+				},
+			}},
 		},
 	}
 	r.NoError(cli.Create(ctx, op))
@@ -306,8 +322,16 @@ func TestOperationTerminate(t *testing.T) {
 	got := &v2alpha1.Operation{}
 	r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), got))
 	r.Equal(v2alpha1.OperationPhaseFailed, got.Status.Phase)
+	r.NotNil(got.Status.CompletionTime, "a terminated Operation must be eligible for TTL cleanup immediately")
 	r.True(got.Status.Workflows[0].Terminated)
 	r.False(got.Status.Workflows[0].Suspend)
+
+	steps := got.Status.Workflows[0].Steps
+	r.Equal(workflowv1alpha1.WorkflowStepPhaseFailed, steps[0].Phase, "a still-Running step must be flipped to Failed, not left reading as in-progress on a terminal Operation")
+	r.Equal(wfTypes.StatusReasonTerminate, steps[0].Reason)
+	r.Equal(workflowv1alpha1.WorkflowStepPhaseFailed, steps[0].SubStepsStatus[0].Phase, "a still-Suspending sub-step must likewise be flipped to Failed")
+	r.Equal(wfTypes.StatusReasonTerminate, steps[0].SubStepsStatus[0].Reason)
+	r.Equal(workflowv1alpha1.WorkflowStepPhaseSucceeded, steps[1].Phase, "an already-terminal step must be left alone")
 }
 
 func TestOperationRestartGuards(t *testing.T) {
@@ -387,6 +411,7 @@ func TestOperationRestartWholeWorkflow(t *testing.T) {
 	r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), got))
 	r.Equal(v2alpha1.OperationPhaseRunning, got.Status.Phase)
 	r.Nil(got.Status.CompletionTime)
+	r.Empty(got.Status.Message, "a restart must clear the prior run's failure message, not leave it stuck")
 	r.EqualValues(2, got.Status.Attempts)
 	gotWS := got.Status.Workflows[0]
 	r.False(gotWS.Terminated)
@@ -435,10 +460,13 @@ func TestOperationRestartFromStep(t *testing.T) {
 					// "resets whole-run flags" subtest below), the same
 					// way the whole-workflow path's full wipe does
 					// implicitly.
-					Terminated: true,
-					Finished:   true,
-					Suspend:    true,
-					EndTime:    metav1.Time{Time: time.Now()},
+					Terminated:   true,
+					Finished:     true,
+					Suspend:      true,
+					Phase:        workflowv1alpha1.WorkflowStateFailed,
+					Message:      "boom",
+					SuspendState: "some-suspend-state",
+					EndTime:      metav1.Time{Time: time.Now()},
 					// .Attempts pre-populated on each entry, simulating
 					// what the controller's recordStepCompletion already
 					// logged when each step first finished.
@@ -523,8 +551,28 @@ func TestOperationRestartFromStep(t *testing.T) {
 			r.False(ws.Suspend, "Suspend must be cleared by a --step restart")
 			r.False(ws.Finished, "Finished must be cleared by a --step restart")
 			r.True(ws.EndTime.IsZero(), "EndTime must be cleared by a --step restart")
+			r.Empty(ws.Phase, "Phase must be cleared by a --step restart, not left at the prior run's terminal phase")
+			r.Empty(ws.Message, "Message must be cleared by a --step restart, not left at the prior run's failure message")
+			r.Empty(ws.SuspendState, "SuspendState must be cleared by a --step restart")
 		})
 	}
+
+	t.Run("tolerates an already-deleted context-backend ConfigMap", func(t *testing.T) {
+		r := require.New(t)
+		cli := operationTestClient(t)
+		op := newOp("restart-step-no-configmap", workflowv1alpha1.WorkflowStepPhaseFailed)
+		r.NoError(cli.Create(ctx, op))
+		// Deliberately not creating the context-backend ConfigMap the
+		// status references -- it may already be gone (e.g. GC'd), and
+		// that must not abort the restart.
+
+		r.NoError(NewOperationWorkflowStepOperator(cli, nil, op).Restart(ctx, "step2"))
+
+		got := &v2alpha1.Operation{}
+		r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), got))
+		r.Equal(v2alpha1.OperationPhaseRunning, got.Status.Phase)
+		r.Len(got.Status.Workflows[0].Steps, 1)
+	})
 
 	t.Run("step not found", func(t *testing.T) {
 		r := require.New(t)

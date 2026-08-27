@@ -36,6 +36,7 @@ import (
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 	wfContext "github.com/kubevela/workflow/pkg/context"
 	"github.com/kubevela/workflow/pkg/cue/model/sets"
+	wfTypes "github.com/kubevela/workflow/pkg/types"
 	wfUtils "github.com/kubevela/workflow/pkg/utils"
 
 	v2alpha1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
@@ -200,7 +201,12 @@ func (wo operationWorkflowOperator) resume(ctx context.Context, step string) err
 		return err
 	}
 	if !ws.Suspend {
-		return writeOutputF(wo.outputWriter, "operation %s is not suspended.\n", op.Name)
+		// A hard error here (rather than a printed message and a nil
+		// return) matters because the CLI unconditionally polls to
+		// terminal after Resume returns nil -- silently no-op'ing would
+		// let that poll observe and report some unrelated later
+		// completion as if this resume caused it.
+		return fmt.Errorf("operation %s is not suspended", op.Name)
 	}
 
 	ws.Suspend = false
@@ -316,6 +322,7 @@ func (wo operationWorkflowOperator) restartFrom(ctx context.Context, step string
 
 	op.Status.Phase = v2alpha1.OperationPhaseRunning
 	op.Status.CompletionTime = nil
+	op.Status.Message = ""
 	op.Status.Attempts++
 
 	if err := wo.cli.Status().Update(ctx, op); err != nil {
@@ -346,9 +353,22 @@ func (wo operationWorkflowOperator) restartFromStep(ctx context.Context, ws *v2a
 	// Suspend/Finished) stuck at true from the original run, so the engine
 	// reported the workflow terminated/failed again on the very next
 	// reconcile regardless of how the restarted step itself turned out.
+	//
+	// Phase/Message/SuspendState are also cleared here, purely so a status
+	// read in the brief window before the next reconcile overwrites them
+	// doesn't show a stale terminal phase/message from the run being
+	// restarted -- the embedded engine itself never reads these back as
+	// input (only Terminated gates re-execution, per
+	// checkWorkflowTerminated), so this is cosmetic, not a correctness fix.
+	// Mode is deliberately left alone: it's the workflow's configured
+	// DAG/sequential execution mode, not run state, and zeroing it would
+	// silently revert a DAG-mode template back to sequential.
 	ws.Terminated = false
 	ws.Suspend = false
 	ws.Finished = false
+	ws.Phase = ""
+	ws.Message = ""
+	ws.SuspendState = ""
 	if !ws.EndTime.IsZero() {
 		ws.EndTime = metav1.Time{}
 	}
@@ -363,7 +383,15 @@ func (wo operationWorkflowOperator) restartFromStep(ctx context.Context, ws *v2a
 	var cm *corev1.ConfigMap
 	if ws.ContextBackend != nil {
 		cm = &corev1.ConfigMap{}
-		if err := wo.cli.Get(ctx, client.ObjectKey{Namespace: op.Namespace, Name: ws.ContextBackend.Name}, cm); err != nil {
+		err := wo.cli.Get(ctx, client.ObjectKey{Namespace: op.Namespace, Name: ws.ContextBackend.Name}, cm)
+		switch {
+		case err == nil:
+		case kerrors.IsNotFound(err):
+			// Mirrors the whole-workflow path: a ConfigMap that's already
+			// gone just means there's no recorded context to clean up, not
+			// a reason to abort the restart.
+			cm = nil
+		default:
 			return err
 		}
 	}
@@ -388,16 +416,40 @@ func (wo operationWorkflowOperator) restartFromStep(ctx context.Context, ws *v2a
 func (wo operationWorkflowOperator) Terminate(ctx context.Context) error {
 	op := wo.operation
 	op.Status.Phase = v2alpha1.OperationPhaseFailed
-	steps := op.Status.Workflows
-	if len(steps) > 0 {
-		ws := &steps[0]
+	now := metav1.Now()
+	op.Status.CompletionTime = &now
+	workflows := op.Status.Workflows
+	if len(workflows) > 0 {
+		ws := &workflows[0]
 		ws.Terminated = true
 		ws.Suspend = false
+		terminateActiveSteps(ws)
 	}
 	if err := wo.cli.Status().Update(ctx, op); err != nil {
 		return err
 	}
 	return writeOutputF(wo.outputWriter, "Successfully terminate operation: %s\n", op.Name)
+}
+
+// terminateActiveSteps flips any step or sub-step still Running/Suspending
+// to Failed, mirroring the embedded engine's own TerminateWorkflow -- without
+// this, a terminated Operation could keep steps reading as still in
+// progress even though the whole run is now terminal.
+func terminateActiveSteps(ws *v2alpha1.OperationWorkflowStatus) {
+	for i := range ws.Steps {
+		step := &ws.Steps[i]
+		if step.Phase == workflowv1alpha1.WorkflowStepPhaseRunning || step.Phase == workflowv1alpha1.WorkflowStepPhaseSuspending {
+			step.Phase = workflowv1alpha1.WorkflowStepPhaseFailed
+			step.Reason = wfTypes.StatusReasonTerminate
+		}
+		for j := range step.SubStepsStatus {
+			sub := &step.SubStepsStatus[j]
+			if sub.Phase == workflowv1alpha1.WorkflowStepPhaseRunning || sub.Phase == workflowv1alpha1.WorkflowStepPhaseSuspending {
+				sub.Phase = workflowv1alpha1.WorkflowStepPhaseFailed
+				sub.Reason = wfTypes.StatusReasonTerminate
+			}
+		}
+	}
 }
 
 // snapshotAttempts preserves affected steps' Attempts -- already recorded
@@ -424,6 +476,12 @@ func snapshotAttempts(ws *v2alpha1.OperationWorkflowStatus, affected []v2alpha1.
 			ws.StepAttempts[s.Name] = s.Attempts
 		}
 		for _, sub := range s.SubStepsStatus {
+			// A sub-step still Running/Suspending when a restart snapshots
+			// it hasn't actually completed -- recording it here would log a
+			// non-terminal snapshot as though it were a finished attempt.
+			if !wfTypes.IsStepFinish(sub.Phase, sub.Reason) {
+				continue
+			}
 			recordAttempt(ws, sub.Name, sub)
 		}
 	}

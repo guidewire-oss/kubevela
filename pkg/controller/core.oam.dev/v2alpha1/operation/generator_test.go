@@ -225,6 +225,43 @@ func TestOperationWorkflowStatusFromEngineCarriesForwardAttempts(t *testing.T) {
 		require.Len(t, got.Steps, 1)
 		assert.Nil(t, got.Steps[0].Attempts)
 	})
+
+	t.Run("pending attempt not yet reattached (step hasn't reappeared this reconcile): carried forward, not dropped", func(t *testing.T) {
+		// step-three's live entry was removed by a --step restart; the
+		// workflow suspends (or otherwise stops) before the engine gets
+		// around to recreating step-three's entry this reconcile -- its
+		// pending history must survive into the returned status so a later
+		// reconcile can still reattach it, instead of vanishing here.
+		previous := v2alpha1.OperationWorkflowStatus{
+			StepAttempts: map[string][]v2alpha1.OperationStepAttempt{
+				"step-three": {{AttemptNumber: 1, ID: "id-1", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
+			},
+		}
+		engineStatus := workflowv1alpha1.WorkflowRunStatus{
+			Suspend: true,
+			Steps: []workflowv1alpha1.WorkflowStepStatus{
+				{StepStatus: workflowv1alpha1.StepStatus{ID: "id-2", Name: "step-one", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+			},
+		}
+		got := operationWorkflowStatusFromEngine(localCluster, engineStatus, previous)
+		require.Len(t, got.Steps, 1)
+		assert.Equal(t, previous.StepAttempts["step-three"], got.StepAttempts["step-three"])
+	})
+
+	t.Run("pending attempt reattached this reconcile: no longer carried in StepAttempts", func(t *testing.T) {
+		previous := v2alpha1.OperationWorkflowStatus{
+			StepAttempts: map[string][]v2alpha1.OperationStepAttempt{
+				"step-three": {{AttemptNumber: 1, ID: "id-1", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}},
+			},
+		}
+		engineStatus := workflowv1alpha1.WorkflowRunStatus{
+			Steps: []workflowv1alpha1.WorkflowStepStatus{
+				{StepStatus: workflowv1alpha1.StepStatus{ID: "id-2", Name: "step-three", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}},
+			},
+		}
+		got := operationWorkflowStatusFromEngine(localCluster, engineStatus, previous)
+		assert.NotContains(t, got.StepAttempts, "step-three", "reattached into Steps[0].Attempts, so it should not also linger in StepAttempts")
+	})
 }
 
 func TestRecordStepCompletion(t *testing.T) {

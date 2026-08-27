@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -48,7 +49,19 @@ func (r *Reconciler) sweepTTL(ctx context.Context, op *v2alpha1.Operation) (ctrl
 	}
 	remaining := ttl - time.Since(op.Status.CompletionTime.Time)
 	if remaining <= 0 {
-		return ctrl.Result{}, client.IgnoreNotFound(r.Delete(ctx, op))
+		// A resource-version precondition guards against a race with a
+		// restart landing between this func's caller reading op (via the
+		// APIReader, bypassing the cache) and this delete: without it, the
+		// delete would remove op by name regardless of what it has since
+		// become, including a freshly-restarted, no-longer-terminal
+		// Operation. A conflict here just means exactly that happened --
+		// the restart wins, and this stale sweep is a no-op instead of an
+		// error.
+		err := r.Delete(ctx, op, client.Preconditions{ResourceVersion: &op.ResourceVersion})
+		if kerrors.IsConflict(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	return ctrl.Result{RequeueAfter: remaining}, nil
 }

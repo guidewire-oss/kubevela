@@ -27,8 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
-
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
@@ -62,36 +60,6 @@ func TestValidateOperationClusterFlag(t *testing.T) {
 	assert.NoError(t, validateOperationClusterFlag("local"))
 	err := validateOperationClusterFlag("remote")
 	assert.ErrorContains(t, err, `only supports "local" so far, got "remote"`)
-}
-
-func TestFindOperationStepStatus(t *testing.T) {
-	op := &v2alpha1.Operation{
-		Status: v2alpha1.OperationStatus{
-			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				Steps: []v2alpha1.OperationWorkflowStepStatus{
-					{
-						WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{
-							StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded},
-							SubStepsStatus: []workflowv1alpha1.StepStatus{
-								{Name: "sub1", Phase: workflowv1alpha1.WorkflowStepPhaseFailed},
-							},
-						},
-					},
-				},
-			}},
-		},
-	}
-
-	got := findOperationStepStatus(op, "step1")
-	require.NotNil(t, got)
-	assert.Equal(t, workflowv1alpha1.WorkflowStepPhaseSucceeded, got.Phase)
-
-	got = findOperationStepStatus(op, "sub1")
-	require.NotNil(t, got)
-	assert.Equal(t, workflowv1alpha1.WorkflowStepPhaseFailed, got.Phase)
-
-	assert.Nil(t, findOperationStepStatus(op, "missing"))
-	assert.Nil(t, findOperationStepStatus(&v2alpha1.Operation{}, "step1"))
 }
 
 func TestGetOperationByName(t *testing.T) {
@@ -168,31 +136,18 @@ func TestPollOperationUntilSuspendedAlreadyDone(t *testing.T) {
 	})
 }
 
-func TestOperationRestartOnlyWarning(t *testing.T) {
-	succeededStep := &v2alpha1.Operation{
-		Status: v2alpha1.OperationStatus{
-			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				Steps: []v2alpha1.OperationWorkflowStepStatus{
-					{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseSucceeded}}},
-				},
-			}},
-		},
-	}
-	failedStep := &v2alpha1.Operation{
-		Status: v2alpha1.OperationStatus{
-			Workflows: []v2alpha1.OperationWorkflowStatus{{
-				Steps: []v2alpha1.OperationWorkflowStepStatus{
-					{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: workflowv1alpha1.StepStatus{Name: "step1", Phase: workflowv1alpha1.WorkflowStepPhaseFailed}}},
-				},
-			}},
-		},
-	}
+func TestValidateOperationRestartOnlyFlag(t *testing.T) {
+	assert.NoError(t, validateOperationRestartOnlyFlag("", false), "no flags at all: fine")
+	assert.NoError(t, validateOperationRestartOnlyFlag("step1", false), "--step without --only: fine")
 
-	assert.Contains(t, operationRestartOnlyWarning(succeededStep, "step1", true), "already succeeded")
-	assert.Empty(t, operationRestartOnlyWarning(failedStep, "step1", true), "a failed step needs no data-consistency warning")
-	assert.Empty(t, operationRestartOnlyWarning(succeededStep, "step1", false), "no warning without --only")
-	assert.Empty(t, operationRestartOnlyWarning(succeededStep, "", true), "no target step to warn about")
-	assert.Empty(t, operationRestartOnlyWarning(succeededStep, "missing", true), "unknown step has nothing to warn about here -- the operator surfaces that error")
+	err := validateOperationRestartOnlyFlag("", true)
+	assert.ErrorContains(t, err, "--only requires --step")
+
+	// --only is rejected outright, not silently downgraded to a full
+	// cascading restart -- see validateOperationRestartOnlyFlag's own doc.
+	err = validateOperationRestartOnlyFlag("step1", true)
+	assert.ErrorContains(t, err, "not implemented")
+	assert.ErrorContains(t, err, "step1")
 }
 
 func TestSplitComponentRef(t *testing.T) {

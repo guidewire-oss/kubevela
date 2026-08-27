@@ -32,8 +32,6 @@ import (
 	types2 "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
-
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
 	"github.com/oam-dev/kubevela/apis/types"
@@ -138,41 +136,21 @@ func validateOperationClusterFlag(cluster string) error {
 	return nil
 }
 
-// findOperationStepStatus looks up a step (or sub-step) by name in op's
-// (single, local-cluster) workflow status. A sub-step match is wrapped with
-// no Attempts -- sub-step attempt history isn't tracked (see
-// OperationWorkflowStepStatus's doc).
-func findOperationStepStatus(op *v2alpha1.Operation, step string) *v2alpha1.OperationWorkflowStepStatus {
-	if len(op.Status.Workflows) == 0 {
+// validateOperationRestartOnlyFlag rejects flag combinations `restart`
+// doesn't support: --only without --step, and --only itself, since
+// restartFromStep (pkg/workflow/operation) always cascades to every step
+// positioned after the target -- there is no "reset just this one step,
+// leave downstream steps alone" mode implemented yet. Failing loudly here
+// beats silently performing that same cascading restart while --only
+// claims to have prevented it.
+func validateOperationRestartOnlyFlag(step string, only bool) error {
+	if !only {
 		return nil
 	}
-	for i, s := range op.Status.Workflows[0].Steps {
-		if s.Name == step {
-			return &op.Status.Workflows[0].Steps[i]
-		}
-		for _, sub := range s.SubStepsStatus {
-			if sub.Name == step {
-				return &v2alpha1.OperationWorkflowStepStatus{WorkflowStepStatus: workflowv1alpha1.WorkflowStepStatus{StepStatus: sub}}
-			}
-		}
+	if step == "" {
+		return fmt.Errorf("--only requires --step")
 	}
-	return nil
-}
-
-// operationRestartOnlyWarning returns the data-consistency warning
-// `restart --only` should print, or "" if none applies. Only-restarting a
-// step that already succeeded means its output is about to change with
-// nothing downstream re-reading it (see RETRY_PLAN.md's `--only` note) --
-// advisory, not a safety gate, so it never blocks the restart.
-func operationRestartOnlyWarning(op *v2alpha1.Operation, step string, only bool) string {
-	if !only || step == "" {
-		return ""
-	}
-	target := findOperationStepStatus(op, step)
-	if target == nil || target.Phase != workflowv1alpha1.WorkflowStepPhaseSucceeded {
-		return ""
-	}
-	return fmt.Sprintf("Warning: step %q already succeeded -- --only restarts it without cascading to downstream steps, so nothing will re-read its new output.", step)
+	return fmt.Errorf("--only is not implemented yet: restarting %q would still cascade to every step after it, the same as without --only", step)
 }
 
 // pollOperationUntilTerminal polls op's status.phase until it reaches a
@@ -250,6 +228,9 @@ func NewOperationRestartCommand(c common.Args, ioStreams cmdutil.IOStreams) *cob
 			if err := validateOperationClusterFlag(cluster); err != nil {
 				return err
 			}
+			if err := validateOperationRestartOnlyFlag(step, only); err != nil {
+				return err
+			}
 			k8sClient, err := c.GetClient()
 			if err != nil {
 				return errors.Wrap(err, "failed to get k8s client")
@@ -257,12 +238,6 @@ func NewOperationRestartCommand(c common.Args, ioStreams cmdutil.IOStreams) *cob
 			op, err := getOperationByName(ctx, k8sClient, ns, args[0])
 			if err != nil {
 				return err
-			}
-			if only && step == "" {
-				return fmt.Errorf("--only requires --step")
-			}
-			if warning := operationRestartOnlyWarning(op, step, only); warning != "" {
-				cmd.Println(warning)
 			}
 			if step == "" {
 				if err := veloperation.NewOperationWorkflowOperator(k8sClient, cmd.OutOrStdout(), op).Restart(ctx); err != nil {

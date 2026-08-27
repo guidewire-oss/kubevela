@@ -267,10 +267,12 @@ func operationWorkflowStatusFromEngine(cluster string, engineStatus workflowv1al
 		attemptsByName[name] = attempts
 	}
 
+	consumed := make(map[string]bool, len(engineStatus.Steps))
 	var steps []v2alpha1.OperationWorkflowStepStatus
 	if len(engineStatus.Steps) > 0 {
 		steps = make([]v2alpha1.OperationWorkflowStepStatus, len(engineStatus.Steps))
 		for i, s := range engineStatus.Steps {
+			consumed[s.Name] = true
 			steps[i] = v2alpha1.OperationWorkflowStepStatus{
 				WorkflowStepStatus: s,
 				Attempts:           recordStepCompletion(attemptsByName[s.Name], s),
@@ -281,8 +283,22 @@ func operationWorkflowStatusFromEngine(cluster string, engineStatus workflowv1al
 	// op.Status.Template.Workflow.Steps is a one-time snapshot (never
 	// re-resolved after the first reconcile -- see resolveTemplate), so a
 	// step name that ever had a pending attempt is guaranteed to reappear
-	// in engineStatus.Steps eventually; nothing here is ever silently
-	// dropped, just deferred until the engine gets to it.
+	// in engineStatus.Steps eventually -- but "eventually" isn't "this
+	// reconcile": if the workflow suspends, fails, or is otherwise not
+	// progressed before that happens, whatever in attemptsByName wasn't
+	// just reattached above has to be carried forward here, or it's lost
+	// for good the moment this return value replaces op.Status.Workflows.
+	var pending map[string][]v2alpha1.OperationStepAttempt
+	for name, attempts := range attemptsByName {
+		if consumed[name] {
+			continue
+		}
+		if pending == nil {
+			pending = make(map[string][]v2alpha1.OperationStepAttempt, len(attemptsByName))
+		}
+		pending[name] = attempts
+	}
+
 	return v2alpha1.OperationWorkflowStatus{
 		Cluster:        cluster,
 		Mode:           engineStatus.Mode,
@@ -296,6 +312,7 @@ func operationWorkflowStatusFromEngine(cluster string, engineStatus workflowv1al
 		Steps:          steps,
 		StartTime:      engineStatus.StartTime,
 		EndTime:        engineStatus.EndTime,
+		StepAttempts:   pending,
 	}
 }
 

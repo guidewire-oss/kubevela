@@ -36,7 +36,11 @@ func ttlTestClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, v2alpha1.AddToScheme(scheme))
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v2alpha1.Operation{}).
+		WithObjects(objs...).
+		Build()
 }
 
 func TestSweepTTL(t *testing.T) {
@@ -121,4 +125,35 @@ func TestSweepTTL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSweepTTLDoesNotDeleteARacedRestart(t *testing.T) {
+	ctx := context.Background()
+	r := require.New(t)
+	past := metav1.NewTime(metav1.Now().Add(-time.Hour))
+
+	op := &v2alpha1.Operation{
+		ObjectMeta: metav1.ObjectMeta{Name: "raced-restart", Namespace: "default"},
+		Status:     v2alpha1.OperationStatus{CompletionTime: &past},
+	}
+	cli := ttlTestClient(t, op)
+
+	// Simulate a restart landing between the reconciler's stale read (via
+	// APIReader, bypassing the cache) and this sweep call: mutate and
+	// persist through the client, bumping the stored resourceVersion,
+	// while op -- exactly like the stale value sweepTTL's caller would
+	// still be holding -- keeps whatever resourceVersion it had before.
+	live := &v2alpha1.Operation{}
+	r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), live))
+	live.Status.Phase = v2alpha1.OperationPhaseRunning
+	live.Status.CompletionTime = nil
+	r.NoError(cli.Status().Update(ctx, live))
+
+	reconciler := &Reconciler{Client: cli, DefaultOperationTTL: time.Minute}
+	_, err := reconciler.sweepTTL(ctx, op)
+	r.NoError(err, "a resource-version conflict from stale data must not surface as a reconcile error")
+
+	got := &v2alpha1.Operation{}
+	r.NoError(cli.Get(ctx, client.ObjectKeyFromObject(op), got), "the restarted operation must survive a sweep based on stale (pre-restart) data")
+	r.Equal(v2alpha1.OperationPhaseRunning, got.Status.Phase)
 }

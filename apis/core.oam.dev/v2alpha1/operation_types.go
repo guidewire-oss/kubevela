@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	oamv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
+	"github.com/kubevela/workflow/api/condition"
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 )
 
@@ -66,8 +67,10 @@ type OperationSpec struct {
 	// TTLSecondsAfterFinished bounds how long a terminal Operation is kept
 	// before the controller deletes it. Unset uses the cluster default
 	// (--default-operation-ttl-seconds); explicit 0 disables TTL for this
-	// Operation.
+	// Operation. Negative values are rejected -- 0 is the only way to
+	// disable it.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	TTLSecondsAfterFinished *int32 `json:"ttlSecondsAfterFinished,omitempty"`
 }
 
@@ -174,6 +177,15 @@ type OperationWorkflowStepStatus struct {
 // reconcile. So every other field WorkflowRunStatus carries is declared
 // explicitly below instead, mirroring its JSON shape field-for-field.
 type OperationWorkflowStatus struct {
+	// ConditionedStatus carries this workflow's conditions, mirroring the
+	// same embed upstream's WorkflowRunStatus carries. Nothing currently
+	// populates it (the embedded engine's own executor never calls
+	// SetConditions on the status it returns), but it's kept here for API
+	// parity with upstream rather than silently dropped -- an external
+	// consumer reading this type shouldn't lose a field the un-reshaped
+	// version exposed.
+	condition.ConditionedStatus `json:",inline"`
+
 	// Cluster is the resolved cluster this workflow ran against. Always
 	// populated, even though only one is ever resolved so far.
 	Cluster string `json:"cluster,omitempty"`
@@ -262,10 +274,10 @@ type OperationStatus struct {
 // Operation is the Schema for the Operation API: one run-to-completion
 // invocation of an OperationTemplate against a target.
 //
-// TODO(KEP 2.15): the permission model isn't implemented yet. Any RBAC
-// principal able to create an Operation can invoke any OperationTemplate
-// against any target in its namespace. Do not release or promote this
-// code path until the permission model lands.
+// KEP 2.15 permission model: not implemented yet. Any RBAC principal able
+// to create an Operation can invoke any OperationTemplate against any
+// target in its namespace. Do not release or promote this code path
+// until the permission model lands.
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories={oam},shortName={op,vop}
 // +kubebuilder:printcolumn:name="TEMPLATE",type=string,JSONPath=`.spec.template`

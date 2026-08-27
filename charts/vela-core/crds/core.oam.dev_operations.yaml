@@ -42,9 +42,10 @@ spec:
           Operation is the Schema for the Operation API: one run-to-completion
           invocation of an OperationTemplate against a target.
 
-          principal able to create an Operation can invoke any OperationTemplate
-          against any target in its namespace. Do not release or promote this
-          code path until the permission model lands.
+          KEP 2.15 permission model: not implemented yet. Any RBAC principal able
+          to create an Operation can invoke any OperationTemplate against any
+          target in its namespace. Do not release or promote this code path
+          until the permission model lands.
         properties:
           apiVersion:
             description: |-
@@ -111,8 +112,10 @@ spec:
                   TTLSecondsAfterFinished bounds how long a terminal Operation is kept
                   before the controller deletes it. Unset uses the cluster default
                   (--default-operation-ttl-seconds); explicit 0 disables TTL for this
-                  Operation.
+                  Operation. Negative values are rejected -- 0 is the only way to
+                  disable it.
                 format: int32
+                minimum: 0
                 type: integer
             required:
             - target
@@ -361,6 +364,42 @@ spec:
                         Cluster is the resolved cluster this workflow ran against. Always
                         populated, even though only one is ever resolved so far.
                       type: string
+                    conditions:
+                      description: Conditions of the resource.
+                      items:
+                        description: A Condition that may apply to a resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              LastTransitionTime is the last time this condition transitioned from one
+                              status to another.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              A Message containing details about this condition's last transition from
+                              one status to another, if any.
+                            type: string
+                          reason:
+                            description: A Reason for this condition's last transition
+                              from one status to another.
+                            type: string
+                          status:
+                            description: Status of this condition; is it currently
+                              True, False, or Unknown?
+                            type: string
+                          type:
+                            description: |-
+                              Type of this condition. At most one of each condition type may apply to
+                              a resource at any point in time.
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      type: array
                     contextBackend:
                       description: ObjectReference contains enough information to
                         let you inspect or modify the referred object.
