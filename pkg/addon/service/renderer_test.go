@@ -26,8 +26,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/kubevela/pkg/util/singleton"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -53,6 +56,79 @@ func TestSetAddonRegistryLabel(t *testing.T) {
 	setAddonRegistryLabel(app, "another")
 	assert.Equal(t, "another", app.Labels[oam.LabelAddonRegistry])
 	assert.Equal(t, "true", app.Labels["preserved"])
+}
+
+func TestNewRenderer(t *testing.T) {
+	r := NewRenderer()
+	require.NotNil(t, r)
+	_, ok := r.(*rendererImpl)
+	assert.True(t, ok, "NewRenderer must return a *rendererImpl")
+}
+
+func TestRegisterInstallsTheDefaultRenderer(t *testing.T) {
+	Register()
+	assert.NotNil(t, api.DefaultRenderer())
+	_, ok := api.DefaultRenderer().(*rendererImpl)
+	assert.True(t, ok, "Register must install a *rendererImpl as the default renderer")
+}
+
+func TestFetchExactVersionDefaultsToRegistryLookup(t *testing.T) {
+	r := &rendererImpl{cli: fakeClientWithRegistry(t)}
+	_, err := r.fetchExactVersion(context.Background(), "missing-registry", "example", "1.0.0")
+	require.Error(t, err, "with no fetchExactFn override, the default path must hit the real registry lookup")
+}
+
+func TestValidateSystemRequirements(t *testing.T) {
+	t.Run("skips when rest config is unavailable", func(t *testing.T) {
+		r := &rendererImpl{cli: fakeClientWithRegistry(t)}
+		err := r.validateSystemRequirements(context.Background(), "example", &pkgaddon.InstallPackage{})
+		assert.NoError(t, err)
+	})
+
+	t.Run("passes when the addon declares no system requirements", func(t *testing.T) {
+		r := &rendererImpl{
+			cli:    fakeClientWithRegistry(t),
+			config: &rest.Config{Host: "https://example.invalid"},
+		}
+		err := r.validateSystemRequirements(context.Background(), "example", &pkgaddon.InstallPackage{})
+		assert.NoError(t, err)
+	})
+
+	t.Run("wraps discovery client construction errors", func(t *testing.T) {
+		r := &rendererImpl{
+			cli: fakeClientWithRegistry(t),
+			config: &rest.Config{
+				Host:            "https://example.invalid",
+				TLSClientConfig: rest.TLSClientConfig{Insecure: true, CAData: []byte("bogus-ca")},
+			},
+		}
+		err := r.validateSystemRequirements(context.Background(), "example", &pkgaddon.InstallPackage{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "build discovery client")
+	})
+
+	t.Run("wraps requirement check failures", func(t *testing.T) {
+		r := &rendererImpl{
+			cli:    fakeClientWithRegistry(t),
+			config: &rest.Config{Host: "https://example.invalid"},
+		}
+		installPkg := &pkgaddon.InstallPackage{
+			Meta: pkgaddon.Meta{SystemRequirements: &pkgaddon.SystemRequirements{VelaVersion: ">=1.0.0"}},
+		}
+		err := r.validateSystemRequirements(context.Background(), "example", installPkg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "does not meet system requirements")
+	})
+}
+
+func TestAuxComponentsPropagatesRenderErrors(t *testing.T) {
+	r := &rendererImpl{cli: fakeClientWithRegistry(t)}
+	installPkg := &pkgaddon.InstallPackage{
+		Definitions: []pkgaddon.ElementFile{{Name: "broken.yaml", Data: "{"}},
+	}
+	_, err := r.auxComponents(context.Background(), installPkg, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "broken.yaml")
 }
 
 func TestRenderAddonNotFound(t *testing.T) {
@@ -623,6 +699,38 @@ func TestResolvePinnedVersionTriesEveryCandidateRegistry(t *testing.T) {
 	})
 }
 
+// TestResolvePinnedVersionEmptyCandidatesListsRegistries covers the path taken
+// when the caller does not narrow the search to one registry: candidates must
+// be filled in from every configured registry before any lookup is tried.
+func TestResolvePinnedVersionEmptyCandidatesListsRegistries(t *testing.T) {
+	t.Run("fails when no registry is configured", func(t *testing.T) {
+		r := &rendererImpl{cli: fakeClientWithRegistry(t)}
+		_, _, err := r.resolvePinnedVersion(context.Background(), "example", "1.0.0", nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no addon registries are configured")
+	})
+
+	t.Run("tries every registry discovered from the store", func(t *testing.T) {
+		cli := fakeClientWithRegistry(t)
+		require.NoError(t, pkgaddon.NewRegistryDataStore(cli).AddRegistry(context.Background(), pkgaddon.Registry{Name: "discovered"}))
+
+		var tried []string
+		r := &rendererImpl{
+			cli: cli,
+			fetchExactFn: func(_ context.Context, registryName, addonName, version string) (*pkgaddon.InstallPackage, error) {
+				tried = append(tried, registryName)
+				return &pkgaddon.InstallPackage{Meta: pkgaddon.Meta{Name: addonName, Version: version}}, nil
+			},
+		}
+
+		pkg, reg, err := r.resolvePinnedVersion(context.Background(), "example", "1.0.0", nil)
+		require.NoError(t, err)
+		assert.Equal(t, "discovered", reg)
+		assert.Equal(t, "1.0.0", pkg.Version)
+		assert.Equal(t, []string{"discovered"}, tried)
+	})
+}
+
 // TestResolveAndRenderPinnedVersionDoesNotNeedLatest is the regression guard for
 // #25: a broken latest release must not block a valid pin, so the pinned path must
 // not consult the latest-package lookup at all.
@@ -649,4 +757,21 @@ func TestResolveAndRenderPinnedVersionDoesNotNeedLatest(t *testing.T) {
 	assert.Equal(t, "1.0.0", res.ResolvedVersion)
 	assert.Equal(t, "fixture", res.Registry)
 	assert.Zero(t, latestCalls, "a pinned request must not depend on resolving latest")
+}
+
+// TestClientAndRestConfigFallBackToSingleton covers the production path where
+// no client/config was injected, so client() and restConfig() must read the
+// kubevela-pkg singletons. It sets those process-wide singletons via Set (not
+// the real loader, which would dial a live cluster), so it must stay the last
+// test in this file: every earlier test relies on a zero-value rendererImpl
+// falling through this branch to a still-nil singleton.
+func TestClientAndRestConfigFallBackToSingleton(t *testing.T) {
+	fakeCli := fakeClientWithRegistry(t)
+	singleton.KubeClient.Set(fakeCli)
+	cfg := &rest.Config{Host: "https://example.invalid"}
+	singleton.KubeConfig.Set(cfg)
+
+	r := &rendererImpl{}
+	assert.Same(t, fakeCli, r.client())
+	assert.Same(t, cfg, r.restConfig())
 }
