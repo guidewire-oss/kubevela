@@ -61,7 +61,7 @@ func NewModuleCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) 
 			types.TagCommandType:  types.TypeExtension,
 		},
 	}
-	cmd.AddCommand(NewModuleRegistryCommand(c, ioStreams), NewModuleDeployCommand(c, ioStreams))
+	cmd.AddCommand(NewModuleRegistryCommand(c, ioStreams), NewModuleDeployCommand(c, ioStreams), NewModuleInitCommand(c, ioStreams))
 	return cmd
 }
 
