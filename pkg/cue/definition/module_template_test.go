@@ -117,9 +117,8 @@ func TestModuleComponentDefinitionRenders(t *testing.T) {
 	assert.Empty(t, assists, "module component must emit no outputs")
 }
 
-// TestModuleComponentDefinitionDefaults verifies module falls back to the
-// component name, and registry/version default to empty (configured default;
-// latest published version).
+// TestModuleComponentDefinitionDefaults verifies registry/version default to
+// empty (configured default; latest published version) when omitted.
 func TestModuleComponentDefinitionDefaults(t *testing.T) {
 	prev := api.DefaultRenderer()
 	t.Cleanup(func() { api.SetDefaultRenderer(prev) })
@@ -146,9 +145,29 @@ func TestModuleComponentDefinitionDefaults(t *testing.T) {
 	})
 
 	wt := cuedefinition.NewWorkloadAbstractEngine("module")
-	require.NoError(t, wt.Complete(ctx, abstractTemplate, map[string]interface{}{}))
+	require.NoError(t, wt.Complete(ctx, abstractTemplate, map[string]interface{}{
+		"module": "postgres",
+	}))
 
 	assert.Equal(t, "postgres", fake.req.Module)
 	assert.Equal(t, "", fake.req.Registry)
 	assert.Equal(t, "", fake.req.Version)
+}
+
+// TestModuleComponentDefinitionRequiresModule verifies module has no default
+// (unlike registry/namespace/version): omitting it is a compile error rather
+// than falling back to the component name.
+func TestModuleComponentDefinitionRequiresModule(t *testing.T) {
+	abstractTemplate := extractAbstractTemplate(t, moduleTemplateDefPath)
+
+	ctx := process.NewContext(process.ContextData{
+		AppName:         "myapp",
+		CompName:        "postgres",
+		Namespace:       "default",
+		AppRevisionName: "myapp-v1",
+		ClusterVersion:  types.ClusterVersion{Minor: "19+"},
+	})
+
+	wt := cuedefinition.NewWorkloadAbstractEngine("module")
+	assert.Error(t, wt.Complete(ctx, abstractTemplate, map[string]interface{}{}))
 }

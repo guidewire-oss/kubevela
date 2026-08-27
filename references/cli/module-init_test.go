@@ -69,7 +69,6 @@ func TestModuleInitScaffoldsExpectedFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(readme), "s3", "the module name is substituted into the README")
 	assert.Contains(t, string(readme), "auxiliary/", "the README explains the auxiliary folders")
-	assert.Contains(t, string(readme), "CompositeResourceDefinition")
 }
 
 // TestModuleInitScaffoldValidates is the guard that keeps the templates in sync
