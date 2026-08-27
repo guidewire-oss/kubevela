@@ -66,7 +66,6 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=core.oam.dev,resources=operations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core.oam.dev,resources=operations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core.oam.dev,resources=operationtemplates,verbs=get;list;watch
-// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile runs an Operation's workflow to completion. A terminal Operation
 // is only reprocessed to enforce its TTL (see sweepTTL) -- restart is
@@ -97,18 +96,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	target, err := r.resolveTarget(logCtx, op)
 	if err != nil {
 		return r.fail(logCtx, op, err)
-	}
-
-	// At most one Operation runs its workflow against a given target at a
-	// time. Losing the race isn't a failure -- just retry once the holder
-	// finishes or its lock expires.
-	acquired, err := r.acquireLock(logCtx, op)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !acquired {
-		logCtx.Info("operation target is locked by another Operation, retrying")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	if op.Status.Template == nil {
@@ -199,11 +186,6 @@ const suspendedRequeueInterval = 30 * time.Second
 func (r *Reconciler) finish(ctx context.Context, op *v2alpha1.Operation) (ctrl.Result, error) {
 	if err := r.Status().Update(ctx, op); err != nil {
 		return ctrl.Result{}, err
-	}
-	if err := r.releaseLock(ctx, op); err != nil {
-		if lg, ok := ctx.(monitorContext.Context); ok {
-			lg.Error(err, "release operation lock")
-		}
 	}
 	return r.sweepTTL(ctx, op)
 }
