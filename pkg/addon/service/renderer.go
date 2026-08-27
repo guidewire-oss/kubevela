@@ -59,6 +59,12 @@ type rendererImpl struct {
 	// single resolve+render call. Without it, N concurrent requests for the
 	// same not-yet-cached pinned addon each pay the full registry/CUE cost
 	// before any of them observes the others' write to cache.
+	//
+	// Callers share the leader's ctx while waiting: if the leader's ctx is
+	// canceled, every follower fails with it even if its own ctx is still
+	// valid, and a follower's own deadline expiring does not abort anything.
+	// Acceptable here because callers are CueX render steps, not per-request
+	// HTTP handlers with independent deadlines.
 	resolveGroup singleflight.Group
 
 	// resolveFn is a seam for tests: it defaults to r.resolveAndRender and is

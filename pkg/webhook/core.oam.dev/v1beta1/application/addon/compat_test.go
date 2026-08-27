@@ -204,10 +204,11 @@ func TestDefaultCompatCheckerAgainstResolvedAddon(t *testing.T) {
 	// *rest.Config behind would break whichever test runs next.
 	originalKubeConfig := singleton.KubeConfig.Get()
 
-	// Likewise snapshot KubeClient: each subtest sets its own fake client
-	// (whose registry server is torn down at the end of that subtest), and
-	// leaving the last one behind would hand a later test in this package a
-	// stale client pointed at a closed server instead of the lazy default.
+	// Likewise snapshot KubeClient: each subtest sets its own fake client, and
+	// the last one set stays until this whole test's newFluxRegistryServer(t)
+	// cleanup closes its backing server -- leaving that fake behind would hand
+	// a later test in this package a stale client pointed at a closed server
+	// instead of the lazy default.
 	originalKubeClient := singleton.KubeClient.Get()
 	t.Cleanup(func() { singleton.KubeClient.Set(originalKubeClient) })
 

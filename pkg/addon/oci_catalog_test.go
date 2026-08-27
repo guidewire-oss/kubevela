@@ -134,3 +134,57 @@ func TestUpdateOCIAddonCatalogRetriesOnConflict(t *testing.T) {
 		assert.Same(t, assert.AnError, err)
 	})
 }
+
+// TestPublishCatalogEntryDetectsConflict drives the actual conflict-detection
+// wiring in publishCatalogEntry (not just the pure catalogTagHead helper, and
+// not just the retry loop around it): a catalog tag that changes between the
+// version-computation read and the pre-push re-check must report a conflict
+// and must not push. Because publishCatalogEntry takes the existing addon
+// list directly, this needs no real registry for the existing-catalog read
+// that normally precedes it.
+func TestPublishCatalogEntryDetectsConflict(t *testing.T) {
+	originalCatalogTags := catalogRepoTagsFn
+	originalAddonTags := addonVersionsTagsFn
+	defer func() {
+		catalogRepoTagsFn = originalCatalogTags
+		addonVersionsTagsFn = originalAddonTags
+	}()
+	// Not under test here: publishCatalogEntry also looks up the
+	// addon-under-publish's own versions to populate the catalog entry. Stub
+	// it out so the conflict-detection scenarios below don't need a real
+	// registry to satisfy it.
+	addonVersionsTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+		return []string{"1.0.0"}, nil
+	}
+
+	addonMeta := &chart.Metadata{Name: "fluxcd", Description: "Flux"}
+
+	t.Run("a tag that appears between the two reads is a conflict", func(t *testing.T) {
+		var calls int
+		catalogRepoTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+			calls++
+			if calls == 1 {
+				return nil, nil // no catalog published yet when this attempt started
+			}
+			return []string{"0.0.1"}, nil // a concurrent publisher landed one before the push
+		}
+
+		conflict, err := publishCatalogEntry(nil, &OCIAddonSource{URL: closedPortRegistryURL}, addonMeta, nil, false)
+		require.Error(t, err)
+		assert.True(t, conflict, "a tag appearing mid-attempt must be reported as a conflict, not a hard failure")
+		assert.Contains(t, err.Error(), "a concurrent publisher updated the portable OCI addon catalog")
+		assert.Equal(t, 2, calls, "must not push once a conflict is detected")
+	})
+
+	t.Run("an unchanged tag across both reads is not a conflict", func(t *testing.T) {
+		catalogRepoTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+			return []string{"0.0.3"}, nil
+		}
+
+		// client is nil, so a real push would panic; reaching client.Push proves
+		// the conflict check let this attempt through instead of retrying.
+		assert.Panics(t, func() {
+			_, _ = publishCatalogEntry(nil, &OCIAddonSource{URL: closedPortRegistryURL}, addonMeta, nil, false)
+		}, "an unchanged tag must proceed to publish rather than report a conflict")
+	})
+}

@@ -194,13 +194,15 @@ func TestRenderAddonConcurrentMissesResolveOnce(t *testing.T) {
 
 	req := api.AddonRequest{Name: "example", Version: "1.0.0", Properties: map[string]interface{}{"replicas": 1}}
 	const concurrency = 10
-	results := make(chan *api.AddonResult, concurrency)
-	errs := make(chan error, concurrency)
+	type outcome struct {
+		res *api.AddonResult
+		err error
+	}
+	outcomes := make(chan outcome, concurrency)
 	for range concurrency {
 		go func() {
 			res, err := r.RenderAddon(context.Background(), req)
-			results <- res
-			errs <- err
+			outcomes <- outcome{res, err}
 		}()
 	}
 
@@ -209,12 +211,12 @@ func TestRenderAddonConcurrentMissesResolveOnce(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	close(release)
 
-	first := <-results
-	require.NoError(t, <-errs)
+	first := <-outcomes
+	require.NoError(t, first.err)
 	for i := 1; i < concurrency; i++ {
-		res := <-results
-		require.NoError(t, <-errs)
-		assert.Same(t, first, res, "every concurrent caller must observe the same resolved result")
+		o := <-outcomes
+		require.NoError(t, o.err)
+		assert.Same(t, first.res, o.res, "every concurrent caller must observe the same resolved result")
 	}
 	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "concurrent misses on the same key must resolve exactly once")
 }
