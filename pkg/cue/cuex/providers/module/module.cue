@@ -8,6 +8,7 @@ package module
 		module:    string
 		registry:  *"" | string
 		namespace: *"" | string
+		version:   *"" | string
 	}
 	$returns?: {
 		application: {...}

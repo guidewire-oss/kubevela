@@ -55,6 +55,7 @@ type moduleComponentProperties struct {
 	Module    string `json:"module"`
 	Registry  string `json:"registry"`
 	Namespace string `json:"namespace"`
+	Version   string `json:"version"`
 }
 
 // moduleDeployAppName is the name of the Application the deploy command
@@ -74,12 +75,14 @@ func ownedModuleAppName(moduleName string) string {
 
 // buildModuleApplication builds the one-component Application that installs a
 // module. The registry name is the resolved one, not the raw flag, so the
-// applied manifest records which registry was chosen.
-func buildModuleApplication(moduleName, registryName, namespace string) (*v1beta1.Application, error) {
+// applied manifest records which registry was chosen. version selects the
+// module package version; empty installs latest.
+func buildModuleApplication(moduleName, registryName, namespace, version string) (*v1beta1.Application, error) {
 	props, err := json.Marshal(moduleComponentProperties{
 		Module:    moduleName,
 		Registry:  registryName,
 		Namespace: namespace,
+		Version:   version,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode the module component properties: %w", err)
@@ -118,6 +121,7 @@ const (
 	moduleDeployRegistryFlag = "registry"
 	moduleDeployDryRunFlag   = "dry-run"
 	moduleDeployTimeoutFlag  = "timeout"
+	moduleDeployVersionFlag  = "version"
 
 	// defaultModuleDeployTimeout is how long deploy waits for every tier to
 	// become healthy before giving up.
@@ -131,13 +135,16 @@ const (
 // pollInterval are seams: production wires the registry-backed fetch and the
 // default interval, tests inject a stub and a millisecond interval.
 type moduleDeployOptions struct {
-	module       string
-	registry     string
-	namespace    string
-	dryRun       bool
+	module    string
+	registry  string
+	namespace string
+	dryRun    bool
+	// version selects the module package version to install; empty installs
+	// the latest published version.
+	version      string
 	timeout      time.Duration
 	pollInterval time.Duration
-	fetch        func(ctx context.Context, registry, moduleName string) (*pkgmodule.Module, error)
+	fetch        func(ctx context.Context, registry, moduleName, version string) (*pkgmodule.Module, error)
 }
 
 // NewModuleDeployCommand returns the vela module deploy command. It builds and
@@ -175,6 +182,7 @@ func NewModuleDeployCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 		},
 	}
 	cmd.Flags().StringVar(&o.registry, moduleDeployRegistryFlag, "", "The module registry to deploy from. Empty means the configured default.")
+	cmd.Flags().StringVar(&o.version, moduleDeployVersionFlag, "", "The module package version (OCI/ECR tag) to install. Empty installs the latest published version. Ignored for a git registry, which always installs from the default branch.")
 	cmd.Flags().BoolVar(&o.dryRun, moduleDeployDryRunFlag, false, "Print the Application without applying it.")
 	cmd.Flags().DurationVar(&o.timeout, moduleDeployTimeoutFlag, defaultModuleDeployTimeout, "How long to wait for the module to become healthy.")
 	addNamespaceAndEnvArg(cmd)
@@ -207,11 +215,11 @@ func (o *moduleDeployOptions) run(ctx context.Context, cli client.Client, out io
 	if fetch == nil {
 		fetch = modulesvc.NewService(store).FetchModule
 	}
-	if _, err := fetch(ctx, reg.Name, o.module); err != nil {
+	if _, err := fetch(ctx, reg.Name, o.module, o.version); err != nil {
 		return err
 	}
 
-	app, err := buildModuleApplication(o.module, reg.Name, o.namespace)
+	app, err := buildModuleApplication(o.module, reg.Name, o.namespace, o.version)
 	if err != nil {
 		return err
 	}
@@ -280,7 +288,11 @@ func (o *moduleDeployOptions) waitForModule(ctx context.Context, cli client.Clie
 
 		tier, message := firstUnhealthyTier(tiers, services)
 		if tier == "" && len(tiers) > 0 && deployApp.Status.Phase == oamcommon.ApplicationRunning {
-			fmt.Fprintf(out, "Module %q is installed in namespace %q\n", o.module, o.namespace)
+			if resolved := ownedApp.Annotations[velatypes.AnnoDefinitionModuleVersion]; resolved != "" {
+				fmt.Fprintf(out, "Module %q (version %s) is installed in namespace %q\n", o.module, resolved, o.namespace)
+			} else {
+				fmt.Fprintf(out, "Module %q is installed in namespace %q\n", o.module, o.namespace)
+			}
 			return nil
 		}
 

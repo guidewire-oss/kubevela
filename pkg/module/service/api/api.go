@@ -34,6 +34,10 @@ type ModuleRequest struct {
 	// Namespace places the owned Application (install location). Empty means the
 	// default system namespace. The module is still installed once cluster-wide.
 	Namespace string
+	// Version selects the module package version (the OCI/ECR tag vela module
+	// publish writes from _module.cue's version field). A git source ignores
+	// this silently.
+	Version string
 }
 
 // ModuleResult is the rendered output: the module's owned Application as a

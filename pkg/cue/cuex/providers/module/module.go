@@ -42,6 +42,9 @@ type RenderVars struct {
 	Module    string `json:"module"`
 	Registry  string `json:"registry"`
 	Namespace string `json:"namespace"`
+	// Version selects the module package version (the OCI/ECR tag); empty means
+	// latest. Not the API line.
+	Version string `json:"version"`
 }
 
 // ResultVars is the $returns shape.
@@ -67,6 +70,7 @@ func Render(ctx context.Context, params *RenderParams) (*RenderReturns, error) {
 		Module:    p.Module,
 		Registry:  p.Registry,
 		Namespace: p.Namespace,
+		Version:   p.Version,
 	})
 	if err != nil {
 		return nil, err

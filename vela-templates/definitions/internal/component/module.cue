@@ -16,6 +16,7 @@ template: {
 			module:    parameter.module
 			registry:  parameter.registry
 			namespace: parameter.namespace
+			version:   parameter.version
 		}
 	}
 
@@ -28,5 +29,9 @@ template: {
 		registry: *"" | string
 		// Install namespace; empty means the default system namespace (vela-system).
 		namespace: *"" | string
+		// Module package version (the OCI/ECR tag vela module publish writes from
+		// _module.cue's version field). Empty means the latest published version.
+		// This is not the API line (apiVersion v1/v2), which is unaffected.
+		version: *"" | string
 	}
 }

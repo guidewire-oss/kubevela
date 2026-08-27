@@ -36,7 +36,7 @@ type rendererImpl struct {
 	// fetchFn is a seam for tests. Production leaves it nil and the real
 	// FetchModule is built per call, so no Kubernetes client is required at
 	// construction time (init runs before the singletons are populated).
-	fetchFn func(ctx context.Context, registry, moduleName string) (*module.Module, error)
+	fetchFn func(ctx context.Context, registry, moduleName, version string) (*module.Module, error)
 }
 
 // NewRenderer builds the module render service. It reads the Kubernetes client
@@ -50,16 +50,16 @@ func init() { api.SetDefaultRenderer(NewRenderer()) }
 
 // fetch resolves the module through the injected seam (tests) or the real
 // registry-backed FetchModule (production).
-func (r *rendererImpl) fetch(ctx context.Context, registry, moduleName string) (*module.Module, error) {
+func (r *rendererImpl) fetch(ctx context.Context, registry, moduleName, version string) (*module.Module, error) {
 	if r.fetchFn != nil {
-		return r.fetchFn(ctx, registry, moduleName)
+		return r.fetchFn(ctx, registry, moduleName, version)
 	}
-	return NewService(module.NewStore(singleton.KubeClient.Get())).FetchModule(ctx, registry, moduleName)
+	return NewService(module.NewStore(singleton.KubeClient.Get())).FetchModule(ctx, registry, moduleName, version)
 }
 
 // RenderModule fetches the named module and renders its owned Application.
 func (r *rendererImpl) RenderModule(ctx context.Context, req api.ModuleRequest) (*api.ModuleResult, error) {
-	mod, err := r.fetch(ctx, req.Registry, req.Module)
+	mod, err := r.fetch(ctx, req.Registry, req.Module, req.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +139,12 @@ func RenderApplication(mod *module.Module, namespace string) (map[string]interfa
 			"namespace": namespace,
 			"labels": map[string]interface{}{
 				types.LabelDefinitionModule: mod.Name,
+			},
+			"annotations": map[string]interface{}{
+				// mod.Version is parsed from the fetched module's own _module.cue,
+				// so it is always the concrete tag that was actually fetched --
+				// including when the fetch request asked for "latest".
+				types.AnnoDefinitionModuleVersion: mod.Version,
 			},
 		},
 		"spec": map[string]interface{}{"components": comps},

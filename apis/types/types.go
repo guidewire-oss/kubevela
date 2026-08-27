@@ -68,6 +68,10 @@ const (
 	// identity, for definitions whose full name exceeds the 253-char object-name
 	// limit and therefore had to be truncated and hashed.
 	AnnoDefinitionFullName = "definition.oam.dev/full-name"
+	// AnnoDefinitionModuleVersion carries the concrete module package version
+	// (the OCI/ECR tag) that was fetched and installed, on the module's owned
+	// Application.
+	AnnoDefinitionModuleVersion = "definition.oam.dev/module-version"
 	// LabelDefinitionDeprecated is the label which describe whether the capability is deprecated
 	LabelDefinitionDeprecated = "custom.definition.oam.dev/deprecated"
 	// LabelDefinitionHidden is the label which describe whether the capability is hidden by UI

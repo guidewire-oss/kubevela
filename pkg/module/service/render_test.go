@@ -109,6 +109,22 @@ func TestRenderApplication_OwnedApplicationShape(t *testing.T) {
 	require.Equal(t, "s3-v1-defs", comps[2]["name"])
 }
 
+// TestRenderApplication_StampsResolvedVersionAnnotation asserts the owned
+// Application carries the concrete module package version (from the parsed
+// module's own _module.cue) as an annotation, so a cluster reader sees the
+// installed version without the CLI -- including when a "latest" request
+// resolved to a specific tag, since mod.Version is always the tag that was
+// actually fetched, never the raw request.
+func TestRenderApplication_StampsResolvedVersionAnnotation(t *testing.T) {
+	app, err := RenderApplication(fixtureModule(), "")
+	require.NoError(t, err)
+
+	meta := app["metadata"].(map[string]interface{})
+	annos, ok := meta["annotations"].(map[string]interface{})
+	require.True(t, ok, "owned app has no metadata.annotations")
+	require.Equal(t, "1.0.0", annos[types.AnnoDefinitionModuleVersion])
+}
+
 func TestRenderApplication_DefaultsToVelaSystemWithLabel(t *testing.T) {
 	app, err := RenderApplication(&module.Module{Name: "s3"}, "")
 	require.NoError(t, err)

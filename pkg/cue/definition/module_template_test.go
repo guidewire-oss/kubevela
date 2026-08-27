@@ -14,22 +14,47 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package definition
+// Package definition_test is an external test package (rather than
+// package definition) so it can import pkg/definition to parse the real
+// ComponentDefinition CUE file without pkg/definition's own import of
+// pkg/cue/definition (production) becoming a cycle.
+package definition_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/oam-dev/kubevela/apis/types"
+	cuedefinition "github.com/oam-dev/kubevela/pkg/cue/definition"
 	"github.com/oam-dev/kubevela/pkg/cue/process"
+	pkgdefinition "github.com/oam-dev/kubevela/pkg/definition"
 	"github.com/oam-dev/kubevela/pkg/module/service/api"
 )
 
 // moduleTemplateDefPath is the module ComponentDefinition under test.
 const moduleTemplateDefPath = "../../../vela-templates/definitions/internal/component/module.cue"
+
+// extractAbstractTemplate reads the ComponentDefinition CUE file at path and
+// returns its "template: {...}" field as a string, the shape
+// AbstractEngine.Complete expects. It reuses pkg/definition's own CUE
+// string parser rather than a bespoke one, so it stays in step with what the
+// real definition pipeline accepts.
+func extractAbstractTemplate(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	def := &pkgdefinition.Definition{}
+	require.NoError(t, def.FromCUEString(string(raw), nil))
+
+	_, templateString, err := def.ToCUE()
+	require.NoError(t, err)
+	return templateString
+}
 
 type fakeModuleRenderer struct {
 	req api.ModuleRequest
@@ -70,15 +95,17 @@ func TestModuleComponentDefinitionRenders(t *testing.T) {
 		ClusterVersion:  types.ClusterVersion{Minor: "19+"},
 	})
 
-	wt := NewWorkloadAbstractEngine("module")
+	wt := cuedefinition.NewWorkloadAbstractEngine("module")
 	require.NoError(t, wt.Complete(ctx, abstractTemplate, map[string]interface{}{
 		"module":   "s3",
 		"registry": "catalog",
+		"version":  "1.2.0",
 	}))
 
 	// The render service received the component parameters.
 	assert.Equal(t, "s3", fake.req.Module)
 	assert.Equal(t, "catalog", fake.req.Registry)
+	assert.Equal(t, "1.2.0", fake.req.Version)
 
 	base, assists := ctx.Output()
 	require.NotNil(t, base)
@@ -91,7 +118,8 @@ func TestModuleComponentDefinitionRenders(t *testing.T) {
 }
 
 // TestModuleComponentDefinitionDefaults verifies module falls back to the
-// component name and registry defaults to empty (the configured default).
+// component name, and registry/version default to empty (configured default;
+// latest published version).
 func TestModuleComponentDefinitionDefaults(t *testing.T) {
 	prev := api.DefaultRenderer()
 	t.Cleanup(func() { api.SetDefaultRenderer(prev) })
@@ -117,9 +145,10 @@ func TestModuleComponentDefinitionDefaults(t *testing.T) {
 		ClusterVersion:  types.ClusterVersion{Minor: "19+"},
 	})
 
-	wt := NewWorkloadAbstractEngine("module")
+	wt := cuedefinition.NewWorkloadAbstractEngine("module")
 	require.NoError(t, wt.Complete(ctx, abstractTemplate, map[string]interface{}{}))
 
 	assert.Equal(t, "postgres", fake.req.Module)
 	assert.Equal(t, "", fake.req.Registry)
+	assert.Equal(t, "", fake.req.Version)
 }

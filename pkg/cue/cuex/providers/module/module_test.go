@@ -51,14 +51,29 @@ func TestRender_PassesParamsThroughAndReturnsApplication(t *testing.T) {
 	api.SetDefaultRenderer(fake)
 
 	out, err := Render(context.Background(), &RenderParams{
-		Params: RenderVars{Module: "s3", Registry: "catalog", Namespace: "team-a"},
+		Params: RenderVars{Module: "s3", Registry: "catalog", Namespace: "team-a", Version: "1.2.0"},
 	})
 	require.NoError(t, err)
 
 	assert.Equal(t, "s3", fake.req.Module)
 	assert.Equal(t, "catalog", fake.req.Registry)
 	assert.Equal(t, "team-a", fake.req.Namespace)
+	assert.Equal(t, "1.2.0", fake.req.Version)
 	assert.Equal(t, app, out.Returns.Application)
+}
+
+// TestRender_DefaultsVersionToEmpty asserts an omitted Version reaches the
+// render service as "" (latest), not some other zero value.
+func TestRender_DefaultsVersionToEmpty(t *testing.T) {
+	prev := api.DefaultRenderer()
+	t.Cleanup(func() { api.SetDefaultRenderer(prev) })
+
+	fake := &fakeRenderer{res: &api.ModuleResult{Application: map[string]interface{}{}}}
+	api.SetDefaultRenderer(fake)
+
+	_, err := Render(context.Background(), &RenderParams{Params: RenderVars{Module: "s3"}})
+	require.NoError(t, err)
+	assert.Equal(t, "", fake.req.Version)
 }
 
 func TestRender_ErrorsWhenRendererNotInitialized(t *testing.T) {

@@ -44,7 +44,7 @@ import (
 )
 
 func TestBuildModuleApplication(t *testing.T) {
-	app, err := buildModuleApplication("s3", "catalog", "vela-system")
+	app, err := buildModuleApplication("s3", "catalog", "vela-system", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "module-s3-deploy", app.Name)
@@ -64,7 +64,20 @@ func TestBuildModuleApplication(t *testing.T) {
 		"module":    "s3",
 		"registry":  "catalog",
 		"namespace": "vela-system",
+		"version":   "",
 	}, props)
+}
+
+// TestBuildModuleApplicationSetsVersion asserts a requested version fills the
+// module component's version property, so the server-side render fetches
+// that exact package version instead of latest.
+func TestBuildModuleApplicationSetsVersion(t *testing.T) {
+	app, err := buildModuleApplication("s3", "catalog", "vela-system", "1.2.0")
+	require.NoError(t, err)
+
+	var props map[string]string
+	require.NoError(t, json.Unmarshal(app.Spec.Components[0].Properties.Raw, &props))
+	assert.Equal(t, "1.2.0", props["version"])
 }
 
 func TestModuleTierNames(t *testing.T) {
@@ -153,7 +166,7 @@ func TestModuleDeployDryRun(t *testing.T) {
 		registry:  "catalog",
 		namespace: velatypes.DefaultKubeVelaNS,
 		dryRun:    true,
-		fetch: func(_ context.Context, registry, moduleName string) (*pkgmodule.Module, error) {
+		fetch: func(_ context.Context, registry, moduleName, _ string) (*pkgmodule.Module, error) {
 			assert.Equal(t, "catalog", registry)
 			assert.Equal(t, "s3", moduleName)
 			return stubModule(), nil
@@ -170,29 +183,57 @@ func TestModuleDeployDryRun(t *testing.T) {
 	assert.Equal(t, 0, countApplications(t, cli))
 }
 
+// TestModuleDeployPassesVersionToFetchAndManifest asserts --version reaches
+// both the pre-flight fetch (so an unknown tag fails before any apply) and the
+// applied component's version property (so the server-side render fetches
+// that exact tag too).
+func TestModuleDeployPassesVersionToFetchAndManifest(t *testing.T) {
+	cli := moduleDeployClient(t, "catalog")
+	var out bytes.Buffer
+	o := &moduleDeployOptions{
+		module:    "s3",
+		registry:  "catalog",
+		namespace: velatypes.DefaultKubeVelaNS,
+		dryRun:    true,
+		version:   "1.2.0",
+		fetch: func(_ context.Context, _, _, version string) (*pkgmodule.Module, error) {
+			assert.Equal(t, "1.2.0", version, "the requested version reaches the pre-flight fetch")
+			return stubModule(), nil
+		},
+	}
+
+	require.NoError(t, o.run(context.Background(), cli, &out))
+
+	var printed v1beta1.Application
+	require.NoError(t, yaml.Unmarshal(out.Bytes(), &printed))
+	var props map[string]string
+	require.NoError(t, json.Unmarshal(printed.Spec.Components[0].Properties.Raw, &props))
+	assert.Equal(t, "1.2.0", props["version"], "the manifest carries the requested version")
+}
+
 func TestModuleDeployFailsBeforeApply(t *testing.T) {
 	testCases := map[string]struct {
 		registry    string
 		registries  []string
-		fetch       func(ctx context.Context, registry, moduleName string) (*pkgmodule.Module, error)
+		fetch       func(ctx context.Context, registry, moduleName, version string) (*pkgmodule.Module, error)
 		wantErrPart string
 	}{
 		"unknown registry": {
 			registry:    "missing",
 			registries:  []string{"catalog"},
-			fetch:       func(_ context.Context, _, _ string) (*pkgmodule.Module, error) { return stubModule(), nil },
+			fetch:       func(_ context.Context, _, _, _ string) (*pkgmodule.Module, error) { return stubModule(), nil },
 			wantErrPart: `module registry "missing" not found`,
 		},
 		"no registry configured": {
 			registry:    "",
 			registries:  nil,
-			fetch:       func(_ context.Context, _, _ string) (*pkgmodule.Module, error) { return stubModule(), nil },
+			fetch:       func(_ context.Context, _, _, _ string) (*pkgmodule.Module, error) { return stubModule(), nil },
 			wantErrPart: "no module registry is configured",
 		},
 		"module not in registry": {
 			registry:   "catalog",
 			registries: []string{"catalog"},
-			fetch: func(_ context.Context, _, _ string) (*pkgmodule.Module, error) {
+			fetch: func(_ context.Context, _, _, _ string) (*pkgmodule.Module, error) {
 				return nil, fmt.Errorf(`module "s4" not found in registry "catalog"`)
 			},
 			wantErrPart: `module "s4" not found`,
@@ -226,7 +267,7 @@ func TestModuleDeployResolvesDefaultRegistry(t *testing.T) {
 		registry:  "",
 		namespace: velatypes.DefaultKubeVelaNS,
 		dryRun:    true,
-		fetch: func(_ context.Context, registry, _ string) (*pkgmodule.Module, error) {
+		fetch: func(_ context.Context, registry, _, _ string) (*pkgmodule.Module, error) {
 			assert.Equal(t, "catalog", registry, "the resolved registry is passed to fetch")
 			return stubModule(), nil
 		},
@@ -244,7 +285,7 @@ func TestModuleDeployResolvesDefaultRegistry(t *testing.T) {
 func TestNewModuleDeployCommandFlags(t *testing.T) {
 	cmd := NewModuleDeployCommand(common.Args{}, cmdutil.IOStreams{})
 	assert.Equal(t, "deploy", strings.Split(cmd.Use, " ")[0])
-	for _, flag := range []string{"registry", "dry-run", "timeout"} {
+	for _, flag := range []string{"registry", "dry-run", "timeout", "version"} {
 		assert.NotNil(t, cmd.Flags().Lookup(flag), "flag %q must exist", flag)
 	}
 	assert.Error(t, cmd.Args(cmd, []string{}), "the module name is required")
@@ -356,6 +397,38 @@ func TestWaitForModuleSucceeds(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "s3-v1-defs")
 	assert.Contains(t, out.String(), "Healthy")
+}
+
+// TestWaitForModuleReportsResolvedVersion asserts the success message reports
+// the concrete version recorded on the owned app's annotation -- including
+// when a "latest" request (no --version) resolved to a specific tag, since
+// the annotation always carries the resolved tag regardless of the request.
+func TestWaitForModuleReportsResolvedVersion(t *testing.T) {
+	deployApp := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "module-s3-deploy", Namespace: velatypes.DefaultKubeVelaNS},
+		Status:     oamcommon.AppStatus{Phase: oamcommon.ApplicationRunning},
+	}
+	comps := make([]oamcommon.ApplicationComponent, 0, len(moduleTiers))
+	for _, tier := range moduleTiers {
+		comps = append(comps, oamcommon.ApplicationComponent{Name: tier, Type: "k8s-objects"})
+	}
+	ownedApp := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "module-s3",
+			Namespace:   velatypes.DefaultKubeVelaNS,
+			Annotations: map[string]string{velatypes.AnnoDefinitionModuleVersion: "1.2.0"},
+		},
+		Spec:   v1beta1.ApplicationSpec{Components: comps},
+		Status: oamcommon.AppStatus{Services: healthyTierServices()},
+	}
+	cli := fake.NewClientBuilder().WithScheme(common.Scheme).WithObjects(deployApp, ownedApp).Build()
+	var out bytes.Buffer
+	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: time.Second, pollInterval: time.Millisecond}
+
+	err := o.waitForModule(context.Background(), cli, &out)
+
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "1.2.0")
 }
 
 func TestWaitForModuleBecomesHealthy(t *testing.T) {
