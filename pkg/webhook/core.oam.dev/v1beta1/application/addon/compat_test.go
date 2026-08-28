@@ -92,8 +92,12 @@ func TestVersionMismatchIsDistinguishable(t *testing.T) {
 // a reachable cluster the checker would take a different path than the one under
 // test.
 func TestDefaultCompatCheckerFailsOpenWithoutRegistry(t *testing.T) {
+	// Snapshot and restore rather than KubeClient.Reload: Reload rebuilds the
+	// client from singleton.KubeConfig.Get(), which calls GetConfigOrDie and
+	// panics when no kubeconfig or in-cluster config is available (e.g. CI).
+	originalKubeClient := singleton.KubeClient.Get()
+	defer singleton.KubeClient.Set(originalKubeClient)
 	singleton.KubeClient.Set(fake.NewClientBuilder().WithScheme(scheme.Scheme).Build())
-	defer singleton.KubeClient.Reload()
 
 	assert.Nil(t, defaultCompatChecker(context.Background(), "some-addon", "", ""),
 		"an addon that cannot be resolved must never produce a denial")

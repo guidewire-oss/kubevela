@@ -148,6 +148,23 @@ func TestPushCmdRejectsOCIAuthAmbiguity(t *testing.T) {
 			RepoName: "oci://registry.example.com/addons",
 			Password: "password",
 		},
+		"ChartMuseum auth header": {
+			RepoName:   "oci://registry.example.com/addons",
+			AuthHeader: "Bearer xxx",
+		},
+		"ChartMuseum CA file": {
+			RepoName: "oci://registry.example.com/addons",
+			CaFile:   "/ca.pem",
+		},
+		"ChartMuseum client cert": {
+			RepoName: "oci://registry.example.com/addons",
+			CertFile: "/cert.pem",
+			KeyFile:  "/key.pem",
+		},
+		"ChartMuseum insecure flag": {
+			RepoName:           "oci://registry.example.com/addons",
+			InsecureSkipVerify: true,
+		},
 	}
 
 	for name, pushCmd := range tests {

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
@@ -439,7 +440,10 @@ type Status struct {
 // passes. A requested version equal to the available one also passes, so a pin
 // that happens to match is not an error.
 func checkVersionPinSupported(registryName, addonName, requested, available string) error {
-	if requested == "" || requested == available {
+	// A "v" prefix is cosmetic: addon version resolution elsewhere treats
+	// "v1.0.0" and "1.0.0" as the same version, so comparing the raw strings
+	// here would reject a pin that matches in every way that matters.
+	if requested == "" || strings.TrimPrefix(requested, "v") == strings.TrimPrefix(available, "v") {
 		return nil
 	}
 	if available == "" {

@@ -250,3 +250,20 @@ func TestCacheVersionedUIDataEdgeCases(t *testing.T) {
 		assert.Equal(t, []string{"1.0.0"}, cached.AvailableVersions)
 	})
 }
+
+// TestPutRegistry2CacheClearsVersionedUIDataOnDelete pins a stale-cache bug: a
+// deleted registry's versionedUIData entries survived putRegistry2Cache's
+// cleanup, which only cleared registry/registryMeta/uiData. Recreating a
+// registry with the same name would then serve the old registry's cached
+// versioned addons instead of re-fetching.
+func TestPutRegistry2CacheClearsVersionedUIDataOnDelete(t *testing.T) {
+	u := NewCache(nil)
+	u.putRegistry2Cache([]Registry{{Name: "ecr", OCI: &OCIAddonSource{URL: "oci://reg/addon"}}})
+	u.putVersionedUIData2Cache("ecr", "fluxcd", "1.0.0", &UIData{Meta: Meta{Name: "fluxcd", Version: "1.0.0"}})
+	require.NotNil(t, u.versionedUIData["ecr"]["fluxcd-1.0.0"])
+
+	// "ecr" is no longer in the configured list, so it must be cleaned up.
+	u.putRegistry2Cache(nil)
+
+	assert.Nil(t, u.versionedUIData["ecr"], "versionedUIData for a deleted registry must not survive")
+}

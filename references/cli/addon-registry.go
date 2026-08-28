@@ -70,7 +70,7 @@ func NewAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 }
 
 // NewAddAddonRegistryCommand return an addon registry create command
-func NewAddAddonRegistryCommand(c common.Args, _ cmdutil.IOStreams) *cobra.Command {
+func NewAddAddonRegistryCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add an addon registry.",
@@ -104,6 +104,13 @@ add a private ECR registry: aws ecr get-login-password --region <region> | vela 
 			return addAddonRegistry(context.Background(), c, *registry)
 		},
 	}
+	// --password-stdin reads via cmd.InOrStdin(), which falls back to the
+	// process's os.Stdin unless the command has its own reader set. Without
+	// this, a caller that supplies input only through ioStreams.In (rather
+	// than real OS-level stdin, e.g. an in-process test or embedding tool)
+	// would have that input silently ignored, and io.ReadAll would block
+	// waiting on a stdin that never receives it.
+	cmd.SetIn(ioStreams.In)
 	parseArgsFromFlag(cmd)
 	return cmd
 }

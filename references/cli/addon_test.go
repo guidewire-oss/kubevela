@@ -647,3 +647,20 @@ func TestSetRegistryPasswordFromStdin(t *testing.T) {
 		assert.ErrorContains(t, err, "is empty")
 	})
 }
+
+// TestNewAddAddonRegistryCommandWiresIOStreamsIn pins the actual command
+// factory, not just setRegistryPasswordFromStdin in isolation: a caller that
+// supplies input only through IOStreams.In (not real OS-level stdin, e.g. an
+// in-process embedding of this command) must have that input reach
+// --password-stdin, not silently fall back to the process's os.Stdin.
+func TestNewAddAddonRegistryCommandWiresIOStreamsIn(t *testing.T) {
+	ioStream := util.IOStreams{In: strings.NewReader("injected-password\n")}
+	cmd := NewAddAddonRegistryCommand(common.Args{}, ioStream)
+	assert.NoError(t, cmd.Flags().Set(addonPasswordStdin, "true"))
+
+	err := setRegistryPasswordFromStdin(cmd)
+	assert.NoError(t, err)
+	password, err := cmd.Flags().GetString(addonPassword)
+	assert.NoError(t, err)
+	assert.Equal(t, "injected-password", password)
+}

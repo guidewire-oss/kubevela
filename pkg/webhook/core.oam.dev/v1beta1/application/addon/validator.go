@@ -93,7 +93,7 @@ func (v *Validator) ValidateComponents(ctx context.Context, app *v1beta1.Applica
 		if compatibilityErr := check(ctx, addonName, properties.Version, properties.Registry); compatibilityErr != nil {
 			errs = append(errs, field.Invalid(
 				field.NewPath("spec", "components").Index(i).Child("properties"),
-				component.Name,
+				addonName,
 				compatibilityErr.Detail,
 			))
 		}

@@ -187,4 +187,7 @@ func TestValidateComponentsForwardsProperties(t *testing.T) {
 	require.Len(t, errs, 1)
 	assert.Equal(t, 1, calls)
 	assert.Equal(t, "spec.components[1].properties", errs[0].Field)
+	// The component is named "installer" but properties.addon is "fluxcd";
+	// the rejection must name the addon being validated, not the component.
+	assert.Equal(t, "fluxcd", errs[0].BadValue)
 }

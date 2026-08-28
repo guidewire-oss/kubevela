@@ -258,6 +258,7 @@ func (u *Cache) putRegistry2Cache(registry []Registry) {
 			delete(u.registry, k)
 			delete(u.registryMeta, k)
 			delete(u.uiData, k)
+			delete(u.versionedUIData, k)
 		}
 	}
 	for _, r := range registry {

@@ -213,8 +213,14 @@ func (p *PushCmd) Push(ctx context.Context) error {
 }
 
 func (p *PushCmd) pushToOCI(ctx context.Context, source *OCIAddonSource) error {
-	if p.AccessToken != "" {
-		return errors.New("--access-token is only supported for ChartMuseum; use --password or --password-stdin for OCI registries")
+	if p.AccessToken != "" || p.AuthHeader != "" {
+		return errors.New("--access-token and --auth-header are only supported for ChartMuseum; use --username/--password (or --password-stdin) or configured Helm/Docker credentials for OCI registries")
+	}
+	if p.CaFile != "" || p.CertFile != "" || p.KeyFile != "" || p.InsecureSkipVerify {
+		// The OCI client built by newOCIClientWithPlainHTTP has no seam for a
+		// custom transport, so these silently had no effect. Reject rather than
+		// let a caller believe a custom CA or client cert was applied.
+		return errors.New("--ca-file, --cert-file, --key-file, and --insecure are only supported for ChartMuseum; OCI registries use the ambient Docker/Helm TLS configuration")
 	}
 	if (source.Username == "") != (source.Token == "") {
 		return errors.New("OCI registry username and password must be supplied together; omit both to use anonymous access or configured Helm/Docker credentials")

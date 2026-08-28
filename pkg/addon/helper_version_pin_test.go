@@ -29,11 +29,13 @@ func TestCheckVersionPinSupported(t *testing.T) {
 		available string
 		wantErr   bool
 	}{
-		"no pin is always fine":                     {requested: "", available: "1.0.0", wantErr: false},
-		"no pin and no version is fine":             {requested: "", available: "", wantErr: false},
-		"a pin matching what is served is fine":     {requested: "1.0.0", available: "1.0.0", wantErr: false},
-		"a pin the registry cannot honor is an err": {requested: "2.0.0", available: "1.0.0", wantErr: true},
-		"a pin against an unversioned addon errors": {requested: "2.0.0", available: "", wantErr: true},
+		"no pin is always fine":                                    {requested: "", available: "1.0.0", wantErr: false},
+		"no pin and no version is fine":                            {requested: "", available: "", wantErr: false},
+		"a pin matching what is served is fine":                    {requested: "1.0.0", available: "1.0.0", wantErr: false},
+		"a pin the registry cannot honor is an err":                {requested: "2.0.0", available: "1.0.0", wantErr: true},
+		"a pin against an unversioned addon errors":                {requested: "2.0.0", available: "", wantErr: true},
+		"a v-prefixed available version matches an unprefixed pin": {requested: "1.0.0", available: "v1.0.0", wantErr: false},
+		"an unprefixed available version matches a v-prefixed pin": {requested: "v1.0.0", available: "1.0.0", wantErr: false},
 	}
 
 	for name, tc := range cases {
