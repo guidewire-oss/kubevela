@@ -208,6 +208,14 @@ func classifyCatalogAbsenceProbe(repoRef string, tags []string, probeErr error) 
 // and the push itself) but, without a true conditional write, cannot close it
 // completely: two publishers can still both pass their final check and push
 // the same computed version moments apart.
+//
+// A tag listing failure is treated the same as a detected conflict (see
+// publishCatalogEntry), so a registry that structurally cannot list tags at
+// all (permission, unsupported endpoint) now exhausts every attempt here on
+// every push, rather than the prior behavior of silently publishing a
+// possibly-wrong catalog version on the first try. push.go treats the whole
+// catalog update as non-fatal to the addon push itself, so this only costs a
+// warning and the accumulated backoff, never a failed `vela addon push`.
 const maxCatalogPublishAttempts = 5
 
 // catalogPublishBackoff returns the delay before retrying a catalog publish
@@ -258,11 +266,13 @@ func updateOCIAddonCatalog(client *registry.Client, source *OCIAddonSource, addo
 }
 
 // updateOCIAddonCatalogOnce runs one read-merge-publish attempt. conflict is
-// true when a concurrent publisher's tag appeared between this attempt's read
-// of the catalog tags and its publish; the caller retries from a fresh read
-// rather than surfacing that as a failure, since publishing over it here would
-// either collide on the same version tag or silently drop whichever addon the
-// other publisher just added.
+// true when either a concurrent publisher's tag appeared between this
+// attempt's read of the catalog tags and its publish, or a tag listing failed
+// outright and this attempt cannot confirm the catalog's state at all; the
+// caller retries from a fresh read rather than surfacing either as a failure,
+// since publishing here would risk colliding on the same version tag,
+// dropping whichever addon another publisher just added, or overwriting a
+// catalog this attempt never actually got to read.
 func updateOCIAddonCatalogOnce(client *registry.Client, source *OCIAddonSource, addonMeta *chart.Metadata, plainHTTP bool) (conflict bool, err error) {
 	pullFn := pullOCIChart
 	tagsFn := listOCITags
