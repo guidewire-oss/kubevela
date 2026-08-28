@@ -38,7 +38,36 @@ import (
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
-const publishFixtureDir = "../../pkg/module/testdata/modules/s3"
+// publishFixtureDir writes the smallest module a publish can package into a
+// fresh temp directory and returns its path. These tests only need a tree that
+// parses and carries a known name and version, so building it here keeps them
+// independent of any checked-in fixture -- the module testdata now lives under
+// test/e2e-test, for the tests that talk to a real registry.
+func publishFixtureDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	files := map[string]string{
+		"_module.cue":     "module:  \"s3\"\nversion: \"1.0.0\"\n",
+		"v1/_version.cue": "apiVersion: \"v1\"\n",
+		"v1/definitions/bucket.yaml": `apiVersion: core.oam.dev/v1beta1
+kind: ComponentDefinition
+metadata:
+  name: bucket
+  namespace: vela-system
+spec:
+  workload:
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+`,
+	}
+	for rel, content := range files {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	return dir
+}
 
 // recordedPush captures what run() would have pushed.
 type recordedPush struct {
@@ -72,7 +101,7 @@ func moduleRegistryClient(t *testing.T, entries map[string]pkgaddon.Registry) cl
 func TestModulePublishPushesArtifact(t *testing.T) {
 	rec := &recordedPush{}
 	o := &modulePublishOptions{
-		dir:    publishFixtureDir,
+		dir:    publishFixtureDir(t),
 		ociRef: "oci://registry.example.com/modules",
 		push:   rec.push,
 		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
@@ -92,7 +121,7 @@ func TestModulePublishPushesArtifact(t *testing.T) {
 func TestModulePublishDryRunPushesNothing(t *testing.T) {
 	rec := &recordedPush{}
 	o := &modulePublishOptions{
-		dir:    publishFixtureDir,
+		dir:    publishFixtureDir(t),
 		ociRef: "oci://registry.example.com/modules",
 		dryRun: true,
 		push:   rec.push,
@@ -122,20 +151,20 @@ func TestModulePublishFailsBeforePush(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		options func(rec *recordedPush) *modulePublishOptions
+		options func(t *testing.T, rec *recordedPush) *modulePublishOptions
 		wantErr string
 	}{
 		{
 			name: "invalid module tree",
-			options: func(rec *recordedPush) *modulePublishOptions {
+			options: func(_ *testing.T, rec *recordedPush) *modulePublishOptions {
 				return &modulePublishOptions{dir: invalidTreeDir, ociRef: "oci://registry.example.com/modules", push: rec.push}
 			},
 			wantErr: "not a valid semver",
 		},
 		{
 			name: "git registry target",
-			options: func(rec *recordedPush) *modulePublishOptions {
-				return &modulePublishOptions{dir: publishFixtureDir, registry: "catalog", push: rec.push}
+			options: func(t *testing.T, rec *recordedPush) *modulePublishOptions {
+				return &modulePublishOptions{dir: publishFixtureDir(t), registry: "catalog", push: rec.push}
 			},
 			wantErr: "supports OCI/ECR only",
 		},
@@ -146,7 +175,7 @@ func TestModulePublishFailsBeforePush(t *testing.T) {
 			cli := moduleRegistryClient(t, map[string]pkgaddon.Registry{
 				"catalog": {Name: "catalog", Git: &pkgaddon.GitAddonSource{URL: "https://github.com/org/repo", Path: "module"}},
 			})
-			err := tc.options(rec).run(context.Background(), cli, &bytes.Buffer{})
+			err := tc.options(t, rec).run(context.Background(), cli, &bytes.Buffer{})
 			require.ErrorContains(t, err, tc.wantErr)
 			require.Zero(t, rec.calls)
 		})
@@ -159,7 +188,7 @@ func TestModulePublishUsesResolvedRegistryCredentials(t *testing.T) {
 		"ecr": {Name: "ecr", OCI: &pkgaddon.OCIAddonSource{URL: "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules"}},
 	})
 	o := &modulePublishOptions{
-		dir:  publishFixtureDir,
+		dir:  publishFixtureDir(t),
 		push: rec.push,
 		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
 			return false, nil
@@ -175,7 +204,7 @@ func TestModulePublishUsesResolvedRegistryCredentials(t *testing.T) {
 func TestModulePublishVersionOverride(t *testing.T) {
 	rec := &recordedPush{}
 	o := &modulePublishOptions{
-		dir:     publishFixtureDir,
+		dir:     publishFixtureDir(t),
 		ociRef:  "oci://registry.example.com/modules",
 		version: "1.1.0-rc1",
 		push:    rec.push,
@@ -196,7 +225,7 @@ func TestModulePublishVersionOverrideWarnsOnMismatch(t *testing.T) {
 	rec := &recordedPush{}
 	out := &bytes.Buffer{}
 	o := &modulePublishOptions{
-		dir:     publishFixtureDir,
+		dir:     publishFixtureDir(t),
 		ociRef:  "oci://registry.example.com/modules",
 		version: "1.1.0-rc1",
 		push:    rec.push,
@@ -218,7 +247,7 @@ func TestModulePublishNoWarningWithoutVersionOverride(t *testing.T) {
 	rec := &recordedPush{}
 	out := &bytes.Buffer{}
 	o := &modulePublishOptions{
-		dir:    publishFixtureDir,
+		dir:    publishFixtureDir(t),
 		ociRef: "oci://registry.example.com/modules",
 		push:   rec.push,
 		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
@@ -230,7 +259,7 @@ func TestModulePublishNoWarningWithoutVersionOverride(t *testing.T) {
 }
 
 func TestModulePublishRequiresClusterForNamedRegistry(t *testing.T) {
-	o := &modulePublishOptions{dir: publishFixtureDir, registry: "ecr"}
+	o := &modulePublishOptions{dir: publishFixtureDir(t), registry: "ecr"}
 	err := o.run(context.Background(), nil, &bytes.Buffer{})
 	require.ErrorContains(t, err, "cluster")
 }
@@ -254,7 +283,7 @@ func TestModulePublishCommandFlagsAndMount(t *testing.T) {
 }
 
 func TestModulePublishRejectsRegistryFlagWithPositionalRef(t *testing.T) {
-	o := &modulePublishOptions{dir: publishFixtureDir, registry: "ecr", ociRef: "oci://registry.example.com/modules"}
+	o := &modulePublishOptions{dir: publishFixtureDir(t), registry: "ecr", ociRef: "oci://registry.example.com/modules"}
 	err := o.run(context.Background(), nil, &bytes.Buffer{})
 	require.ErrorContains(t, err, "cannot be combined")
 }
@@ -262,7 +291,7 @@ func TestModulePublishRejectsRegistryFlagWithPositionalRef(t *testing.T) {
 func TestModulePublishForceSkipsTagExistsCheck(t *testing.T) {
 	rec := &recordedPush{}
 	o := &modulePublishOptions{
-		dir:    publishFixtureDir,
+		dir:    publishFixtureDir(t),
 		ociRef: "oci://registry.example.com/modules",
 		force:  true,
 		push:   rec.push,
@@ -278,7 +307,7 @@ func TestModulePublishForceSkipsTagExistsCheck(t *testing.T) {
 func TestModulePublishAlreadyPublishedWithoutForce(t *testing.T) {
 	rec := &recordedPush{}
 	o := &modulePublishOptions{
-		dir:    publishFixtureDir,
+		dir:    publishFixtureDir(t),
 		ociRef: "oci://registry.example.com/modules",
 		push:   rec.push,
 		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
@@ -302,7 +331,7 @@ var errTagImmutableTest = errors.New("ImageTagAlreadyExistsException: tag 1.0.0 
 
 func TestModulePublishRepositoryNotFoundError(t *testing.T) {
 	o := &modulePublishOptions{
-		dir:    publishFixtureDir,
+		dir:    publishFixtureDir(t),
 		ociRef: "oci://registry.example.com/modules",
 		push: func(context.Context, pkgaddon.Registry, string, string, []byte) error {
 			return errRepositoryNotFoundTest
@@ -321,7 +350,7 @@ func TestModulePublishRepositoryNotFoundError(t *testing.T) {
 
 func TestModulePublishTagImmutableError(t *testing.T) {
 	o := &modulePublishOptions{
-		dir:    publishFixtureDir,
+		dir:    publishFixtureDir(t),
 		ociRef: "oci://registry.example.com/modules",
 		push: func(context.Context, pkgaddon.Registry, string, string, []byte) error {
 			return errTagImmutableTest
@@ -347,7 +376,7 @@ func TestModulePublishOverridesResolvedRegistryCredentials(t *testing.T) {
 		}},
 	})
 	o := &modulePublishOptions{
-		dir:      publishFixtureDir,
+		dir:      publishFixtureDir(t),
 		registry: "ecr",
 		username: "flag-user",
 		password: "flag-password",
@@ -372,7 +401,7 @@ func TestModulePublishKeepsRegistryCredentialsWhenFlagsEmpty(t *testing.T) {
 		}},
 	})
 	o := &modulePublishOptions{
-		dir:      publishFixtureDir,
+		dir:      publishFixtureDir(t),
 		registry: "ecr",
 		push:     rec.push,
 		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
@@ -394,7 +423,7 @@ func TestModulePublishCommandDryRunReflectsFlags(t *testing.T) {
 	cmd := NewModulePublishCommand(common.Args{}, cmdutil.NewDefaultIOStreams())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{publishFixtureDir, "oci://registry.example.com/modules", "--dry-run", "--version", "9.9.9"})
+	cmd.SetArgs([]string{publishFixtureDir(t), "oci://registry.example.com/modules", "--dry-run", "--version", "9.9.9"})
 
 	require.NoError(t, cmd.Execute())
 	require.Contains(t, out.String(), "registry.example.com/modules/s3:9.9.9")
@@ -411,7 +440,7 @@ func TestModulePublishCommandRejectsRegistryFlagWithPositionalRef(t *testing.T) 
 	cmd := NewModulePublishCommand(common.Args{}, cmdutil.NewDefaultIOStreams())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{publishFixtureDir, "oci://registry.example.com/modules", "--registry", "ecr"})
+	cmd.SetArgs([]string{publishFixtureDir(t), "oci://registry.example.com/modules", "--registry", "ecr"})
 
 	err := cmd.Execute()
 	require.ErrorContains(t, err, "cannot be combined")

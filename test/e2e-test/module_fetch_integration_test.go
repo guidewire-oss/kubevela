@@ -59,7 +59,7 @@ func TestFetchModule_RoundTrip(t *testing.T) {
 	require.NoError(t, addon.PushOCIChart(ctx, reg, art.Module.Name, art.Tag, art.Archive))
 
 	mod, err := moduleservice.NewService(fetchIntegrationFakeStore{regs: []addon.Registry{reg}}).
-		FetchModule(ctx, reg.Name, art.Module.Name)
+		FetchModule(ctx, reg.Name, art.Module.Name, "")
 	require.NoError(t, err)
 
 	require.Equal(t, source.Name, mod.Name)
