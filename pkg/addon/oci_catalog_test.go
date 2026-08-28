@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart"
@@ -236,4 +237,40 @@ func TestPublishCatalogEntryRefusesOnTagListError(t *testing.T) {
 		assert.Contains(t, err.Error(), "cannot confirm the portable OCI addon catalog tag is still unchanged")
 		assert.Equal(t, 2, calls, "must not push once the re-check fails")
 	})
+}
+
+// TestPublishCatalogEntryBootstrapsFirstCatalog pins the case
+// TestPublishCatalogEntryRefusesOnTagListError's fix regressed: on the very
+// first push to a registry, the catalog repository does not exist yet, so
+// both catalog-tag listings answer NAME_UNKNOWN. That is not an
+// unconfirmable failure -- it is the registry stating there is nothing
+// there -- so it must let the attempt proceed and bootstrap the catalog,
+// not be treated the same as a genuine listing failure and retried forever.
+func TestPublishCatalogEntryBootstrapsFirstCatalog(t *testing.T) {
+	originalCatalogTags := catalogRepoTagsFn
+	originalAddonTags := addonVersionsTagsFn
+	defer func() {
+		catalogRepoTagsFn = originalCatalogTags
+		addonVersionsTagsFn = originalAddonTags
+	}()
+	addonVersionsTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+		return nil, nil
+	}
+
+	nameUnknown := errors.New(`unexpected status code 404: name unknown: repository name not known to registry`)
+	var calls int
+	catalogRepoTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+		calls++
+		return nil, nameUnknown
+	}
+
+	addonMeta := &chart.Metadata{Name: "fluxcd", Description: "Flux"}
+
+	// client is nil, so a real push would panic; reaching client.Push proves
+	// the confirmed-absent repository let this attempt through to bootstrap
+	// the catalog instead of reporting a conflict.
+	assert.Panics(t, func() {
+		_, _ = publishCatalogEntry(nil, &OCIAddonSource{URL: closedPortRegistryURL}, addonMeta, nil, false)
+	}, "a confirmed-absent catalog repository must bootstrap, not retry forever")
+	assert.Equal(t, 2, calls, "both the initial read and the pre-push re-check must see the same confirmed-absent answer")
 }

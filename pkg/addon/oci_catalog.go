@@ -359,12 +359,17 @@ func publishCatalogEntry(client *registry.Client, source *OCIAddonSource, addonM
 
 	catalogRepo, _ := ociRepoRef(source.URL, ociCatalogChartName)
 	catalogTags, tagErr := catalogRepoTagsFn(catalogRepo, host, source.Username, source.Token, plainHTTP)
-	if tagErr != nil {
-		// A failed listing is not a confirmed-empty catalog (that path already
-		// went through confirmPortableCatalogAbsent, before existing reached
-		// this function). Defaulting to "0.0.1" here would either collide with
-		// a version that already exists or, worse, publish a lower version
-		// than what is already there. Retry instead of guessing.
+	if tagErr != nil && !isOCIRepositoryAbsentError(tagErr) {
+		// A failed listing is not a confirmed-empty catalog. NAME_UNKNOWN is the
+		// one exception: it is the registry stating the catalog repository does
+		// not exist yet, which is the normal, expected state on the very first
+		// push to a registry -- confirmPortableCatalogAbsent already reached the
+		// same conclusion for `existing` above, so treating it as anything but
+		// "no tags" here would retry every attempt and never bootstrap the
+		// catalog. Any other failure genuinely cannot confirm the current tag;
+		// defaulting to "0.0.1" for those would either collide with a version
+		// that already exists or publish one older than what is already there,
+		// so those retry instead of guessing.
 		return true, errors.Wrap(tagErr, "cannot confirm the portable OCI addon catalog's current tag")
 	}
 	catalogVersion := "0.0.1"
@@ -411,7 +416,7 @@ func publishCatalogEntry(client *registry.Client, source *OCIAddonSource, addonM
 	// it is safe to publish, so both retry from a fresh read rather than risk
 	// overwriting a catalog this attempt can no longer vouch for.
 	latestTags, latestErr := catalogRepoTagsFn(catalogRepo, host, source.Username, source.Token, plainHTTP)
-	if latestErr != nil {
+	if latestErr != nil && !isOCIRepositoryAbsentError(latestErr) {
 		return true, errors.Wrap(latestErr, "cannot confirm the portable OCI addon catalog tag is still unchanged before publishing")
 	}
 	if catalogTagHead(catalogTags) != catalogTagHead(latestTags) {
