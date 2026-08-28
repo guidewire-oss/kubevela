@@ -1,0 +1,22 @@
+apiVersion: core.oam.dev/v2alpha1
+kind: OperationTemplate
+metadata:
+  name: create-configmap
+  namespace: vela-system
+spec:
+  description: "None-scope e2e fixture: applies a literal ConfigMap, no OAM target."
+  attach:
+    scope: None
+  workflow:
+    steps:
+      - name: create-configmap
+        type: apply-object
+        properties:
+          value:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: none-scope-e2e
+              namespace: vela-system
+            data:
+              hello: world

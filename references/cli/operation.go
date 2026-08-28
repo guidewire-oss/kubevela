@@ -35,6 +35,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
 	"github.com/oam-dev/kubevela/apis/types"
+	opoperation "github.com/oam-dev/kubevela/pkg/oam/operation"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 	veloperation "github.com/oam-dev/kubevela/pkg/workflow/operation"
@@ -61,6 +62,9 @@ const (
 	// until multi-cluster dispatch lands, only "local" (or unset) is valid --
 	// matches OperationSpec.Clusters' current single-cluster restriction.
 	FlagCluster = "cluster"
+	// FlagApplication command flag to specify an Application-scoped target
+	// directly by name, alongside the existing --component <app>/<name>.
+	FlagApplication = "application"
 )
 
 // localCluster is the only cluster value accepted by --cluster so far,
@@ -370,11 +374,25 @@ func resolveComponentType(ctx context.Context, k8sClient client.Client, ns, appN
 	return "", fmt.Errorf("component %q not found in application %q", compName, appName)
 }
 
+// operationListMode is which kind of target `vela operation list` is
+// discovering templates for -- exactly one of --component/--application is
+// given, or neither (None-scope discovery).
+type operationListMode int
+
+const (
+	operationListModeNone operationListMode = iota
+	operationListModeComponent
+	operationListModeApplication
+)
+
 // listAllowedOperationTemplates lists OperationTemplates in ns and (if
-// different) vela-system, filtered to attach.scope: Component where
-// allowedComponentTypes is empty or contains componentType. Templates in ns
-// take precedence over a same-named template in vela-system.
-func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client, ns, componentType string) ([]v2alpha1.OperationTemplate, error) {
+// different) vela-system, filtered by mode: Component mode keeps
+// Component-scoped templates where allowedComponentTypes is empty or
+// contains componentType; Application mode keeps Application-scoped
+// templates whose selector (if any) matches app; None mode keeps
+// None-scoped templates. Templates in ns take precedence over a
+// same-named template in vela-system.
+func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client, ns string, mode operationListMode, componentType string, app *v1beta1.Application) ([]v2alpha1.OperationTemplate, error) {
 	seen := map[string]bool{}
 	var out []v2alpha1.OperationTemplate
 	namespaces := []string{ns}
@@ -391,24 +409,45 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 				continue
 			}
 			// Mark seen by name now, before filtering: a template shadowed
-			// by an unsupported scope or disallowed component type in the
-			// higher-precedence namespace must not fall through to a
-			// same-named template further down -- `run` still resolves the
-			// higher-precedence copy first and would fail on it.
+			// by a non-matching scope in the higher-precedence namespace
+			// must not fall through to a same-named template further down
+			// -- `run` still resolves the higher-precedence copy first and
+			// would fail on it.
 			seen[tmpl.Name] = true
-			if tmpl.Spec.Attach.Scope != "" && tmpl.Spec.Attach.Scope != v2alpha1.OperationAttachScopeComponent {
-				continue
+
+			scope := tmpl.Spec.Attach.Scope
+			if scope == "" {
+				scope = v2alpha1.OperationAttachScopeComponent
 			}
-			allowed := tmpl.Spec.Attach.AllowedComponentTypes
-			if len(allowed) > 0 {
-				matched := false
-				for _, t := range allowed {
-					if t == componentType {
-						matched = true
-						break
+
+			switch mode {
+			case operationListModeComponent:
+				if scope != v2alpha1.OperationAttachScopeComponent {
+					continue
+				}
+				if allowed := tmpl.Spec.Attach.AllowedComponentTypes; len(allowed) > 0 {
+					matched := false
+					for _, t := range allowed {
+						if t == componentType {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						continue
 					}
 				}
-				if !matched {
+			case operationListModeApplication:
+				if scope != v2alpha1.OperationAttachScopeApplication {
+					continue
+				}
+				if sel := tmpl.Spec.Attach.Selector; sel != nil {
+					if err := opoperation.MatchesApplicationSelector(app, sel); err != nil {
+						continue
+					}
+				}
+			default: // operationListModeNone
+				if scope != v2alpha1.OperationAttachScopeNone {
 					continue
 				}
 			}
@@ -421,14 +460,20 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 // NewOperationListCommand creates the `vela operation list` command.
 func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "list",
-		Short:   "List OperationTemplates allowed against a component.",
-		Long:    "List OperationTemplates in the target namespace and vela-system that can be invoked against a given component.",
-		Example: "vela operation list --component myapp/myserver",
+		Use:   "list",
+		Short: "List OperationTemplates allowed against a target.",
+		Long: "List OperationTemplates in the target namespace and vela-system that can be invoked against a " +
+			"given target: a Component (--component), an Application (--application), or -- with neither -- " +
+			"None-scoped templates, which take no target at all.",
+		Example: "vela operation list --component myapp/myserver\nvela operation list --application myapp\nvela operation list",
 		Args:    cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			componentRef, err := cmd.Flags().GetString(FlagComponent)
+			if err != nil {
+				return err
+			}
+			appRef, err := cmd.Flags().GetString(FlagApplication)
 			if err != nil {
 				return err
 			}
@@ -442,19 +487,38 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 					return err
 				}
 			}
-			appName, compName, err := splitComponentRef(componentRef)
-			if err != nil {
-				return err
-			}
 			k8sClient, err := c.GetClient()
 			if err != nil {
 				return errors.Wrap(err, "failed to get k8s client")
 			}
-			componentType, err := resolveComponentType(ctx, k8sClient, ns, appName, compName)
-			if err != nil {
-				return err
+
+			var (
+				mode          operationListMode
+				componentType string
+				app           *v1beta1.Application
+			)
+			switch {
+			case componentRef != "":
+				appName, compName, err := splitComponentRef(componentRef)
+				if err != nil {
+					return err
+				}
+				componentType, err = resolveComponentType(ctx, k8sClient, ns, appName, compName)
+				if err != nil {
+					return err
+				}
+				mode = operationListModeComponent
+			case appRef != "":
+				app = &v1beta1.Application{}
+				if err := k8sClient.Get(ctx, types2.NamespacedName{Namespace: ns, Name: appRef}, app); err != nil {
+					return errors.Wrapf(err, "get application %q", appRef)
+				}
+				mode = operationListModeApplication
+			default:
+				mode = operationListModeNone
 			}
-			templates, err := listAllowedOperationTemplates(ctx, k8sClient, ns, componentType)
+
+			templates, err := listAllowedOperationTemplates(ctx, k8sClient, ns, mode, componentType, app)
 			if err != nil {
 				return err
 			}
@@ -476,6 +540,8 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 		},
 	}
 	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
+	cmd.Flags().String(FlagApplication, "", "the target application, by name")
+	cmd.MarkFlagsMutuallyExclusive(FlagComponent, FlagApplication)
 	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
@@ -483,9 +549,11 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 // NewOperationRunCommand creates the `vela operation run` command.
 func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "run <template>",
-		Short:   "Invoke an OperationTemplate against a component.",
-		Long:    "Create an Operation from the given OperationTemplate against a target component, then wait for it to finish.",
+		Use:   "run <template>",
+		Short: "Invoke an OperationTemplate against a target.",
+		Long: "Create an Operation from the given OperationTemplate against a target: a Component " +
+			"(--component), an Application (--application), or -- with neither -- no target at all, " +
+			"for a None-scoped template. Then wait for it to finish.",
 		Example: "vela operation run restart --component myapp/myserver --param force=true",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -493,6 +561,17 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 			templateName := args[0]
 			componentRef, err := cmd.Flags().GetString(FlagComponent)
 			if err != nil {
+				return err
+			}
+			appRef, err := cmd.Flags().GetString(FlagApplication)
+			if err != nil {
+				return err
+			}
+			cluster, err := cmd.Flags().GetString(FlagCluster)
+			if err != nil {
+				return err
+			}
+			if err := validateOperationClusterFlag(cluster); err != nil {
 				return err
 			}
 			ns, err := operationNamespace(cmd, c)
@@ -503,14 +582,28 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 			if err != nil {
 				return err
 			}
-			appName, compName, err := splitComponentRef(componentRef)
-			if err != nil {
-				return err
-			}
 			params, err := parseOperationParams(paramFlags)
 			if err != nil {
 				return err
 			}
+
+			var target *v2alpha1.OperationTarget
+			switch {
+			case componentRef != "":
+				appName, compName, err := splitComponentRef(componentRef)
+				if err != nil {
+					return err
+				}
+				target = &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: appName, Name: compName}
+			case appRef != "":
+				target = &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindApplication, Name: appRef}
+			}
+			// No client-side scope check when neither is given -- let the
+			// controller's resolveTarget/resolveTemplate validation enforce
+			// "target required unless None" and surface it via
+			// op.Status.Message, the way target-not-found errors already
+			// surface.
+
 			k8sClient, err := c.GetClient()
 			if err != nil {
 				return errors.Wrap(err, "failed to get k8s client")
@@ -523,11 +616,11 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 				},
 				Spec: v2alpha1.OperationSpec{
 					Template: templateName,
-					Target: v2alpha1.OperationTarget{
-						App:       appName,
-						Component: compName,
-					},
+					Target:   target,
 				},
+			}
+			if cluster != "" {
+				op.Spec.Clusters = []string{cluster}
 			}
 			if len(params) > 0 {
 				raw, err := json.Marshal(params)
@@ -544,6 +637,9 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 		},
 	}
 	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
+	cmd.Flags().String(FlagApplication, "", "the target application, by name")
+	cmd.MarkFlagsMutuallyExclusive(FlagComponent, FlagApplication)
+	cmd.Flags().String(FlagCluster, "", "the cluster to run against (only \"local\" is supported so far)")
 	cmd.Flags().StringArrayP(FlagParam, "p", nil, "a key=value parameter, may be repeated")
 	addNamespaceAndEnvArg(cmd)
 	return cmd
@@ -583,6 +679,9 @@ func NewOperationStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobr
 // output and `status`'s one-shot fetch, so "watch it finish" and "check on
 // it later" render identically.
 func printOperationStatus(cmd *cobra.Command, op *v2alpha1.Operation) {
+	if op.Spec.Target != nil {
+		cmd.Printf("Target: %s/%s\n", op.Spec.Target.Kind, op.Spec.Target.Name)
+	}
 	cmd.Printf("Phase: %s\n", op.Status.Phase)
 	if op.Status.Attempts > 0 {
 		cmd.Printf("Attempts: %d\n", op.Status.Attempts)

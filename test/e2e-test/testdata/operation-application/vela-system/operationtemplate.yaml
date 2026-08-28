@@ -1,0 +1,22 @@
+apiVersion: core.oam.dev/v2alpha1
+kind: OperationTemplate
+metadata:
+  name: pause-dr
+  namespace: vela-system
+spec:
+  description: "Application-scope e2e fixture: pauses, then unpauses, DR reconciliation on the target Application."
+  attach:
+    scope: Application
+    selector:
+      matchLabels:
+        dr.oam.dev/enabled: "true"
+  workflow:
+    steps:
+      - name: pause
+        type: patch-application-pause
+        properties:
+          paused: "true"
+      - name: unpause
+        type: patch-application-pause
+        properties:
+          paused: "false"

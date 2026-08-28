@@ -232,7 +232,7 @@ func TestListAllowedOperationTemplates(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(restart, scaleWebOnly, dup).Build()
 
-	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", "webservice")
+	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeComponent, "webservice", nil)
 	require.NoError(t, err)
 	byName := map[string]v2alpha1.OperationTemplate{}
 	for _, tmpl := range templates {
@@ -242,7 +242,7 @@ func TestListAllowedOperationTemplates(t *testing.T) {
 	require.Contains(t, byName, "scale")
 	assert.Equal(t, "restart the component", byName["restart"].Spec.Description)
 
-	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", "worker")
+	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeComponent, "worker", nil)
 	require.NoError(t, err)
 	byName = map[string]v2alpha1.OperationTemplate{}
 	for _, tmpl := range templates {
@@ -250,4 +250,51 @@ func TestListAllowedOperationTemplates(t *testing.T) {
 	}
 	assert.Contains(t, byName, "restart")
 	assert.NotContains(t, byName, "scale", "scale is restricted to webservice")
+}
+
+func TestListAllowedOperationTemplatesApplicationMode(t *testing.T) {
+	scheme := newOperationTestScheme(t)
+	appScoped := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "pause-dr", Namespace: "default"},
+		Spec: v2alpha1.OperationTemplateSpec{
+			Attach: v2alpha1.OperationAttach{
+				Scope:    v2alpha1.OperationAttachScopeApplication,
+				Selector: &v2alpha1.OperationApplicationSelector{MatchLabels: map[string]string{"dr.oam.dev/enabled": "true"}},
+			},
+		},
+	}
+	compScoped := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: "default"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(appScoped, compScoped).Build()
+
+	matching := &v1beta1.Application{ObjectMeta: metav1.ObjectMeta{Name: "myapp", Labels: map[string]string{"dr.oam.dev/enabled": "true"}}}
+	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeApplication, "", matching)
+	require.NoError(t, err)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "pause-dr", templates[0].Name)
+
+	nonMatching := &v1beta1.Application{ObjectMeta: metav1.ObjectMeta{Name: "other"}}
+	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeApplication, "", nonMatching)
+	require.NoError(t, err)
+	assert.Empty(t, templates)
+}
+
+func TestListAllowedOperationTemplatesNoneMode(t *testing.T) {
+	scheme := newOperationTestScheme(t)
+	bare := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "default"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}},
+	}
+	compScoped := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: "default"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bare, compScoped).Build()
+
+	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeNone, "", nil)
+	require.NoError(t, err)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "bare", templates[0].Name)
 }

@@ -26,16 +26,37 @@ import (
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 )
 
+// OperationTargetKind is the kind of object an OperationTarget names.
+type OperationTargetKind string
+
+const (
+	// OperationTargetKindComponent means Name identifies a Component within App.
+	OperationTargetKindComponent OperationTargetKind = "Component"
+	// OperationTargetKindApplication means Name identifies an Application directly.
+	OperationTargetKindApplication OperationTargetKind = "Application"
+	// No "None" kind -- None scope is expressed by OperationSpec.Target
+	// being nil. Do not add one.
+)
+
 // OperationTarget identifies what an Operation's workflow steps read through
 // `context` -- the same target a healthPolicy already evaluates against.
 type OperationTarget struct {
-	// App is the name of the Application that owns the target Component.
-	// +kubebuilder:validation:MinLength=1
-	App string `json:"app"`
+	// Kind is the kind of object Name identifies.
+	// +kubebuilder:validation:Enum=Component;Application
+	// +kubebuilder:validation:Required
+	Kind OperationTargetKind `json:"kind"`
 
-	// Component is the name of the target Component within App.
+	// App is the name of the owning Application. Required when
+	// Kind=Component (there is no reverse Component->Application lookup);
+	// must be empty when Kind=Application, since Name already names the
+	// Application.
+	// +optional
+	App string `json:"app,omitempty"`
+
+	// Name is the name of the target Component (Kind=Component) or
+	// Application (Kind=Application).
 	// +kubebuilder:validation:MinLength=1
-	Component string `json:"component"`
+	Name string `json:"name"`
 }
 
 // OperationSpec is the spec of Operation.
@@ -45,8 +66,10 @@ type OperationSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Template string `json:"template"`
 
-	// Target is what the workflow steps read through `context`.
-	Target OperationTarget `json:"target"`
+	// Target is what the workflow steps read through `context`. Required
+	// for every attach.scope except None, which must omit it.
+	// +optional
+	Target *OperationTarget `json:"target,omitempty"`
 
 	// Clusters is reserved for multi-cluster dispatch (KEP 2.15). Only a
 	// single (local) cluster is resolved so far; a non-empty value beyond
@@ -89,8 +112,9 @@ const (
 	// error. Terminal -- re-execution isn't supported yet.
 	OperationPhaseFailed OperationPhase = "Failed"
 	// OperationPhaseSuspended means the workflow is paused (a `suspend` step,
-	// or a manual `vela operation suspend`). Non-terminal: the concurrency
-	// lease keeps renewing.
+	// or a manual `vela operation suspend`). Non-terminal: a
+	// `vela operation resume` (or a resolved suspend step) is what moves it
+	// forward.
 	OperationPhaseSuspended OperationPhase = "Suspended"
 	// OperationPhaseCancelled means a human stopped the operation before it
 	// reached a natural terminal phase. Terminal.
@@ -281,8 +305,8 @@ type OperationStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories={oam},shortName={op,vop}
 // +kubebuilder:printcolumn:name="TEMPLATE",type=string,JSONPath=`.spec.template`
-// +kubebuilder:printcolumn:name="APP",type=string,JSONPath=`.spec.target.app`
-// +kubebuilder:printcolumn:name="COMPONENT",type=string,JSONPath=`.spec.target.component`
+// +kubebuilder:printcolumn:name="TARGET-KIND",type=string,JSONPath=`.spec.target.kind`
+// +kubebuilder:printcolumn:name="TARGET-NAME",type=string,JSONPath=`.spec.target.name`
 // +kubebuilder:printcolumn:name="PHASE",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="AGE",type=date,JSONPath=".metadata.creationTimestamp"
 // +genclient

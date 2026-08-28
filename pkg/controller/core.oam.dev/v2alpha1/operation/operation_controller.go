@@ -93,13 +93,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.fail(logCtx, op, fmt.Errorf("spec.clusters only supports %q so far, got %v", localCluster, op.Spec.Clusters))
 	}
 
-	target, err := r.resolveTarget(logCtx, op)
-	if err != nil {
-		return r.fail(logCtx, op, err)
-	}
-
+	// Template is resolved before target: "is a target required" is a fact
+	// about the template's scope, and the template isn't known yet on a
+	// fresh Operation, so target resolution can't tell a legitimate nil
+	// (None scope) from a genuine error (Component/Application scope)
+	// without it. On a resumed reconcile (restart/resume), Status.Template
+	// is already snapshotted and resolveTemplate is skipped entirely --
+	// scope comes from that snapshot instead.
 	if op.Status.Template == nil {
-		tmpl, err := r.resolveTemplate(logCtx, op, target.component.Type)
+		tmpl, err := r.resolveTemplate(logCtx, op)
 		if err != nil {
 			return r.fail(logCtx, op, err)
 		}
@@ -108,6 +110,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		op.Status.Phase = v2alpha1.OperationPhaseRunning
 		op.Status.StartTime = metav1.Now()
 		op.Status.Attempts = 1
+	}
+
+	target, err := r.resolveTarget(logCtx, op, op.Status.Template)
+	if err != nil {
+		return r.fail(logCtx, op, err)
 	}
 
 	pCtx, err := buildProcessContext(logCtx, op, target)
@@ -165,22 +172,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	if op.Status.Phase == v2alpha1.OperationPhaseSuspended {
-		// Non-terminal: the concurrency lease keeps renewing, but there's no
-		// point re-running ExecuteRunners every 5s while nothing can
-		// progress -- a `vela operation resume` is what moves this forward.
+		// Non-terminal, but there's no point re-running ExecuteRunners
+		// every 5s while nothing can progress -- a `vela operation resume`
+		// is what moves this forward.
 		return ctrl.Result{RequeueAfter: suspendedRequeueInterval}, nil
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
 // suspendedRequeueInterval is how often a Suspended Operation is
-// reconciled purely to renew its target lock. Backoff strategy (fixed vs.
-// exponential) is an open question -- see RETRY_PLAN.md.
+// reconciled while waiting for a `vela operation resume`. Backoff strategy
+// (fixed vs. exponential) is an open question -- see RETRY_PLAN.md.
 const suspendedRequeueInterval = 30 * time.Second
 
-// finish persists op's already-set terminal status, then releases its
-// target lock -- only once the write succeeds, so a failed write can't
-// drop the lock before the terminal state is durable. The returned
+// finish persists op's already-set terminal status. The returned
 // ctrl.Result comes from sweepTTL, so a terminal Operation still gets
 // requeued to enforce its TTL rather than going fully idle.
 func (r *Reconciler) finish(ctx context.Context, op *v2alpha1.Operation) (ctrl.Result, error) {

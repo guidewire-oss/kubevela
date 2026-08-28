@@ -1,0 +1,38 @@
+# Test fixture for KEP-2.15 Application scope: patches an annotation onto
+# the Application named by context.appName, mirroring the POC's
+# pause-postgres-reconciliation scenario (00-shared-foundation.md §1a) --
+# a Component-scoped Operation there, but the same "patch the owning
+# Application" mechanic Application scope also needs directly.
+apiVersion: core.oam.dev/v1beta1
+kind: WorkflowStepDefinition
+metadata:
+  name: patch-application-pause
+  namespace: vela-system
+  annotations:
+    definition.oam.dev/description: Patches (or clears) a pause annotation onto context.appName -- Application-scope e2e fixture.
+spec:
+  schematic:
+    cue:
+      template: |
+        import (
+        	"vela/kube"
+        )
+        patch: kube.#Patch & {
+        	$params: {
+        		value: {
+        			apiVersion: "core.oam.dev/v1beta1"
+        			kind:       "Application"
+        			metadata: {
+        				name:      context.appName
+        				namespace: context.namespace
+        			}
+        		}
+        		patch: {
+        			metadata: annotations: "operation.oam.dev/paused": parameter.paused
+        		}
+        	}
+        }
+        parameter: {
+        	// +usage=The value to set operation.oam.dev/paused to ("true" or "false").
+        	paused: string
+        }

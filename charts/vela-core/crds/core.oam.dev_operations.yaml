@@ -23,11 +23,11 @@ spec:
     - jsonPath: .spec.template
       name: TEMPLATE
       type: string
-    - jsonPath: .spec.target.app
-      name: APP
+    - jsonPath: .spec.target.kind
+      name: TARGET-KIND
       type: string
-    - jsonPath: .spec.target.component
-      name: COMPONENT
+    - jsonPath: .spec.target.name
+      name: TARGET-NAME
       type: string
     - jsonPath: .status.phase
       name: PHASE
@@ -85,21 +85,32 @@ spec:
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
               target:
-                description: Target is what the workflow steps read through `context`.
+                description: |-
+                  Target is what the workflow steps read through `context`. Required
+                  for every attach.scope except None, which must omit it.
                 properties:
                   app:
-                    description: App is the name of the Application that owns the
-                      target Component.
-                    minLength: 1
+                    description: |-
+                      App is the name of the owning Application. Required when
+                      Kind=Component (there is no reverse Component->Application lookup);
+                      must be empty when Kind=Application, since Name already names the
+                      Application.
                     type: string
-                  component:
-                    description: Component is the name of the target Component within
-                      App.
+                  kind:
+                    description: Kind is the kind of object Name identifies.
+                    enum:
+                    - Component
+                    - Application
+                    type: string
+                  name:
+                    description: |-
+                      Name is the name of the target Component (Kind=Component) or
+                      Application (Kind=Application).
                     minLength: 1
                     type: string
                 required:
-                - app
-                - component
+                - kind
+                - name
                 type: object
               template:
                 description: |-
@@ -118,7 +129,6 @@ spec:
                 minimum: 0
                 type: integer
             required:
-            - target
             - template
             type: object
           status:
@@ -161,18 +171,67 @@ spec:
                       allowedComponentTypes:
                         description: |-
                           AllowedComponentTypes restricts which ComponentDefinition types this
-                          template may be invoked against. Empty means any type is allowed.
+                          template may be invoked against. Component scope only. Empty means
+                          any type is allowed.
                         items:
                           type: string
                         type: array
                       scope:
                         default: Component
-                        description: |-
-                          Scope is the kind of target this template attaches to. Only
-                          "Component" is supported so far.
+                        description: Scope is the kind of target this template attaches
+                          to.
                         enum:
                         - Component
+                        - Application
+                        - None
                         type: string
+                      selector:
+                        description: |-
+                          Selector restricts which Applications this template may be invoked
+                          against. Application scope only.
+                        properties:
+                          matchExpressions:
+                            items:
+                              description: |-
+                                A label selector requirement is a selector that contains values, a key, and an operator that
+                                relates the key and values.
+                              properties:
+                                key:
+                                  description: key is the label key that the selector
+                                    applies to.
+                                  type: string
+                                operator:
+                                  description: |-
+                                    operator represents a key's relationship to a set of values.
+                                    Valid operators are In, NotIn, Exists and DoesNotExist.
+                                  type: string
+                                values:
+                                  description: |-
+                                    values is an array of string values. If the operator is In or NotIn,
+                                    the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                    the values array must be empty. This array is replaced during a strategic
+                                    merge patch.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          requiredComponentTypes:
+                            description: |-
+                              RequiredComponentTypes: every listed ComponentDefinition type must be
+                              present among the Application's components for a match.
+                            items:
+                              type: string
+                            type: array
+                        type: object
                     type: object
                   description:
                     description: Description is a human-readable summary shown by

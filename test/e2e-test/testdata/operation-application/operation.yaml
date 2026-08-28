@@ -1,0 +1,9 @@
+apiVersion: core.oam.dev/v2alpha1
+kind: Operation
+metadata:
+  name: pause-dr-op
+spec:
+  template: pause-dr
+  target:
+    kind: Application
+    name: operation-app-scope

@@ -5,7 +5,8 @@ metadata:
 spec:
   template: restart-webservice
   target:
+    kind: Component
     app: operation-app
-    component: webservice
+    name: webservice
   parameters:
     reason: e2e-test-restart

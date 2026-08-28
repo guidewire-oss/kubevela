@@ -1,0 +1,13 @@
+apiVersion: core.oam.dev/v2alpha1
+kind: OperationTemplate
+metadata:
+  name: none-scope-suspend
+  namespace: vela-system
+spec:
+  description: "None-scope e2e fixture: suspends unconditionally, no OAM target."
+  attach:
+    scope: None
+  workflow:
+    steps:
+      - name: pause
+        type: suspend

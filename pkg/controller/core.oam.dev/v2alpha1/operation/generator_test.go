@@ -32,7 +32,11 @@ import (
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 	wfTypes "github.com/kubevela/workflow/pkg/types"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v2alpha1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
+	opoperation "github.com/oam-dev/kubevela/pkg/oam/operation"
 	veloperation "github.com/oam-dev/kubevela/pkg/workflow/operation"
 )
 
@@ -53,7 +57,7 @@ func TestResolveTemplateNamespaceFallback(t *testing.T) {
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	tmpl, err := r.resolveTemplate(context.Background(), op, "webservice")
+	tmpl, err := r.resolveTemplate(context.Background(), op)
 	require.NoError(t, err)
 	assert.Equal(t, systemDefinitionNamespace, tmpl.Namespace)
 }
@@ -72,7 +76,7 @@ func TestResolveTemplatePrefersOwnNamespace(t *testing.T) {
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	tmpl, err := r.resolveTemplate(context.Background(), op, "webservice")
+	tmpl, err := r.resolveTemplate(context.Background(), op)
 	require.NoError(t, err)
 	assert.Equal(t, "myns", tmpl.Namespace)
 }
@@ -83,45 +87,236 @@ func TestResolveTemplateNotFound(t *testing.T) {
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "missing"}}
-	_, err := r.resolveTemplate(context.Background(), op, "webservice")
+	_, err := r.resolveTemplate(context.Background(), op)
 	assert.Error(t, err)
 }
 
+// TestResolveTemplateRejectsUnsupportedScope used to assert that
+// Scope: "Application" was rejected -- that flipped the moment Application
+// scope was implemented (see TestResolveTemplateAcceptsApplicationScope
+// below). This repurposes the name for a genuinely bogus scope string.
 func TestResolveTemplateRejectsUnsupportedScope(t *testing.T) {
 	scheme := newTestScheme(t)
 	tmpl := &v2alpha1.OperationTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: "myns"},
-		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: "Application"}},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: "Bogus"}},
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tmpl).Build()
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	_, err := r.resolveTemplate(context.Background(), op, "webservice")
+	_, err := r.resolveTemplate(context.Background(), op)
 	assert.ErrorContains(t, err, "unsupported attach.scope")
 }
 
-func TestResolveTemplateRejectsDisallowedComponentType(t *testing.T) {
+func TestResolveTemplateAcceptsApplicationScope(t *testing.T) {
 	scheme := newTestScheme(t)
 	tmpl := &v2alpha1.OperationTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: "myns"},
-		Spec: v2alpha1.OperationTemplateSpec{
-			Attach: v2alpha1.OperationAttach{
-				Scope:                 v2alpha1.OperationAttachScopeComponent,
-				AllowedComponentTypes: []string{"webservice"},
-			},
-		},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}},
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tmpl).Build()
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	_, err := r.resolveTemplate(context.Background(), op, "worker")
-	assert.ErrorContains(t, err, "does not allow component type")
-
-	tmpl2, err := r.resolveTemplate(context.Background(), op, "webservice")
+	got, err := r.resolveTemplate(context.Background(), op)
 	require.NoError(t, err)
-	assert.Equal(t, "restart", tmpl2.Name)
+	assert.Equal(t, "restart", got.Name)
+}
+
+func TestResolveTemplateAcceptsNoneScope(t *testing.T) {
+	scheme := newTestScheme(t)
+	tmpl := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "myns"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tmpl).Build()
+	r := &Reconciler{Client: cli}
+
+	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "bare"}}
+	got, err := r.resolveTemplate(context.Background(), op)
+	require.NoError(t, err)
+	assert.Equal(t, "bare", got.Name)
+}
+
+func TestResolveTemplateRejectsAllowedComponentTypesUnderNoneScope(t *testing.T) {
+	scheme := newTestScheme(t)
+	tmpl := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "myns"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:                 v2alpha1.OperationAttachScopeNone,
+			AllowedComponentTypes: []string{"webservice"},
+		}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tmpl).Build()
+	r := &Reconciler{Client: cli}
+
+	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "bare"}}
+	_, err := r.resolveTemplate(context.Background(), op)
+	assert.ErrorContains(t, err, "allowedComponentTypes is not valid")
+}
+
+func TestResolveTemplateRejectsSelectorUnderNoneScope(t *testing.T) {
+	scheme := newTestScheme(t)
+	tmpl := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "bare", Namespace: "myns"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:    v2alpha1.OperationAttachScopeNone,
+			Selector: &v2alpha1.OperationApplicationSelector{MatchLabels: map[string]string{"a": "b"}},
+		}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tmpl).Build()
+	r := &Reconciler{Client: cli}
+
+	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "bare"}}
+	_, err := r.resolveTemplate(context.Background(), op)
+	assert.ErrorContains(t, err, "selector is not valid")
+}
+
+func TestResolveTargetReturnsNilForNoneScope(t *testing.T) {
+	r := &Reconciler{}
+	op := &v2alpha1.Operation{}
+	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}}
+	target, err := r.resolveTarget(context.Background(), op, tmpl)
+	require.NoError(t, err)
+	assert.Nil(t, target)
+}
+
+func TestResolveTargetRejectsTargetUnderNoneScope(t *testing.T) {
+	r := &Reconciler{}
+	op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
+		Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "a", Name: "b"},
+	}}
+	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}}
+	_, err := r.resolveTarget(context.Background(), op, tmpl)
+	assert.ErrorContains(t, err, "must be omitted")
+}
+
+func TestResolveTargetRejectsMissingTargetUnderComponentScope(t *testing.T) {
+	r := &Reconciler{}
+	op := &v2alpha1.Operation{}
+	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}}
+	_, err := r.resolveTarget(context.Background(), op, tmpl)
+	assert.ErrorContains(t, err, "is required")
+}
+
+func TestResolveTargetRejectsMissingTargetUnderApplicationScope(t *testing.T) {
+	r := &Reconciler{}
+	op := &v2alpha1.Operation{}
+	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}}
+	_, err := r.resolveTarget(context.Background(), op, tmpl)
+	assert.ErrorContains(t, err, "is required")
+}
+
+func TestResolveTargetRejectsScopeTargetMismatch(t *testing.T) {
+	t.Run("Component-scoped template, Application target", func(t *testing.T) {
+		r := &Reconciler{}
+		op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
+			Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindApplication, Name: "app"},
+		}}
+		tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}}
+		_, err := r.resolveTarget(context.Background(), op, tmpl)
+		assert.ErrorContains(t, err, "cannot be invoked against an Application target")
+	})
+
+	t.Run("Application-scoped template, Component target", func(t *testing.T) {
+		r := &Reconciler{}
+		op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
+			Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "app", Name: "comp"},
+		}}
+		tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}}
+		_, err := r.resolveTarget(context.Background(), op, tmpl)
+		assert.ErrorContains(t, err, "cannot be invoked against a Component target")
+	})
+}
+
+func TestMatchesApplicationSelector(t *testing.T) {
+	app := &v1beta1.Application{
+		ObjectMeta: metav1.ObjectMeta{Name: "myapp", Labels: map[string]string{"dr.oam.dev/enabled": "true", "env": "prod"}},
+		Spec: v1beta1.ApplicationSpec{Components: []common.ApplicationComponent{
+			{Name: "db", Type: "aurora-postgres"},
+			{Name: "web", Type: "webservice"},
+		}},
+	}
+
+	t.Run("MatchLabels: positive", func(t *testing.T) {
+		sel := &v2alpha1.OperationApplicationSelector{MatchLabels: map[string]string{"dr.oam.dev/enabled": "true"}}
+		assert.NoError(t, opoperation.MatchesApplicationSelector(app, sel))
+	})
+	t.Run("MatchLabels: negative", func(t *testing.T) {
+		sel := &v2alpha1.OperationApplicationSelector{MatchLabels: map[string]string{"dr.oam.dev/enabled": "false"}}
+		assert.Error(t, opoperation.MatchesApplicationSelector(app, sel))
+	})
+	t.Run("MatchExpressions: positive", func(t *testing.T) {
+		sel := &v2alpha1.OperationApplicationSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+			{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod", "staging"}},
+		}}
+		assert.NoError(t, opoperation.MatchesApplicationSelector(app, sel))
+	})
+	t.Run("MatchExpressions: negative", func(t *testing.T) {
+		sel := &v2alpha1.OperationApplicationSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+			{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"dev"}},
+		}}
+		assert.Error(t, opoperation.MatchesApplicationSelector(app, sel))
+	})
+	t.Run("RequiredComponentTypes: positive", func(t *testing.T) {
+		sel := &v2alpha1.OperationApplicationSelector{RequiredComponentTypes: []string{"aurora-postgres"}}
+		assert.NoError(t, opoperation.MatchesApplicationSelector(app, sel))
+	})
+	t.Run("RequiredComponentTypes: negative", func(t *testing.T) {
+		sel := &v2alpha1.OperationApplicationSelector{RequiredComponentTypes: []string{"dynamodb"}}
+		assert.Error(t, opoperation.MatchesApplicationSelector(app, sel))
+	})
+}
+
+func TestBuildProcessContextApplicationScopeOmitsComponentFields(t *testing.T) {
+	op := &v2alpha1.Operation{
+		ObjectMeta: metav1.ObjectMeta{Name: "op-1", Namespace: "myns"},
+		Spec: v2alpha1.OperationSpec{
+			Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindApplication, Name: "myapp"},
+		},
+		Status: v2alpha1.OperationStatus{
+			Template: &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}},
+		},
+	}
+	target := &resolvedTarget{
+		app: &v1beta1.Application{ObjectMeta: metav1.ObjectMeta{Name: "myapp", Labels: map[string]string{"a": "b"}}},
+		appFile: &appfile.Appfile{
+			Components: []common.ApplicationComponent{{Name: "db", Type: "aurora-postgres"}},
+		},
+	}
+
+	pCtx, err := buildProcessContext(context.Background(), op, target)
+	require.NoError(t, err)
+
+	base, err := pCtx.BaseContextFile()
+	require.NoError(t, err)
+	assert.Contains(t, base, `"appName":"myapp"`)
+	assert.Contains(t, base, `"name":"myapp"`)
+	assert.Contains(t, base, `"scope":"Application"`)
+	assert.NotContains(t, base, `"output"`)
+	assert.NotContains(t, base, `"outputs"`)
+	assert.Contains(t, base, `"components"`)
+}
+
+func TestBuildProcessContextWithNilTarget(t *testing.T) {
+	op := &v2alpha1.Operation{
+		ObjectMeta: metav1.ObjectMeta{Name: "op-1", Namespace: "myns"},
+		Status: v2alpha1.OperationStatus{
+			Template:  &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}},
+			StartTime: metav1.Now(),
+		},
+	}
+
+	pCtx, err := buildProcessContext(context.Background(), op, nil)
+	require.NoError(t, err)
+
+	base, err := pCtx.BaseContextFile()
+	require.NoError(t, err)
+	assert.Contains(t, base, `"operationName":"op-1"`)
+	assert.Contains(t, base, `"scope":"None"`)
+	assert.NotContains(t, base, `"output"`)
+	assert.NotContains(t, base, `"outputs"`)
 }
 
 func TestBuildWorkflowInstanceCarriesForwardPreviousStatus(t *testing.T) {

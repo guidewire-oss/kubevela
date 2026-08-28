@@ -1,0 +1,6 @@
+apiVersion: core.oam.dev/v2alpha1
+kind: Operation
+metadata:
+  name: none-scope-op
+spec:
+  template: create-configmap

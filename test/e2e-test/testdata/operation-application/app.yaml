@@ -1,0 +1,17 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: operation-app-scope
+  labels:
+    dr.oam.dev/enabled: "true"
+spec:
+  components:
+    - name: webservice
+      type: webservice
+      properties:
+        image: oamdev/testapp:v1
+    - name: worker
+      type: worker
+      properties:
+        image: oamdev/testapp:v1
+        cmd: ["sleep", "3600"]
