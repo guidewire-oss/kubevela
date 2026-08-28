@@ -348,9 +348,17 @@ func publishCatalogEntry(client *registry.Client, source *OCIAddonSource, addonM
 	}
 
 	catalogRepo, _ := ociRepoRef(source.URL, ociCatalogChartName)
-	catalogVersion := "0.0.1"
 	catalogTags, tagErr := catalogRepoTagsFn(catalogRepo, host, source.Username, source.Token, plainHTTP)
-	if tagErr == nil && len(catalogTags) > 0 {
+	if tagErr != nil {
+		// A failed listing is not a confirmed-empty catalog (that path already
+		// went through confirmPortableCatalogAbsent, before existing reached
+		// this function). Defaulting to "0.0.1" here would either collide with
+		// a version that already exists or, worse, publish a lower version
+		// than what is already there. Retry instead of guessing.
+		return true, errors.Wrap(tagErr, "cannot confirm the portable OCI addon catalog's current tag")
+	}
+	catalogVersion := "0.0.1"
+	if len(catalogTags) > 0 {
 		current, parseErr := semver.NewVersion(catalogTags[0])
 		if parseErr != nil {
 			return false, errors.Wrap(parseErr, "failed to parse portable OCI catalog version")
@@ -388,13 +396,15 @@ func publishCatalogEntry(client *registry.Client, source *OCIAddonSource, addonM
 		return false, errors.Wrap(err, "failed to read portable OCI addon catalog package")
 	}
 
-	// Re-check the catalog tag right before publishing. If a concurrent
-	// publisher landed a new tag since the read above, this attempt's merge is
-	// stale -- it may be missing that publisher's addon, or about to publish
-	// the same version number as them -- so retry from a fresh read instead of
-	// overwriting it.
+	// Re-check the catalog tag right before publishing. A failed listing here
+	// is treated the same as a changed tag: neither lets this attempt confirm
+	// it is safe to publish, so both retry from a fresh read rather than risk
+	// overwriting a catalog this attempt can no longer vouch for.
 	latestTags, latestErr := catalogRepoTagsFn(catalogRepo, host, source.Username, source.Token, plainHTTP)
-	if catalogTagHead(catalogTags, tagErr) != catalogTagHead(latestTags, latestErr) {
+	if latestErr != nil {
+		return true, errors.Wrap(latestErr, "cannot confirm the portable OCI addon catalog tag is still unchanged before publishing")
+	}
+	if catalogTagHead(catalogTags) != catalogTagHead(latestTags) {
 		return true, errors.Errorf("a concurrent publisher updated the portable OCI addon catalog while this attempt was preparing %s", catalogVersion)
 	}
 
@@ -404,11 +414,12 @@ func publishCatalogEntry(client *registry.Client, source *OCIAddonSource, addonM
 	return false, nil
 }
 
-// catalogTagHead returns the highest catalog tag seen, or "" if the listing
-// failed or found none. Used only to detect whether the catalog tag changed
-// between two listings, not to resolve a real version.
-func catalogTagHead(tags []string, err error) string {
-	if err != nil || len(tags) == 0 {
+// catalogTagHead returns the highest catalog tag seen, or "" if none. A
+// listing error is the caller's responsibility to handle before reaching
+// here -- conflating "failed to list" with "confirmed empty" would let an
+// unreadable catalog look identical to an unchanged one and publish over it.
+func catalogTagHead(tags []string) string {
+	if len(tags) == 0 {
 		return ""
 	}
 	return tags[0]

@@ -75,17 +75,16 @@ func TestUpdateOCIAddonCatalog(t *testing.T) {
 	}
 }
 
-// TestCatalogTagHead pins the comparison updateOCIAddonCatalogOnce's conflict
-// check depends on: a listing error or an empty list must both read as
-// "absent" (not as two different values that would falsely signal a
-// conflict), and the highest tag is what identifies a change.
+// TestCatalogTagHead pins the comparison publishCatalogEntry's conflict check
+// depends on: no tags reads as absent, and the highest tag identifies a
+// change. A listing error is handled by the caller before this is ever
+// called (see TestPublishCatalogEntryRefusesOnTagListError) -- conflating it
+// with "confirmed absent" here would let an unreadable catalog look
+// unchanged and get published over.
 func TestCatalogTagHead(t *testing.T) {
-	boom := assert.AnError
-
-	assert.Equal(t, "", catalogTagHead(nil, nil), "no tags, no error: absent")
-	assert.Equal(t, "", catalogTagHead(nil, boom), "listing failed: treated as absent")
-	assert.Equal(t, "", catalogTagHead([]string{}, nil), "empty list: absent")
-	assert.Equal(t, "0.0.2", catalogTagHead([]string{"0.0.2", "0.0.1"}, nil), "highest tag identifies the head")
+	assert.Equal(t, "", catalogTagHead(nil), "no tags: absent")
+	assert.Equal(t, "", catalogTagHead([]string{}), "empty list: absent")
+	assert.Equal(t, "0.0.2", catalogTagHead([]string{"0.0.2", "0.0.1"}), "highest tag identifies the head")
 }
 
 // TestUpdateOCIAddonCatalogRetriesOnConflict pins the retry loop itself:
@@ -186,5 +185,55 @@ func TestPublishCatalogEntryDetectsConflict(t *testing.T) {
 		assert.Panics(t, func() {
 			_, _ = publishCatalogEntry(nil, &OCIAddonSource{URL: closedPortRegistryURL}, addonMeta, nil, false)
 		}, "an unchanged tag must proceed to publish rather than report a conflict")
+	})
+}
+
+// TestPublishCatalogEntryRefusesOnTagListError pins the fix for a failed tag
+// listing being silently treated as a confirmed-empty catalog: a listing
+// error, on either the initial read or the pre-push re-check, must retry
+// rather than let publishCatalogEntry default to version "0.0.1" and publish
+// over a catalog it never actually confirmed the state of.
+func TestPublishCatalogEntryRefusesOnTagListError(t *testing.T) {
+	originalCatalogTags := catalogRepoTagsFn
+	originalAddonTags := addonVersionsTagsFn
+	defer func() {
+		catalogRepoTagsFn = originalCatalogTags
+		addonVersionsTagsFn = originalAddonTags
+	}()
+	addonVersionsTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+		return []string{"1.0.0"}, nil
+	}
+
+	addonMeta := &chart.Metadata{Name: "fluxcd", Description: "Flux"}
+
+	t.Run("the initial read failing is a conflict, not a silent default version", func(t *testing.T) {
+		var calls int
+		catalogRepoTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+			calls++
+			return nil, assert.AnError
+		}
+
+		conflict, err := publishCatalogEntry(nil, &OCIAddonSource{URL: closedPortRegistryURL}, addonMeta, nil, false)
+		require.Error(t, err)
+		assert.True(t, conflict, "a failed listing must be retried, not treated as an empty catalog")
+		assert.Contains(t, err.Error(), "cannot confirm the portable OCI addon catalog's current tag")
+		assert.Equal(t, 1, calls, "must not proceed to build or push the catalog chart")
+	})
+
+	t.Run("the pre-push re-check failing is a conflict too", func(t *testing.T) {
+		var calls int
+		catalogRepoTagsFn = func(_, _, _, _ string, _ bool) ([]string, error) {
+			calls++
+			if calls == 1 {
+				return []string{"0.0.3"}, nil
+			}
+			return nil, assert.AnError
+		}
+
+		conflict, err := publishCatalogEntry(nil, &OCIAddonSource{URL: closedPortRegistryURL}, addonMeta, nil, false)
+		require.Error(t, err)
+		assert.True(t, conflict, "a failed re-check must be retried, not treated as unchanged")
+		assert.Contains(t, err.Error(), "cannot confirm the portable OCI addon catalog tag is still unchanged")
+		assert.Equal(t, 2, calls, "must not push once the re-check fails")
 	})
 }
