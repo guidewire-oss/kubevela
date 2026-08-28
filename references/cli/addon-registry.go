@@ -19,9 +19,7 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/url"
-	"strings"
 
 	"github.com/gosuri/uitable"
 	"github.com/pkg/errors"
@@ -344,16 +342,9 @@ func setRegistryPasswordFromStdin(cmd *cobra.Command) error {
 	if !passwordStdin {
 		return nil
 	}
-	if cmd.Flags().Changed(addonPassword) {
-		return errors.New("--password and --password-stdin cannot be used together")
-	}
-	password, err := io.ReadAll(cmd.InOrStdin())
+	value, err := readPasswordFromStdin(cmd, cmd.Flags().Changed(addonPassword), "addon registry")
 	if err != nil {
-		return errors.Wrap(err, "failed to read addon registry password from stdin")
-	}
-	value := strings.TrimRight(string(password), "\r\n")
-	if value == "" {
-		return errors.New("addon registry password read from stdin is empty")
+		return err
 	}
 	return cmd.Flags().Set(addonPassword, value)
 }
