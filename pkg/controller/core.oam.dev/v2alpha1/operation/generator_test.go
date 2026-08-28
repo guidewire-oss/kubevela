@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -185,7 +186,7 @@ func TestResolveTargetReturnsNilForNoneScope(t *testing.T) {
 func TestResolveTargetRejectsTargetUnderNoneScope(t *testing.T) {
 	r := &Reconciler{}
 	op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
-		Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "a", Name: "b"},
+		Target: &v2alpha1.OperationTarget{App: "a", Component: ptr.To("b")},
 	}}
 	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}}
 	_, err := r.resolveTarget(context.Background(), op, tmpl)
@@ -212,7 +213,7 @@ func TestResolveTargetRejectsScopeTargetMismatch(t *testing.T) {
 	t.Run("Component-scoped template, Application target", func(t *testing.T) {
 		r := &Reconciler{}
 		op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
-			Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindApplication, Name: "app"},
+			Target: &v2alpha1.OperationTarget{App: "app"},
 		}}
 		tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}}
 		_, err := r.resolveTarget(context.Background(), op, tmpl)
@@ -222,7 +223,7 @@ func TestResolveTargetRejectsScopeTargetMismatch(t *testing.T) {
 	t.Run("Application-scoped template, Component target", func(t *testing.T) {
 		r := &Reconciler{}
 		op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
-			Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "app", Name: "comp"},
+			Target: &v2alpha1.OperationTarget{App: "app", Component: ptr.To("comp")},
 		}}
 		tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}}
 		_, err := r.resolveTarget(context.Background(), op, tmpl)
@@ -273,7 +274,7 @@ func TestBuildProcessContextApplicationScopeOmitsComponentFields(t *testing.T) {
 	op := &v2alpha1.Operation{
 		ObjectMeta: metav1.ObjectMeta{Name: "op-1", Namespace: "myns"},
 		Spec: v2alpha1.OperationSpec{
-			Target: &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindApplication, Name: "myapp"},
+			Target: &v2alpha1.OperationTarget{App: "myapp"},
 		},
 		Status: v2alpha1.OperationStatus{
 			Template: &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}},

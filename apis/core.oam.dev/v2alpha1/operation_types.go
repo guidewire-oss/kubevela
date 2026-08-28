@@ -26,37 +26,23 @@ import (
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 )
 
-// OperationTargetKind is the kind of object an OperationTarget names.
-type OperationTargetKind string
-
-const (
-	// OperationTargetKindComponent means Name identifies a Component within App.
-	OperationTargetKindComponent OperationTargetKind = "Component"
-	// OperationTargetKindApplication means Name identifies an Application directly.
-	OperationTargetKindApplication OperationTargetKind = "Application"
-	// No "None" kind -- None scope is expressed by OperationSpec.Target
-	// being nil. Do not add one.
-)
-
 // OperationTarget identifies what an Operation's workflow steps read through
 // `context` -- the same target a healthPolicy already evaluates against.
+// A Component never exists apart from its owning Application, so it's
+// expressed as App+Component rather than as a peer "kind" of App alone --
+// mirroring how sources like vela-app/vela-component split the same
+// distinction. App alone targets the Application; App+Component targets
+// the Component within it. None scope is expressed by OperationSpec.Target
+// being nil.
 type OperationTarget struct {
-	// Kind is the kind of object Name identifies.
-	// +kubebuilder:validation:Enum=Component;Application
-	// +kubebuilder:validation:Required
-	Kind OperationTargetKind `json:"kind"`
-
-	// App is the name of the owning Application. Required when
-	// Kind=Component (there is no reverse Component->Application lookup);
-	// must be empty when Kind=Application, since Name already names the
-	// Application.
-	// +optional
-	App string `json:"app,omitempty"`
-
-	// Name is the name of the target Component (Kind=Component) or
-	// Application (Kind=Application).
+	// App is the name of the target Application.
 	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
+	App string `json:"app"`
+
+	// Component is the name of the target Component within App. Omit to
+	// target the Application as a whole.
+	// +optional
+	Component *string `json:"component,omitempty"`
 }
 
 // OperationSpec is the spec of Operation.

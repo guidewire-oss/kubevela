@@ -23,11 +23,11 @@ spec:
     - jsonPath: .spec.template
       name: TEMPLATE
       type: string
-    - jsonPath: .spec.target.kind
-      name: TARGET-KIND
+    - jsonPath: .spec.target.app
+      name: TARGET-APP
       type: string
-    - jsonPath: .spec.target.name
-      name: TARGET-NAME
+    - jsonPath: .spec.target.component
+      name: TARGET-COMPONENT
       type: string
     - jsonPath: .status.phase
       name: PHASE
@@ -90,27 +90,16 @@ spec:
                   for every attach.scope except None, which must omit it.
                 properties:
                   app:
-                    description: |-
-                      App is the name of the owning Application. Required when
-                      Kind=Component (there is no reverse Component->Application lookup);
-                      must be empty when Kind=Application, since Name already names the
-                      Application.
-                    type: string
-                  kind:
-                    description: Kind is the kind of object Name identifies.
-                    enum:
-                    - Component
-                    - Application
-                    type: string
-                  name:
-                    description: |-
-                      Name is the name of the target Component (Kind=Component) or
-                      Application (Kind=Application).
+                    description: App is the name of the target Application.
                     minLength: 1
                     type: string
+                  component:
+                    description: |-
+                      Component is the name of the target Component within App. Omit to
+                      target the Application as a whole.
+                    type: string
                 required:
-                - kind
-                - name
+                - app
                 type: object
               template:
                 description: |-

@@ -594,9 +594,9 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 				if err != nil {
 					return err
 				}
-				target = &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: appName, Name: compName}
+				target = &v2alpha1.OperationTarget{App: appName, Component: &compName}
 			case appRef != "":
-				target = &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindApplication, Name: appRef}
+				target = &v2alpha1.OperationTarget{App: appRef}
 			}
 			// No client-side scope check when neither is given -- let the
 			// controller's resolveTarget/resolveTemplate validation enforce
@@ -680,7 +680,11 @@ func NewOperationStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobr
 // it later" render identically.
 func printOperationStatus(cmd *cobra.Command, op *v2alpha1.Operation) {
 	if op.Spec.Target != nil {
-		cmd.Printf("Target: %s/%s\n", op.Spec.Target.Kind, op.Spec.Target.Name)
+		if op.Spec.Target.Component != nil {
+			cmd.Printf("Target: Component %s/%s\n", op.Spec.Target.App, *op.Spec.Target.Component)
+		} else {
+			cmd.Printf("Target: Application %s\n", op.Spec.Target.App)
+		}
 	}
 	cmd.Printf("Phase: %s\n", op.Status.Phase)
 	if op.Status.Attempts > 0 {

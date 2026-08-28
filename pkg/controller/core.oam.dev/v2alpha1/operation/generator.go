@@ -97,8 +97,7 @@ func (r *Reconciler) resolveTarget(ctx context.Context, op *v2alpha1.Operation, 
 		return nil, fmt.Errorf("spec.target is required for attach.scope %q", scope)
 	}
 
-	switch op.Spec.Target.Kind {
-	case v2alpha1.OperationTargetKindApplication:
+	if op.Spec.Target.Component == nil {
 		if scope != v2alpha1.OperationAttachScopeApplication {
 			return nil, fmt.Errorf("operation template is %q-scoped, cannot be invoked against an Application target", scope)
 		}
@@ -112,21 +111,19 @@ func (r *Reconciler) resolveTarget(ctx context.Context, op *v2alpha1.Operation, 
 			}
 		}
 		return target, nil
-	case v2alpha1.OperationTargetKindComponent, "":
-		if scope != v2alpha1.OperationAttachScopeComponent {
-			return nil, fmt.Errorf("operation template is %q-scoped, cannot be invoked against a Component target", scope)
-		}
-		target, err := r.resolveComponentTarget(ctx, op)
-		if err != nil {
-			return nil, err
-		}
-		if allowed := tmpl.Attach.AllowedComponentTypes; len(allowed) > 0 && !slices.Contains(allowed, target.component.Type) {
-			return nil, fmt.Errorf("operation template does not allow component type %q (allowed: %v)", target.component.Type, allowed)
-		}
-		return target, nil
-	default:
-		return nil, fmt.Errorf("unsupported target.kind %q", op.Spec.Target.Kind)
 	}
+
+	if scope != v2alpha1.OperationAttachScopeComponent {
+		return nil, fmt.Errorf("operation template is %q-scoped, cannot be invoked against a Component target", scope)
+	}
+	target, err := r.resolveComponentTarget(ctx, op)
+	if err != nil {
+		return nil, err
+	}
+	if allowed := tmpl.Attach.AllowedComponentTypes; len(allowed) > 0 && !slices.Contains(allowed, target.component.Type) {
+		return nil, fmt.Errorf("operation template does not allow component type %q (allowed: %v)", target.component.Type, allowed)
+	}
+	return target, nil
 }
 
 // resolveComponentTarget locates the Operation's target Component within
@@ -134,8 +131,8 @@ func (r *Reconciler) resolveTarget(ctx context.Context, op *v2alpha1.Operation, 
 // PrepareCurrentAppRevision and GenerateAppFile in the upstream research
 // this mirrors).
 func (r *Reconciler) resolveComponentTarget(ctx context.Context, op *v2alpha1.Operation) (*resolvedTarget, error) {
-	if op.Spec.Target.App == "" || op.Spec.Target.Name == "" {
-		return nil, fmt.Errorf("spec.target.app and spec.target.name are required")
+	if op.Spec.Target.App == "" || *op.Spec.Target.Component == "" {
+		return nil, fmt.Errorf("spec.target.app and spec.target.component are required")
 	}
 
 	app, appParser, af, err := r.getAndParseApplication(ctx, op.Namespace, op.Spec.Target.App)
@@ -145,13 +142,13 @@ func (r *Reconciler) resolveComponentTarget(ctx context.Context, op *v2alpha1.Op
 
 	var comp *common.ApplicationComponent
 	for i := range af.Components {
-		if af.Components[i].Name == op.Spec.Target.Name {
+		if af.Components[i].Name == *op.Spec.Target.Component {
 			comp = &af.Components[i]
 			break
 		}
 	}
 	if comp == nil {
-		return nil, fmt.Errorf("component %q not found in application %q", op.Spec.Target.Name, op.Spec.Target.App)
+		return nil, fmt.Errorf("component %q not found in application %q", *op.Spec.Target.Component, op.Spec.Target.App)
 	}
 
 	handler, err := r.newAppHandler(ctx, app, af)
@@ -167,11 +164,11 @@ func (r *Reconciler) resolveComponentTarget(ctx context.Context, op *v2alpha1.Op
 // different components -- so context.output/outputs/componentParams stay
 // unavailable under this scope (see buildProcessContext).
 func (r *Reconciler) resolveApplicationTarget(ctx context.Context, op *v2alpha1.Operation) (*resolvedTarget, error) {
-	if op.Spec.Target.Name == "" {
-		return nil, fmt.Errorf("spec.target.name is required")
+	if op.Spec.Target.App == "" {
+		return nil, fmt.Errorf("spec.target.app is required")
 	}
 
-	app, appParser, af, err := r.getAndParseApplication(ctx, op.Namespace, op.Spec.Target.Name)
+	app, appParser, af, err := r.getAndParseApplication(ctx, op.Namespace, op.Spec.Target.App)
 	if err != nil {
 		return nil, err
 	}
@@ -281,14 +278,13 @@ func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, target *re
 		appAnnotations = target.app.Annotations
 		components = target.appFile.Components
 
-		switch op.Spec.Target.Kind {
-		case v2alpha1.OperationTargetKindApplication:
+		if op.Spec.Target.Component == nil {
 			// context.name is "the thing this workflow is about" --
 			// established behavior: the Application controller's own
 			// workflow sets it identically (generateContextDataFromApp).
 			compName = target.app.Name
 			// Deliberately NOT set: Output, Outputs, Status.
-		default: // Component
+		} else {
 			compName = target.component.Name
 			healthCheck := target.handler.CheckComponentHealth(target.appParser, target.appFile)
 			isHealthy, s, output, outputs, err := healthCheck(ctx, target.component, nil, "", "")

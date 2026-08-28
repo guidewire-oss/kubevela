@@ -35,6 +35,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
@@ -320,7 +321,7 @@ var _ = Describe("Operation (v2alpha1)", func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "retry-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:   "retry-flaky",
-				Target:     &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "operation-app", Name: "webservice"},
+				Target:     &v2alpha1.OperationTarget{App: "operation-app", Component: ptr.To("webservice")},
 				Parameters: operationParams(map[string]string{"shouldFail": "true"}),
 			},
 		}
@@ -380,7 +381,7 @@ var _ = Describe("Operation (v2alpha1)", func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "suspend-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template: "suspend-then-ok",
-				Target:   &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "operation-app", Name: "webservice"},
+				Target:   &v2alpha1.OperationTarget{App: "operation-app", Component: ptr.To("webservice")},
 			},
 		}
 		Expect(k8sClient.Create(ctx, op)).Should(BeNil())
@@ -411,7 +412,7 @@ var _ = Describe("Operation (v2alpha1)", func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "io-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:   "io-flaky",
-				Target:     &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "operation-app", Name: "webservice"},
+				Target:     &v2alpha1.OperationTarget{App: "operation-app", Component: ptr.To("webservice")},
 				Parameters: operationParams(map[string]string{"shouldFail": "true"}),
 			},
 		}
@@ -474,7 +475,7 @@ var _ = Describe("Operation (v2alpha1)", func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "ttl-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:                "retry-flaky",
-				Target:                  &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "operation-app", Name: "webservice"},
+				Target:                  &v2alpha1.OperationTarget{App: "operation-app", Component: ptr.To("webservice")},
 				TTLSecondsAfterFinished: &ttl,
 			},
 		}
@@ -498,7 +499,7 @@ var _ = Describe("Operation (v2alpha1)", func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "ttl-suspend-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:                "suspend-then-ok",
-				Target:                  &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindComponent, App: "operation-app", Name: "webservice"},
+				Target:                  &v2alpha1.OperationTarget{App: "operation-app", Component: ptr.To("webservice")},
 				TTLSecondsAfterFinished: &ttl,
 			},
 		}
@@ -574,7 +575,7 @@ var _ = Describe("Operation (v2alpha1) -- None scope", func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "none-scope-mismatch-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template: "create-configmap",
-				Target:   &v2alpha1.OperationTarget{Kind: v2alpha1.OperationTargetKindApplication, Name: "does-not-matter"},
+				Target:   &v2alpha1.OperationTarget{App: "does-not-matter"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, op)).Should(BeNil())

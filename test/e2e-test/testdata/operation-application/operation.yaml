@@ -5,5 +5,4 @@ metadata:
 spec:
   template: pause-dr
   target:
-    kind: Application
-    name: operation-app-scope
+    app: operation-app-scope
