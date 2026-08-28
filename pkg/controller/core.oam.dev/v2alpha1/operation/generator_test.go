@@ -174,60 +174,60 @@ func TestResolveTemplateRejectsSelectorUnderNoneScope(t *testing.T) {
 	assert.ErrorContains(t, err, "selector is not valid")
 }
 
-func TestResolveTargetReturnsNilForNoneScope(t *testing.T) {
+func TestResolveSourceReturnsNilForNoneScope(t *testing.T) {
 	r := &Reconciler{}
 	op := &v2alpha1.Operation{}
 	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}}
-	target, err := r.resolveTarget(context.Background(), op, tmpl)
+	source, err := r.resolveSource(context.Background(), op, tmpl)
 	require.NoError(t, err)
-	assert.Nil(t, target)
+	assert.Nil(t, source)
 }
 
-func TestResolveTargetRejectsTargetUnderNoneScope(t *testing.T) {
+func TestResolveSourceRejectsSourceUnderNoneScope(t *testing.T) {
 	r := &Reconciler{}
 	op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
-		Target: &v2alpha1.OperationTarget{App: "a", Component: ptr.To("b")},
+		Source: &v2alpha1.OperationSource{App: "a", Component: ptr.To("b")},
 	}}
 	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}}
-	_, err := r.resolveTarget(context.Background(), op, tmpl)
+	_, err := r.resolveSource(context.Background(), op, tmpl)
 	assert.ErrorContains(t, err, "must be omitted")
 }
 
-func TestResolveTargetRejectsMissingTargetUnderComponentScope(t *testing.T) {
+func TestResolveSourceRejectsMissingSourceUnderComponentScope(t *testing.T) {
 	r := &Reconciler{}
 	op := &v2alpha1.Operation{}
 	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}}
-	_, err := r.resolveTarget(context.Background(), op, tmpl)
+	_, err := r.resolveSource(context.Background(), op, tmpl)
 	assert.ErrorContains(t, err, "is required")
 }
 
-func TestResolveTargetRejectsMissingTargetUnderApplicationScope(t *testing.T) {
+func TestResolveSourceRejectsMissingSourceUnderApplicationScope(t *testing.T) {
 	r := &Reconciler{}
 	op := &v2alpha1.Operation{}
 	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}}
-	_, err := r.resolveTarget(context.Background(), op, tmpl)
+	_, err := r.resolveSource(context.Background(), op, tmpl)
 	assert.ErrorContains(t, err, "is required")
 }
 
-func TestResolveTargetRejectsScopeTargetMismatch(t *testing.T) {
-	t.Run("Component-scoped template, Application target", func(t *testing.T) {
+func TestResolveSourceRejectsScopeSourceMismatch(t *testing.T) {
+	t.Run("Component-scoped template, Application source", func(t *testing.T) {
 		r := &Reconciler{}
 		op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
-			Target: &v2alpha1.OperationTarget{App: "app"},
+			Source: &v2alpha1.OperationSource{App: "app"},
 		}}
 		tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}}
-		_, err := r.resolveTarget(context.Background(), op, tmpl)
-		assert.ErrorContains(t, err, "cannot be invoked against an Application target")
+		_, err := r.resolveSource(context.Background(), op, tmpl)
+		assert.ErrorContains(t, err, "cannot be invoked against an Application source")
 	})
 
-	t.Run("Application-scoped template, Component target", func(t *testing.T) {
+	t.Run("Application-scoped template, Component source", func(t *testing.T) {
 		r := &Reconciler{}
 		op := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{
-			Target: &v2alpha1.OperationTarget{App: "app", Component: ptr.To("comp")},
+			Source: &v2alpha1.OperationSource{App: "app", Component: ptr.To("comp")},
 		}}
 		tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}}
-		_, err := r.resolveTarget(context.Background(), op, tmpl)
-		assert.ErrorContains(t, err, "cannot be invoked against a Component target")
+		_, err := r.resolveSource(context.Background(), op, tmpl)
+		assert.ErrorContains(t, err, "cannot be invoked against a Component source")
 	})
 }
 
@@ -274,20 +274,20 @@ func TestBuildProcessContextApplicationScopeOmitsComponentFields(t *testing.T) {
 	op := &v2alpha1.Operation{
 		ObjectMeta: metav1.ObjectMeta{Name: "op-1", Namespace: "myns"},
 		Spec: v2alpha1.OperationSpec{
-			Target: &v2alpha1.OperationTarget{App: "myapp"},
+			Source: &v2alpha1.OperationSource{App: "myapp"},
 		},
 		Status: v2alpha1.OperationStatus{
 			Template: &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}},
 		},
 	}
-	target := &resolvedTarget{
+	source := &resolvedSource{
 		app: &v1beta1.Application{ObjectMeta: metav1.ObjectMeta{Name: "myapp", Labels: map[string]string{"a": "b"}}},
 		appFile: &appfile.Appfile{
 			Components: []common.ApplicationComponent{{Name: "db", Type: "aurora-postgres"}},
 		},
 	}
 
-	pCtx, err := buildProcessContext(context.Background(), op, target)
+	pCtx, err := buildProcessContext(context.Background(), op, source)
 	require.NoError(t, err)
 
 	base, err := pCtx.BaseContextFile()
@@ -300,7 +300,7 @@ func TestBuildProcessContextApplicationScopeOmitsComponentFields(t *testing.T) {
 	assert.Contains(t, base, `"components"`)
 }
 
-func TestBuildProcessContextWithNilTarget(t *testing.T) {
+func TestBuildProcessContextWithNilSource(t *testing.T) {
 	op := &v2alpha1.Operation{
 		ObjectMeta: metav1.ObjectMeta{Name: "op-1", Namespace: "myns"},
 		Status: v2alpha1.OperationStatus{

@@ -4,5 +4,5 @@ metadata:
   name: pause-dr-op
 spec:
   template: pause-dr
-  target:
+  source:
     app: operation-app-scope

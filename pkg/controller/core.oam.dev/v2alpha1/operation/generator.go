@@ -53,12 +53,12 @@ const systemDefinitionNamespace = "vela-system"
 // so a later multi-cluster Operation doesn't need a shape migration.
 const localCluster = "local"
 
-// resolvedTarget is everything needed to build the process context and to
-// evaluate the target Component's health, gathered once per reconcile so a
+// resolvedSource is everything needed to build the process context and to
+// evaluate the source Component's health, gathered once per reconcile so a
 // later step in the same run sees a consistent snapshot. component is the
 // zero value under Application scope -- there is no single component to
 // evaluate.
-type resolvedTarget struct {
+type resolvedSource struct {
 	app       *v1beta1.Application
 	appParser *appfile.Parser
 	appFile   *appfile.Appfile
@@ -78,97 +78,97 @@ func effectiveScope(scope v2alpha1.OperationAttachScope) v2alpha1.OperationAttac
 	return scope
 }
 
-// resolveTarget resolves the Operation's target according to tmpl's
-// attach.scope, and validates the target against the template's
+// resolveSource resolves the Operation's source according to tmpl's
+// attach.scope, and validates the source against the template's
 // scope-specific match rules (AllowedComponentTypes / Selector) -- the
-// target must be resolved before those rules can be checked, so this is
-// also where "does this target match this template" is decided, not in
+// source must be resolved before those rules can be checked, so this is
+// also where "does this source match this template" is decided, not in
 // resolveTemplate.
-func (r *Reconciler) resolveTarget(ctx context.Context, op *v2alpha1.Operation, tmpl *v2alpha1.OperationTemplateSpec) (*resolvedTarget, error) {
+func (r *Reconciler) resolveSource(ctx context.Context, op *v2alpha1.Operation, tmpl *v2alpha1.OperationTemplateSpec) (*resolvedSource, error) {
 	scope := effectiveScope(tmpl.Attach.Scope)
 
 	if scope == v2alpha1.OperationAttachScopeNone {
-		if op.Spec.Target != nil {
-			return nil, fmt.Errorf("spec.target must be omitted for attach.scope %q", scope)
+		if op.Spec.Source != nil {
+			return nil, fmt.Errorf("spec.source must be omitted for attach.scope %q", scope)
 		}
 		return nil, nil
 	}
-	if op.Spec.Target == nil {
-		return nil, fmt.Errorf("spec.target is required for attach.scope %q", scope)
+	if op.Spec.Source == nil {
+		return nil, fmt.Errorf("spec.source is required for attach.scope %q", scope)
 	}
 
-	if op.Spec.Target.Component == nil {
+	if op.Spec.Source.Component == nil {
 		if scope != v2alpha1.OperationAttachScopeApplication {
-			return nil, fmt.Errorf("operation template is %q-scoped, cannot be invoked against an Application target", scope)
+			return nil, fmt.Errorf("operation template is %q-scoped, cannot be invoked against an Application source", scope)
 		}
-		target, err := r.resolveApplicationTarget(ctx, op)
+		source, err := r.resolveApplicationSource(ctx, op)
 		if err != nil {
 			return nil, err
 		}
 		if tmpl.Attach.Selector != nil {
-			if err := opoperation.MatchesApplicationSelector(target.app, tmpl.Attach.Selector); err != nil {
+			if err := opoperation.MatchesApplicationSelector(source.app, tmpl.Attach.Selector); err != nil {
 				return nil, err
 			}
 		}
-		return target, nil
+		return source, nil
 	}
 
 	if scope != v2alpha1.OperationAttachScopeComponent {
-		return nil, fmt.Errorf("operation template is %q-scoped, cannot be invoked against a Component target", scope)
+		return nil, fmt.Errorf("operation template is %q-scoped, cannot be invoked against a Component source", scope)
 	}
-	target, err := r.resolveComponentTarget(ctx, op)
+	source, err := r.resolveComponentSource(ctx, op)
 	if err != nil {
 		return nil, err
 	}
-	if allowed := tmpl.Attach.AllowedComponentTypes; len(allowed) > 0 && !slices.Contains(allowed, target.component.Type) {
-		return nil, fmt.Errorf("operation template does not allow component type %q (allowed: %v)", target.component.Type, allowed)
+	if allowed := tmpl.Attach.AllowedComponentTypes; len(allowed) > 0 && !slices.Contains(allowed, source.component.Type) {
+		return nil, fmt.Errorf("operation template does not allow component type %q (allowed: %v)", source.component.Type, allowed)
 	}
-	return target, nil
+	return source, nil
 }
 
-// resolveComponentTarget locates the Operation's target Component within
+// resolveComponentSource locates the Operation's source Component within
 // its owning Application, read-only (Get/List only -- see
 // PrepareCurrentAppRevision and GenerateAppFile in the upstream research
 // this mirrors).
-func (r *Reconciler) resolveComponentTarget(ctx context.Context, op *v2alpha1.Operation) (*resolvedTarget, error) {
-	if op.Spec.Target.App == "" || *op.Spec.Target.Component == "" {
-		return nil, fmt.Errorf("spec.target.app and spec.target.component are required")
+func (r *Reconciler) resolveComponentSource(ctx context.Context, op *v2alpha1.Operation) (*resolvedSource, error) {
+	if op.Spec.Source.App == "" || *op.Spec.Source.Component == "" {
+		return nil, fmt.Errorf("spec.source.app and spec.source.component are required")
 	}
 
-	app, appParser, af, err := r.getAndParseApplication(ctx, op.Namespace, op.Spec.Target.App)
+	app, appParser, af, err := r.getAndParseApplication(ctx, op.Namespace, op.Spec.Source.App)
 	if err != nil {
 		return nil, err
 	}
 
 	var comp *common.ApplicationComponent
 	for i := range af.Components {
-		if af.Components[i].Name == *op.Spec.Target.Component {
+		if af.Components[i].Name == *op.Spec.Source.Component {
 			comp = &af.Components[i]
 			break
 		}
 	}
 	if comp == nil {
-		return nil, fmt.Errorf("component %q not found in application %q", *op.Spec.Target.Component, op.Spec.Target.App)
+		return nil, fmt.Errorf("component %q not found in application %q", *op.Spec.Source.Component, op.Spec.Source.App)
 	}
 
 	handler, err := r.newAppHandler(ctx, app, af)
 	if err != nil {
 		return nil, err
 	}
-	return &resolvedTarget{app: app, appParser: appParser, appFile: af, handler: handler, component: *comp}, nil
+	return &resolvedSource{app: app, appParser: appParser, appFile: af, handler: handler, component: *comp}, nil
 }
 
-// resolveApplicationTarget resolves the Operation's target Application
+// resolveApplicationSource resolves the Operation's source Application
 // as a whole. There is no single component to search for -- two
 // Applications sharing a template's label selector may have entirely
 // different components -- so context.output/outputs/componentParams stay
 // unavailable under this scope (see buildProcessContext).
-func (r *Reconciler) resolveApplicationTarget(ctx context.Context, op *v2alpha1.Operation) (*resolvedTarget, error) {
-	if op.Spec.Target.App == "" {
-		return nil, fmt.Errorf("spec.target.app is required")
+func (r *Reconciler) resolveApplicationSource(ctx context.Context, op *v2alpha1.Operation) (*resolvedSource, error) {
+	if op.Spec.Source.App == "" {
+		return nil, fmt.Errorf("spec.source.app is required")
 	}
 
-	app, appParser, af, err := r.getAndParseApplication(ctx, op.Namespace, op.Spec.Target.App)
+	app, appParser, af, err := r.getAndParseApplication(ctx, op.Namespace, op.Spec.Source.App)
 	if err != nil {
 		return nil, err
 	}
@@ -177,16 +177,16 @@ func (r *Reconciler) resolveApplicationTarget(ctx context.Context, op *v2alpha1.
 	if err != nil {
 		return nil, err
 	}
-	return &resolvedTarget{app: app, appParser: appParser, appFile: af, handler: handler}, nil
+	return &resolvedSource{app: app, appParser: appParser, appFile: af, handler: handler}, nil
 }
 
 // getAndParseApplication fetches the named Application and parses it into
-// an Appfile, the shared prefix of both resolveComponentTarget and
-// resolveApplicationTarget.
+// an Appfile, the shared prefix of both resolveComponentSource and
+// resolveApplicationSource.
 func (r *Reconciler) getAndParseApplication(ctx context.Context, namespace, name string) (*v1beta1.Application, *appfile.Parser, *appfile.Appfile, error) {
 	app := &v1beta1.Application{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, app); err != nil {
-		return nil, nil, nil, errors.Wrapf(err, "get target application %q", name)
+		return nil, nil, nil, errors.Wrapf(err, "get source application %q", name)
 	}
 
 	appParser := appfile.NewApplicationParser(r.Client)
@@ -205,10 +205,10 @@ func (r *Reconciler) newAppHandler(ctx context.Context, app *v1beta1.Application
 	// Scheme/Recorder are irrelevant here.
 	handler, err := application.NewAppHandler(ctx, &application.Reconciler{Client: r.Client}, app)
 	if err != nil {
-		return nil, errors.Wrap(err, "create app handler for target application")
+		return nil, errors.Wrap(err, "create app handler for source application")
 	}
 	if err := handler.PrepareCurrentAppRevision(ctx, af); err != nil {
-		return nil, errors.Wrap(err, "prepare current app revision for target application")
+		return nil, errors.Wrap(err, "prepare current app revision for source application")
 	}
 	return handler, nil
 }
@@ -216,11 +216,11 @@ func (r *Reconciler) newAppHandler(ctx context.Context, app *v1beta1.Application
 // resolveTemplate resolves spec.template in the Operation's own namespace
 // first, then "vela-system" (the same two-tier order used for
 // ComponentDefinition et al.), and validates its attach shape against
-// scope-structural rules that need no resolved target (e.g. None scope
+// scope-structural rules that need no resolved source (e.g. None scope
 // carrying AllowedComponentTypes/Selector). Rules that need the resolved
-// target (AllowedComponentTypes vs. the actual component type, Selector vs.
-// the actual Application) are checked in resolveTarget instead, since the
-// target isn't resolved yet when this runs -- see the Reconcile ordering.
+// source (AllowedComponentTypes vs. the actual component type, Selector vs.
+// the actual Application) are checked in resolveSource instead, since the
+// source isn't resolved yet when this runs -- see the Reconcile ordering.
 // TODO(KEP 2.15): admission (SubjectAccessReview) isn't implemented yet.
 func (r *Reconciler) resolveTemplate(ctx context.Context, op *v2alpha1.Operation) (*v2alpha1.OperationTemplate, error) {
 	tmpl := &v2alpha1.OperationTemplate{}
@@ -234,10 +234,10 @@ func (r *Reconciler) resolveTemplate(ctx context.Context, op *v2alpha1.Operation
 
 	switch effectiveScope(tmpl.Spec.Attach.Scope) {
 	case v2alpha1.OperationAttachScopeComponent:
-		// AllowedComponentTypes is checked in resolveTarget, once the
-		// target's component type is known.
+		// AllowedComponentTypes is checked in resolveSource, once the
+		// source's component type is known.
 	case v2alpha1.OperationAttachScopeApplication:
-		// Selector is checked in resolveTarget, once the target
+		// Selector is checked in resolveSource, once the source
 		// Application is resolved.
 	case v2alpha1.OperationAttachScopeNone:
 		if len(tmpl.Spec.Attach.AllowedComponentTypes) > 0 {
@@ -253,16 +253,16 @@ func (r *Reconciler) resolveTemplate(ctx context.Context, op *v2alpha1.Operation
 }
 
 // buildProcessContext populates a process.Context for op's resolved
-// target -- Option 1 from the KEP: a static workflow whose steps read
+// source -- Option 1 from the KEP: a static workflow whose steps read
 // `context` themselves, no `$()` expressions or deferred provider calls.
-// target is nil under None scope: no OAM target, so only the
-// target-independent fields (operationName, operationParams, ...) are
-// populated. Under Application scope, target.component is the zero value:
+// source is nil under None scope: no OAM source, so only the
+// source-independent fields (operationName, operationParams, ...) are
+// populated. Under Application scope, source.component is the zero value:
 // there is no single component to evaluate health for, so
 // output/outputs/status stay unset -- a step referencing context.output
 // under Application scope fails CUE evaluation with "field not found",
 // which is how that absence is enforced (no admission-time rejection).
-func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, target *resolvedTarget) (process.Context, error) {
+func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, source *resolvedSource) (process.Context, error) {
 	var (
 		outputObj                 interface{}
 		outputsMap                map[string]interface{}
@@ -272,27 +272,27 @@ func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, target *re
 		components                []common.ApplicationComponent
 	)
 
-	if target != nil {
-		appName = target.app.Name
-		appLabels = target.app.Labels
-		appAnnotations = target.app.Annotations
-		components = target.appFile.Components
+	if source != nil {
+		appName = source.app.Name
+		appLabels = source.app.Labels
+		appAnnotations = source.app.Annotations
+		components = source.appFile.Components
 
-		if op.Spec.Target.Component == nil {
+		if op.Spec.Source.Component == nil {
 			// context.name is "the thing this workflow is about" --
 			// established behavior: the Application controller's own
 			// workflow sets it identically (generateContextDataFromApp).
-			compName = target.app.Name
+			compName = source.app.Name
 			// Deliberately NOT set: Output, Outputs, Status.
 		} else {
-			compName = target.component.Name
-			healthCheck := target.handler.CheckComponentHealth(target.appParser, target.appFile)
-			isHealthy, s, output, outputs, err := healthCheck(ctx, target.component, nil, "", "")
+			compName = source.component.Name
+			healthCheck := source.handler.CheckComponentHealth(source.appParser, source.appFile)
+			isHealthy, s, output, outputs, err := healthCheck(ctx, source.component, nil, "", "")
 			if err != nil {
-				return nil, errors.Wrap(err, "check target component health")
+				return nil, errors.Wrap(err, "check source component health")
 			}
 			if s == nil {
-				s = &common.ApplicationComponentStatus{Name: target.component.Name, Healthy: isHealthy}
+				s = &common.ApplicationComponentStatus{Name: source.component.Name, Healthy: isHealthy}
 			}
 			status = s
 			if output != nil {

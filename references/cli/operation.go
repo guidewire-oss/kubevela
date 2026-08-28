@@ -62,7 +62,7 @@ const (
 	// until multi-cluster dispatch lands, only "local" (or unset) is valid --
 	// matches OperationSpec.Clusters' current single-cluster restriction.
 	FlagCluster = "cluster"
-	// FlagApplication command flag to specify an Application-scoped target
+	// FlagApplication command flag to specify an Application-scoped source
 	// directly by name, alongside the existing --component <app>/<name>.
 	FlagApplication = "application"
 )
@@ -374,7 +374,7 @@ func resolveComponentType(ctx context.Context, k8sClient client.Client, ns, appN
 	return "", fmt.Errorf("component %q not found in application %q", compName, appName)
 }
 
-// operationListMode is which kind of target `vela operation list` is
+// operationListMode is which kind of source `vela operation list` is
 // discovering templates for -- exactly one of --component/--application is
 // given, or neither (None-scope discovery).
 type operationListMode int
@@ -461,10 +461,10 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List OperationTemplates allowed against a target.",
+		Short: "List OperationTemplates allowed against a source.",
 		Long: "List OperationTemplates in the target namespace and vela-system that can be invoked against a " +
-			"given target: a Component (--component), an Application (--application), or -- with neither -- " +
-			"None-scoped templates, which take no target at all.",
+			"given source: a Component (--component), an Application (--application), or -- with neither -- " +
+			"None-scoped templates, which take no source at all.",
 		Example: "vela operation list --component myapp/myserver\nvela operation list --application myapp\nvela operation list",
 		Args:    cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -539,8 +539,8 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 			return nil
 		},
 	}
-	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
-	cmd.Flags().String(FlagApplication, "", "the target application, by name")
+	cmd.Flags().StringP(FlagComponent, "c", "", "the source component, as <app>/<name>")
+	cmd.Flags().String(FlagApplication, "", "the source application, by name")
 	cmd.MarkFlagsMutuallyExclusive(FlagComponent, FlagApplication)
 	addNamespaceAndEnvArg(cmd)
 	return cmd
@@ -550,9 +550,9 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run <template>",
-		Short: "Invoke an OperationTemplate against a target.",
-		Long: "Create an Operation from the given OperationTemplate against a target: a Component " +
-			"(--component), an Application (--application), or -- with neither -- no target at all, " +
+		Short: "Invoke an OperationTemplate against a source.",
+		Long: "Create an Operation from the given OperationTemplate against a source: a Component " +
+			"(--component), an Application (--application), or -- with neither -- no source at all, " +
 			"for a None-scoped template. Then wait for it to finish.",
 		Example: "vela operation run restart --component myapp/myserver --param force=true",
 		Args:    cobra.ExactArgs(1),
@@ -587,21 +587,21 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 				return err
 			}
 
-			var target *v2alpha1.OperationTarget
+			var source *v2alpha1.OperationSource
 			switch {
 			case componentRef != "":
 				appName, compName, err := splitComponentRef(componentRef)
 				if err != nil {
 					return err
 				}
-				target = &v2alpha1.OperationTarget{App: appName, Component: &compName}
+				source = &v2alpha1.OperationSource{App: appName, Component: &compName}
 			case appRef != "":
-				target = &v2alpha1.OperationTarget{App: appRef}
+				source = &v2alpha1.OperationSource{App: appRef}
 			}
 			// No client-side scope check when neither is given -- let the
-			// controller's resolveTarget/resolveTemplate validation enforce
-			// "target required unless None" and surface it via
-			// op.Status.Message, the way target-not-found errors already
+			// controller's resolveSource/resolveTemplate validation enforce
+			// "source required unless None" and surface it via
+			// op.Status.Message, the way source-not-found errors already
 			// surface.
 
 			k8sClient, err := c.GetClient()
@@ -616,7 +616,7 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 				},
 				Spec: v2alpha1.OperationSpec{
 					Template: templateName,
-					Target:   target,
+					Source:   source,
 				},
 			}
 			if cluster != "" {
@@ -636,8 +636,8 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 			return pollOperationUntilTerminal(ctx, cmd, k8sClient, op)
 		},
 	}
-	cmd.Flags().StringP(FlagComponent, "c", "", "the target component, as <app>/<name>")
-	cmd.Flags().String(FlagApplication, "", "the target application, by name")
+	cmd.Flags().StringP(FlagComponent, "c", "", "the source component, as <app>/<name>")
+	cmd.Flags().String(FlagApplication, "", "the source application, by name")
 	cmd.MarkFlagsMutuallyExclusive(FlagComponent, FlagApplication)
 	cmd.Flags().String(FlagCluster, "", "the cluster to run against (only \"local\" is supported so far)")
 	cmd.Flags().StringArrayP(FlagParam, "p", nil, "a key=value parameter, may be repeated")
@@ -679,11 +679,11 @@ func NewOperationStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobr
 // output and `status`'s one-shot fetch, so "watch it finish" and "check on
 // it later" render identically.
 func printOperationStatus(cmd *cobra.Command, op *v2alpha1.Operation) {
-	if op.Spec.Target != nil {
-		if op.Spec.Target.Component != nil {
-			cmd.Printf("Target: Component %s/%s\n", op.Spec.Target.App, *op.Spec.Target.Component)
+	if op.Spec.Source != nil {
+		if op.Spec.Source.Component != nil {
+			cmd.Printf("Source: Component %s/%s\n", op.Spec.Source.App, *op.Spec.Source.Component)
 		} else {
-			cmd.Printf("Target: Application %s\n", op.Spec.Target.App)
+			cmd.Printf("Source: Application %s\n", op.Spec.Source.App)
 		}
 	}
 	cmd.Printf("Phase: %s\n", op.Status.Phase)

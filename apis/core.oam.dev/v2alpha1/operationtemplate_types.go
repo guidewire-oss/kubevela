@@ -105,7 +105,7 @@ type OperationTemplateSpec struct {
 //
 // KEP 2.15 permission model: not implemented yet. Any RBAC principal able
 // to create an Operation can invoke any OperationTemplate against any
-// target in its namespace. Do not release or promote this code path
+// source in its namespace. Do not release or promote this code path
 // until the permission model lands.
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories={oam},shortName={opt,optemplate}
