@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
@@ -35,6 +34,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/utils"
 	addonutil "github.com/oam-dev/kubevela/pkg/utils/addon"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
@@ -440,10 +440,10 @@ type Status struct {
 // passes. A requested version equal to the available one also passes, so a pin
 // that happens to match is not an error.
 func checkVersionPinSupported(registryName, addonName, requested, available string) error {
-	// A "v" prefix is cosmetic: addon version resolution elsewhere treats
-	// "v1.0.0" and "1.0.0" as the same version, so comparing the raw strings
-	// here would reject a pin that matches in every way that matters.
-	if requested == "" || strings.TrimPrefix(requested, "v") == strings.TrimPrefix(available, "v") {
+	// A "v" prefix is cosmetic: chooseVersion (versioned_registry.go) already
+	// ignores it when resolving versions, so comparing the raw strings here
+	// would reject a pin that matches in every way that matters.
+	if requested == "" || utils.IgnoreVPrefix(requested) == utils.IgnoreVPrefix(available) {
 		return nil
 	}
 	if available == "" {
