@@ -137,7 +137,7 @@ spec:
               message:
                 description: |-
                   Message carries a human-readable explanation, mainly used when Phase
-                  is Failed before a workflow could even start (e.g. template/target
+                  is Failed before a workflow could even start (e.g. template/source
                   resolution failure).
                 type: string
               phase:
