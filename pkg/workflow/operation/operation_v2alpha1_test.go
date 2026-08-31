@@ -489,9 +489,8 @@ func TestOperationRestartFromStep(t *testing.T) {
 		}
 	}
 
-	// Deliberate divergence from upstream CleanStatusFromStep (RETRY_PLAN.md
-	// design decisions #5 and #7): restarting a Succeeded (or Skipped) step
-	// is allowed, not just a Failed one.
+	// Deliberate divergence from upstream CleanStatusFromStep: restarting a
+	// Succeeded (or Skipped) step is allowed, not just a Failed one.
 	for _, phase := range []workflowv1alpha1.WorkflowStepPhase{
 		workflowv1alpha1.WorkflowStepPhaseFailed,
 		workflowv1alpha1.WorkflowStepPhaseSucceeded,

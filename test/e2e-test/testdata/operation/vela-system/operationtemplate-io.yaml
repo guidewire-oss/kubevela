@@ -1,13 +1,9 @@
-# Test fixture for KEP-2.15 re-execution (see RETRY_PLAN.md): exercises a
-# --step restart's context-backend ConfigMap clearing when a real
-# `outputs`/`inputs` edge exists between steps. Reuses ok-step/flaky-step
-# (no new WorkflowStepDefinitions needed) -- "emit" records its own
-# execution ID as a named output (context.stepSessionID, the same value
-# ok-step/flaky-step already use for Job naming, so the value is both
-# simple to capture and, being the step's own execution identity, would
-# visibly change if "emit" were ever re-executed); "consume" declares a
-# dependency on that output via `inputs`, and is otherwise the same
-# succeed-or-fail-based-on-shouldFail step as operationtemplate-retry.yaml.
+# Test fixture for KEP-2.15 re-execution: exercises a --step restart's
+# context-backend ConfigMap clearing when a real `outputs`/`inputs` edge
+# exists between steps. Reuses ok-step/flaky-step -- "emit" records its own
+# execution ID (context.stepSessionID) as a named output, which would
+# visibly change if "emit" were ever re-executed; "consume" declares a
+# dependency on that output via `inputs`.
 apiVersion: core.oam.dev/v2alpha1
 kind: OperationTemplate
 metadata:

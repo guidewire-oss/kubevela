@@ -175,7 +175,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // suspendedRequeueInterval is how often a Suspended Operation is
 // reconciled purely to renew its target lock. Backoff strategy (fixed vs.
-// exponential) is an open question -- see RETRY_PLAN.md.
+// exponential) is an open question.
 const suspendedRequeueInterval = 30 * time.Second
 
 // finish persists op's already-set terminal status, then releases its

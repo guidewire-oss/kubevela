@@ -1,8 +1,7 @@
-# Test fixture for KEP-2.15 re-execution (see RETRY_PLAN.md). Unconditionally
-# succeeds -- used as a step that shouldn't need retrying, so tests can
-# assert it's left untouched by a --step restart targeting a later step.
-# Makes no Kubernetes API calls from inside its Job, so it needs no
-# ServiceAccount/RBAC of its own (unlike restart-webservice's fixture).
+# Test fixture for KEP-2.15 re-execution. Unconditionally succeeds -- used
+# as a step that shouldn't need retrying, so tests can assert it's left
+# untouched by a --step restart targeting a later step. Pure CUE, no Job
+# (e2e-only for now; expected to move to envtest).
 apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
@@ -14,62 +13,5 @@ spec:
   schematic:
     cue:
       template: |
-        import (
-        	"vela/kube"
-        	"vela/builtin"
-        	"vela/util"
-        )
-        job: kube.#Apply & {
-        	$params: value: {
-        		apiVersion: "batch/v1"
-        		kind:       "Job"
-        		metadata: {
-        			// context.stepSessionID changes each time this step (re)starts,
-        			// so a restart creates a brand-new Job instead of colliding
-        			// with a prior one -- Jobs are immutable once created.
-        			name:      "\(context.name)-\(context.stepName)-\(context.stepSessionID)"
-        			namespace: "vela-system"
-        			labels: "operation.oam.dev/template": "ok-step"
-        		}
-        		spec: {
-        			backoffLimit:            0
-        			ttlSecondsAfterFinished: 300
-        			template: {
-        				metadata: labels: "workflow.oam.dev/step-name": "\(context.name)-\(context.stepName)"
-        				spec: {
-        					containers: [
-        						{
-        							name:    "ok"
-        							image:   "busybox"
-        							command: ["sh", "-c", "echo ok"]
-        						},
-        					]
-        					restartPolicy: "Never"
-        				}
-        			}
-        		}
-        	}
-        }
-
-        log: util.#Log & {
-        	$params: source: resources: [{
-        		namespace:     "vela-system"
-        		labelSelector: "workflow.oam.dev/step-name": "\(context.name)-\(context.stepName)"
-        	}]
-        }
-
-        fail: {
-        	if job.$returns.value.status != _|_ if job.$returns.value.status.failed != _|_ {
-        		if job.$returns.value.status.failed > 0 {
-        			breakWorkflow: builtin.#Fail & {
-        				$params: message: "ok-step Job failed unexpectedly"
-        			}
-        		}
-        	}
-        }
-
-        wait: builtin.#ConditionalWait & {
-        	if job.$returns.value.status != _|_ if job.$returns.value.status.succeeded != _|_ {
-        		$params: continue: job.$returns.value.status.succeeded > 0
-        	}
-        }
+        // nop only to make the template not empty, or it's invalid.
+        nop: {}

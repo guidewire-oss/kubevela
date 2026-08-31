@@ -20,11 +20,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"k8s.io/utils/strings/slices"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -164,11 +168,9 @@ func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, target *re
 		outputsMap[key] = o.Object
 	}
 
-	var params map[string]interface{}
-	if op.Spec.Parameters != nil && len(op.Spec.Parameters.Raw) > 0 {
-		if err := json.Unmarshal(op.Spec.Parameters.Raw, &params); err != nil {
-			return nil, errors.Wrap(err, "unmarshal spec.parameters")
-		}
+	params, err := resolveOperationParams(op.Status.Template.Parameters, op.Spec.Parameters)
+	if err != nil {
+		return nil, err
 	}
 
 	data := velaprocess.ContextData{
@@ -188,6 +190,54 @@ func buildProcessContext(ctx context.Context, op *v2alpha1.Operation, target *re
 		StartTime:       op.Status.StartTime.Format(time.RFC3339),
 	}
 	return velaprocess.NewContext(data), nil
+}
+
+// resolveOperationParams unifies the caller-supplied Operation.spec.parameters
+// against tmplParams's declared `parameter: {...}` CUE schema, so declared
+// defaults actually apply instead of leaving the field missing from
+// context.operationParams. Uses a bare cuecontext.New(), not
+// velacuex.WorkloadCompiler, to avoid that compiler's live-cluster package
+// lookups (the template schema is self-contained, no imports).
+// tmplParams == nil keeps the old behavior: raw values pass through
+// unvalidated.
+func resolveOperationParams(tmplParams *v2alpha1.OperationTemplateParameters, raw *runtime.RawExtension) (map[string]interface{}, error) {
+	var userParams interface{}
+	if raw != nil && len(raw.Raw) > 0 {
+		if err := json.Unmarshal(raw.Raw, &userParams); err != nil {
+			return nil, errors.Wrap(err, "unmarshal spec.parameters")
+		}
+	}
+
+	if tmplParams == nil || tmplParams.CUE == "" {
+		params, _ := userParams.(map[string]interface{})
+		return params, nil
+	}
+
+	paramFile := velaprocess.ParameterFieldName + ": {}"
+	if userParams != nil {
+		bt, err := json.Marshal(userParams)
+		if err != nil {
+			return nil, errors.Wrap(err, "marshal spec.parameters")
+		}
+		paramFile = fmt.Sprintf("%s: %s", velaprocess.ParameterFieldName, string(bt))
+	}
+
+	val := cuecontext.New().CompileString(strings.Join([]string{tmplParams.CUE, paramFile}, "\n"))
+	if val.Err() != nil {
+		return nil, errors.Wrap(val.Err(), "compile operation template parameters")
+	}
+
+	paramVal := val.LookupPath(cue.ParsePath(velaprocess.ParameterFieldName))
+	// Decode alone won't catch a required (no-default) parameter left unset.
+	if err := paramVal.Validate(cue.Concrete(true)); err != nil {
+		return nil, errors.Wrap(err, "invalid operation parameters")
+	}
+
+	var params map[string]interface{}
+	if err := paramVal.Decode(&params); err != nil {
+		return nil, errors.Wrap(err, "decode operation parameters")
+	}
+	return params, nil
 }
 
 // buildWorkflowInstance builds the WorkflowInstance to run from the

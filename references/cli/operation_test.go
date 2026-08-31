@@ -109,8 +109,8 @@ func TestPollOperationUntilTerminalAlreadyDone(t *testing.T) {
 // TestPollOperationUntilSuspendedAlreadyDone mirrors the above for suspend:
 // bounded happy paths only -- exercising the "does it actually wait for
 // Suspended rather than any change" property needs a controller actually
-// driving state over time, which belongs in the e2e suite (RETRY_PLAN.md),
-// not a fake-client unit test that would otherwise hang forever waiting for
+// driving state over time, which belongs in the e2e suite, not a
+// fake-client unit test that would otherwise hang forever waiting for
 // a transition nothing will ever make.
 func TestPollOperationUntilSuspendedAlreadyDone(t *testing.T) {
 	scheme := newOperationTestScheme(t)
