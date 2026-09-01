@@ -65,7 +65,7 @@ func TestModuleRegistryFromArgs(t *testing.T) {
 			[]string{"catalog", "https://github.com/kubevela/catalog"}, "--type=git")
 		require.NoError(t, err)
 		require.NotNil(t, reg.Git)
-		assert.Nil(t, reg.OCI)
+		assert.Nil(t, reg.OCIChartSource())
 		assert.Equal(t, "catalog", reg.Name)
 		assert.Equal(t, "https://github.com/kubevela/catalog", reg.Git.URL)
 		assert.Equal(t, pkgmodule.DefaultGitPath, reg.Git.Path)
@@ -90,11 +90,12 @@ func TestModuleRegistryFromArgs(t *testing.T) {
 			[]string{"ghcr", "oci://ghcr.io/org/modules"},
 			"--type=oci", "--username=robot", "--password=secret")
 		require.NoError(t, err)
-		require.NotNil(t, reg.OCI)
+		oci := reg.OCIChartSource()
+		require.NotNil(t, oci)
 		assert.Nil(t, reg.Git)
-		assert.Equal(t, "oci://ghcr.io/org/modules", reg.OCI.URL)
-		assert.Equal(t, "robot", reg.OCI.Username)
-		assert.Equal(t, "secret", reg.OCI.Token)
+		assert.Equal(t, "oci://ghcr.io/org/modules", oci.URL)
+		assert.Equal(t, "robot", oci.Username)
+		assert.Equal(t, "secret", oci.Token)
 	})
 
 	t.Run("type is inferred from the URL", func(t *testing.T) {
@@ -110,7 +111,7 @@ func TestModuleRegistryFromArgs(t *testing.T) {
 			if wantType == moduleGitType {
 				assert.NotNil(t, reg.Git, url)
 			} else {
-				assert.NotNil(t, reg.OCI, url)
+				assert.NotNil(t, reg.OCIChartSource(), url)
 			}
 		}
 	})
@@ -383,7 +384,7 @@ func TestListModuleRegistry(t *testing.T) {
 		var discard bytes.Buffer
 		require.NoError(t, addModuleRegistry(ctx, c, pkgaddon.Registry{
 			Name: "zzz-oci",
-			OCI:  &pkgaddon.OCIAddonSource{URL: "oci://ghcr.io/org/modules"},
+			Helm: &pkgaddon.HelmSource{URL: "oci://ghcr.io/org/modules"},
 		}, false, &discard))
 		require.NoError(t, addModuleRegistry(ctx, c, pkgaddon.Registry{
 			Name: "catalog",

@@ -210,7 +210,7 @@ func TestFetchModule_ModuleNotFound(t *testing.T) {
 }
 
 func ociRegistry(name string) pkgaddon.Registry {
-	return pkgaddon.Registry{Name: name, OCI: &pkgaddon.OCIAddonSource{}}
+	return pkgaddon.Registry{Name: name, Helm: &pkgaddon.HelmSource{URL: "oci://registry.example.com/modules"}}
 }
 
 // TestFetchModule_OCI_EqualsGit drives the OCI branch (pull -> MemoryReader ->

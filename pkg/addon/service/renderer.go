@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -53,6 +54,18 @@ type rendererImpl struct {
 	// Unpinned requests are deliberately not cached: their empty version means
 	// "latest", whose resolution can change without any request input changing.
 	cache sync.Map
+
+	// resolveGroup collapses concurrent cache misses for the same key into a
+	// single resolve+render call. Without it, N concurrent requests for the
+	// same not-yet-cached pinned addon each pay the full registry/CUE cost
+	// before any of them observes the others' write to cache.
+	//
+	// The shared call runs with context.WithoutCancel(ctx) (see RenderAddon):
+	// it is not scoped to whichever caller happened to become the leader, so
+	// one caller's cancellation or timeout cannot fail every other concurrent
+	// waiter's still-valid request. It also means no caller's own deadline is
+	// enforced on the shared work itself.
+	resolveGroup singleflight.Group
 
 	// resolveFn is a seam for tests: it defaults to r.resolveAndRender and is
 	// only overridden by unit tests that count invocations. Production always
@@ -147,12 +160,29 @@ func (r *rendererImpl) RenderAddon(ctx context.Context, req api.AddonRequest) (*
 	if cached, ok := r.cache.Load(key); ok {
 		return cached.(*api.AddonResult), nil
 	}
-	res, err := resolve(ctx, req)
+
+	// singleflight collapses concurrent misses on the same key into one
+	// resolve+render call; every waiter receives the same *api.AddonResult
+	// value, not a copy, so callers must treat it as immutable.
+	v, err, _ := r.resolveGroup.Do(key, func() (any, error) {
+		if cached, ok := r.cache.Load(key); ok {
+			return cached.(*api.AddonResult), nil
+		}
+		// Decoupled from ctx: this call is shared by every concurrent waiter on
+		// this key, not just the caller that happened to become the leader. A
+		// leader whose own ctx is canceled must not cancel every other
+		// follower's still-valid render.
+		res, err := resolve(context.WithoutCancel(ctx), req)
+		if err != nil {
+			return nil, err
+		}
+		r.cache.Store(key, res)
+		return res, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	r.cache.Store(key, res)
-	return res, nil
+	return v.(*api.AddonResult), nil
 }
 
 func (r *rendererImpl) resolveAndRender(ctx context.Context, req api.AddonRequest) (*api.AddonResult, error) {

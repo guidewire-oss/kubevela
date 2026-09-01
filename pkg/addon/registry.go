@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,6 +50,45 @@ type TokenSource interface {
 	GetTokenSecretRef() string
 }
 
+// OCISource returns the registry's chart source when it addresses an OCI
+// registry, or nil for every other kind of entry. An OCI registry is a Helm
+// source whose URL carries the oci:// scheme -- there is no separate field for
+// it -- so callers that need to tell the two apart go through this rather than
+// repeating the scheme test.
+func (r *Registry) OCISource() *HelmSource {
+	if r.Helm == nil || !IsOCIURL(r.Helm.URL) {
+		return nil
+	}
+	return r.Helm
+}
+
+// OCIChartSource returns the chart source for a registry the module chart
+// pull/push path can talk to, or nil for every other kind of entry. It widens
+// OCISource by the two spellings that path has always accepted:
+//
+//   - http://host/prefix, an OCI registry served without TLS (a local or
+//     port-forwarded test registry). IsOCIURL rejects that because for an
+//     addon registry http(s):// means a ChartMuseum repository, but modules
+//     never supported ChartMuseum, so the spelling is free here.
+//   - a bare host such as an ECR endpoint, the form `vela module publish`
+//     documents. ociRegistryLocation parses it the same either way.
+//
+// https:// is still not OCI: that one really does address a chart repository,
+// and treating it as a registry would misroute a hand-edited helm entry that
+// ResolveRegistry is supposed to reject.
+func (r *Registry) OCIChartSource() *HelmSource {
+	if oci := r.OCISource(); oci != nil {
+		return oci
+	}
+	if r.Helm == nil || r.Helm.URL == "" {
+		return nil
+	}
+	if ociURLIsPlainHTTP(r.Helm.URL) || !strings.Contains(r.Helm.URL, "://") {
+		return r.Helm
+	}
+	return nil
+}
+
 // GetTokenSource return the token source of the registry
 func (r *Registry) GetTokenSource() TokenSource {
 	if r.Git != nil {
@@ -60,8 +100,12 @@ func (r *Registry) GetTokenSource() TokenSource {
 	if r.Gitlab != nil {
 		return r.Gitlab
 	}
-	if r.OCI != nil {
-		return r.OCI
+	// Only an oci:// Helm source is secret backed. An http(s):// Helm repository
+	// keeps its password in the ConfigMap, which is the behaviour released
+	// versions already have; returning it here would start rewriting those
+	// records into Secrets as a side effect of this refactor.
+	if oci := r.OCISource(); oci != nil {
+		return oci
 	}
 	return nil
 }
@@ -75,7 +119,6 @@ type Registry struct {
 	OSS    *OSSAddonSource    `json:"oss,omitempty"`
 	Gitee  *GiteeAddonSource  `json:"gitee,omitempty"`
 	Gitlab *GitlabAddonSource `json:"gitlab,omitempty"`
-	OCI    *OCIAddonSource    `json:"oci,omitempty"`
 }
 
 // RegistryDataStore CRUD addon registry data in configmap

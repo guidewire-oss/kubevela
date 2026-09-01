@@ -201,7 +201,14 @@ func moduleRegistryFromArgs(cmd *cobra.Command, args []string) (*pkgaddon.Regist
 		if (username == "") != (password == "") {
 			return nil, errors.New("OCI registry username and password must be supplied together; omit both for anonymous access")
 		}
-		r.OCI = &pkgaddon.OCIAddonSource{URL: rawURL, Username: username, Token: password}
+		// An OCI registry is stored as a Helm source carrying the oci:// scheme,
+		// the same record `vela addon registry add --type oci` writes. Asserting
+		// the scheme here keeps a mistyped URL from being stored as a plain helm
+		// entry that ResolveRegistry would later reject as an unsupported source.
+		if !pkgaddon.IsOCIURL(rawURL) && !strings.HasPrefix(strings.ToLower(rawURL), "http://") {
+			return nil, errors.New("an OCI module registry URL must use the oci:// scheme (or http:// for a registry served without TLS)")
+		}
+		r.Helm = &pkgaddon.HelmSource{URL: rawURL, Username: username, Token: password}
 	default:
 		return nil, fmt.Errorf("unsupported registry type %q, must be %q or %q",
 			registryType, moduleGitType, moduleOCIType)
@@ -334,7 +341,7 @@ func updateModuleRegistry(ctx context.Context, c common.Args, registry pkgaddon.
 //
 // existing comes from store.GetRegistry, which already loaded a configured
 // secret's value into its Token field -- and, as a side effect of
-// GitAddonSource/OCIAddonSource's SetToken, cleared TokenSecretRef in memory
+// GitAddonSource/HelmSource's SetToken, cleared TokenSecretRef in memory
 // while doing so. So the credential to carry forward is existing's Token, not
 // its TokenSecretRef: handing that Token to UpdateRegistry re-migrates it to
 // the same secret name, which restores the ref. Only if the secret could not
@@ -438,9 +445,9 @@ func moduleRegistrySourceURL(registry pkgaddon.Registry) string {
 	switch {
 	case registry.Git != nil:
 		return registry.Git.URL
-	case registry.OCI != nil:
-		return registry.OCI.URL
 	case registry.Helm != nil:
+		// Covers both spellings: an oci:// Helm source and a plain helm entry
+		// render the same URL field.
 		return registry.Helm.URL
 	case registry.OSS != nil:
 		return registry.OSS.Endpoint
@@ -487,9 +494,10 @@ func getModuleRegistry(ctx context.Context, c common.Args, name string, out io.W
 	case registry.Git != nil:
 		table.AddRow("NAME", "TYPE", "URL", "PATH")
 		table.AddRow(registry.Name, moduleGitType, registry.Git.URL, registry.Git.Path)
-	case registry.OCI != nil:
+	case registry.OCIChartSource() != nil:
+		oci := registry.OCIChartSource()
 		table.AddRow("NAME", "TYPE", "URL", "USERNAME")
-		table.AddRow(registry.Name, moduleOCIType, registry.OCI.URL, registry.OCI.Username)
+		table.AddRow(registry.Name, moduleOCIType, oci.URL, oci.Username)
 	default:
 		table.AddRow("NAME")
 		table.AddRow(registry.Name)

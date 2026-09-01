@@ -65,7 +65,7 @@ func NewStore(cli client.Client) pkgaddon.RegistryDataStore {
 // gitee, or gitlab can be present -- hand-edited, or written by
 // `vela addon registry` if it is pointed at this ConfigMap. Such an entry is
 // rejected here, naming the entry and its actual type, rather than handed to a
-// consumer that assumes reg.Git or reg.OCI is set.
+// consumer that assumes reg.Git or an oci:// reg.Helm is set.
 //
 // With an empty name the rules apply in order: the sole configured registry wins;
 // otherwise a registry named DefaultRegistryName wins; otherwise the choice is
@@ -78,7 +78,7 @@ func ResolveRegistry(ctx context.Context, store pkgaddon.RegistryDataStore, name
 	if err != nil {
 		return pkgaddon.Registry{}, err
 	}
-	if reg.Git == nil && reg.OCI == nil {
+	if reg.Git == nil && reg.OCIChartSource() == nil {
 		return pkgaddon.Registry{}, fmt.Errorf(
 			"module registry %q is a %s source; modules support only git and OCI registries",
 			reg.Name, SourceTypeName(reg))
@@ -130,7 +130,9 @@ func SourceTypeName(reg pkgaddon.Registry) string {
 	switch {
 	case reg.Git != nil:
 		return "git"
-	case reg.OCI != nil:
+	case reg.OCIChartSource() != nil:
+		// An OCI registry is a Helm source with an oci:// URL, so this has to be
+		// tested before the plain helm case or every OCI entry reads as "helm".
 		return "oci"
 	case reg.Helm != nil:
 		return "helm"

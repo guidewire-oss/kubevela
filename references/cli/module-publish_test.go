@@ -185,7 +185,7 @@ func TestModulePublishFailsBeforePush(t *testing.T) {
 func TestModulePublishUsesResolvedRegistryCredentials(t *testing.T) {
 	rec := &recordedPush{}
 	cli := moduleRegistryClient(t, map[string]pkgaddon.Registry{
-		"ecr": {Name: "ecr", OCI: &pkgaddon.OCIAddonSource{URL: "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules"}},
+		"ecr": {Name: "ecr", Helm: &pkgaddon.HelmSource{URL: "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules"}},
 	})
 	o := &modulePublishOptions{
 		dir:  publishFixtureDir(t),
@@ -197,8 +197,8 @@ func TestModulePublishUsesResolvedRegistryCredentials(t *testing.T) {
 
 	require.NoError(t, o.run(context.Background(), cli, &bytes.Buffer{}))
 	require.Equal(t, "ecr", rec.reg.Name)
-	require.NotNil(t, rec.reg.OCI)
-	require.Equal(t, "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules", rec.reg.OCI.URL)
+	require.NotNil(t, rec.reg.OCIChartSource())
+	require.Equal(t, "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules", rec.reg.Helm.URL)
 }
 
 func TestModulePublishVersionOverride(t *testing.T) {
@@ -369,7 +369,7 @@ func TestModulePublishTagImmutableError(t *testing.T) {
 func TestModulePublishOverridesResolvedRegistryCredentials(t *testing.T) {
 	rec := &recordedPush{}
 	cli := moduleRegistryClient(t, map[string]pkgaddon.Registry{
-		"ecr": {Name: "ecr", OCI: &pkgaddon.OCIAddonSource{
+		"ecr": {Name: "ecr", Helm: &pkgaddon.HelmSource{
 			URL:      "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules",
 			Username: "entry-user",
 			Token:    "entry-token",
@@ -387,14 +387,14 @@ func TestModulePublishOverridesResolvedRegistryCredentials(t *testing.T) {
 	}
 
 	require.NoError(t, o.run(context.Background(), cli, &bytes.Buffer{}))
-	require.Equal(t, "flag-user", rec.reg.OCI.Username)
-	require.Equal(t, "flag-password", rec.reg.OCI.Token)
+	require.Equal(t, "flag-user", rec.reg.Helm.Username)
+	require.Equal(t, "flag-password", rec.reg.Helm.Token)
 }
 
 func TestModulePublishKeepsRegistryCredentialsWhenFlagsEmpty(t *testing.T) {
 	rec := &recordedPush{}
 	cli := moduleRegistryClient(t, map[string]pkgaddon.Registry{
-		"ecr": {Name: "ecr", OCI: &pkgaddon.OCIAddonSource{
+		"ecr": {Name: "ecr", Helm: &pkgaddon.HelmSource{
 			URL:      "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules",
 			Username: "entry-user",
 			Token:    "entry-token",
@@ -410,8 +410,8 @@ func TestModulePublishKeepsRegistryCredentialsWhenFlagsEmpty(t *testing.T) {
 	}
 
 	require.NoError(t, o.run(context.Background(), cli, &bytes.Buffer{}))
-	require.Equal(t, "entry-user", rec.reg.OCI.Username)
-	require.Equal(t, "entry-token", rec.reg.OCI.Token)
+	require.Equal(t, "entry-user", rec.reg.Helm.Username)
+	require.Equal(t, "entry-token", rec.reg.Helm.Token)
 }
 
 // TestModulePublishCommandDryRunReflectsFlags exercises RunE's flag-to-struct

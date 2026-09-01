@@ -38,7 +38,7 @@ func TestOCIChartRef(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ref, err := OCIChartRef(Registry{Name: "r", OCI: &OCIAddonSource{URL: tc.url}}, "s3", "1.0.0")
+			ref, err := OCIChartRef(Registry{Name: "r", Helm: &HelmSource{URL: tc.url}}, "s3", "1.0.0")
 			require.NoError(t, err)
 			require.Equal(t, tc.want, ref)
 		})
@@ -56,7 +56,7 @@ func TestPushOCIChartRejectsNonOCIRegistry(t *testing.T) {
 }
 
 func TestOCIChartTagExists(t *testing.T) {
-	reg := Registry{Name: "r", OCI: &OCIAddonSource{URL: "oci://registry.example.com/modules"}}
+	reg := Registry{Name: "r", Helm: &HelmSource{URL: "oci://registry.example.com/modules"}}
 	cases := []struct {
 		name    string
 		tags    []string

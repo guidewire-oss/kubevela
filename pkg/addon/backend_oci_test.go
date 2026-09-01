@@ -33,38 +33,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/registry"
 )
 
-func TestIsOCIRegistry(t *testing.T) {
-	assert.True(t, IsOCIRegistry(Registry{OCI: &OCIAddonSource{URL: "oci://x/y"}}))
-	assert.False(t, IsOCIRegistry(Registry{Helm: &HelmSource{URL: "http://x"}}))
-	assert.False(t, IsOCIRegistry(Registry{Git: &GitAddonSource{URL: "http://x"}}))
-	assert.False(t, IsOCIRegistry(Registry{}))
-}
-
-func TestOCIAddonSourceTokenSource(t *testing.T) {
-	s := &OCIAddonSource{URL: "oci://reg/addon", Username: "AWS", Token: "secret"}
-	// GetTokenSource should return the OCI source
-	r := Registry{Name: "ecr", OCI: s}
-	require.NotNil(t, r.GetTokenSource())
-	assert.Equal(t, "secret", r.GetTokenSource().GetToken())
-
-	// SetTokenSecretRef clears the inline token and records the ref
-	s.SetTokenSecretRef("addon-registry-ecr")
-	assert.Equal(t, "", s.GetToken())
-	assert.Equal(t, "addon-registry-ecr", s.GetTokenSecretRef())
-
-	// SetToken clears the ref
-	s.SetToken("t2")
-	assert.Equal(t, "t2", s.GetToken())
-	assert.Equal(t, "", s.GetTokenSecretRef())
-
-	// SafeCopy hides the token but keeps the ref
-	s.SetTokenSecretRef("addon-registry-ecr")
-	safe := s.SafeCopy()
-	assert.Equal(t, "", safe.Token)
-	assert.Equal(t, "addon-registry-ecr", safe.TokenSecretRef)
-	assert.Equal(t, "oci://reg/addon", safe.URL)
+// ociFacade wraps a backend in the shared registry facade, which is what
+// production callers hold. The tests below drive real VersionedRegistry calls
+// while still injecting the transport seams on the backend.
+func ociFacade(b *ociHelmBackend) VersionedRegistry {
+	return &helmRegistry{name: b.name, backend: b}
 }
 
 func TestOCIRepoRef(t *testing.T) {
@@ -278,7 +254,7 @@ func TestIsOCIRepositoryAbsentError(t *testing.T) {
 }
 
 func TestOCIRegistryPrefersPortableCatalog(t *testing.T) {
-	reg := &ociRegistry{
+	reg := &ociHelmBackend{
 		name: "portable",
 		url:  "oci://reg.example.com/addon",
 		catalogIndexFn: func(_ context.Context, registryURL, _, _ string) ([]*UIData, error) {
@@ -294,7 +270,7 @@ func TestOCIRegistryPrefersPortableCatalog(t *testing.T) {
 		},
 	}
 
-	addons, err := reg.ListAddon()
+	addons, err := ociFacade(reg).ListAddon()
 	require.NoError(t, err)
 	require.Len(t, addons, 1)
 	assert.Equal(t, "portable", addons[0].RegistryName)
@@ -309,7 +285,7 @@ func TestOCIRegistryLoadAddon(t *testing.T) {
 
 	// Empty version must resolve to the highest semver tag via the tag lister,
 	// then pull that exact tag.
-	reg := &ociRegistry{
+	reg := &ociHelmBackend{
 		name:     "ecr",
 		url:      "oci://reg.example.com/addon",
 		username: "AWS",
@@ -335,17 +311,17 @@ func TestOCIRegistryLoadAddon(t *testing.T) {
 		},
 	}
 
-	pkg, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+	pkg, err := ociFacade(reg).GetAddonInstallPackage(context.Background(), "fluxcd", "")
 	require.NoError(t, err)
 	require.NotNil(t, pkg)
 	assert.Equal(t, "fluxcd", pkg.Name)
 
 	// GetDetailedAddon should stamp the registry name.
-	whole, err := reg.GetDetailedAddon(context.Background(), "fluxcd", "")
+	whole, err := ociFacade(reg).GetDetailedAddon(context.Background(), "fluxcd", "")
 	require.NoError(t, err)
 	assert.Equal(t, "ecr", whole.RegistryName)
 
-	addons, err := reg.ListAddon()
+	addons, err := ociFacade(reg).ListAddon()
 	require.NoError(t, err)
 	require.Len(t, addons, 1)
 	assert.Equal(t, "fluxcd", addons[0].Name)
@@ -353,14 +329,14 @@ func TestOCIRegistryLoadAddon(t *testing.T) {
 	assert.Equal(t, []string{"3.0.1", "2.0.0", "1.0.0"}, addons[0].AvailableVersions)
 }
 
-// TestOCIRegistryLoadFiles verifies the extracted loadFiles returns the chart's
-// raw buffered files (chart-name-prefixed) without the addon-specific parse —
-// the reuse the module fetch (PullOCIChartFiles) depends on. Same fixture + seams.
+// TestOCIRegistryLoadFiles verifies resolve returns the chart's raw buffered
+// files (chart-name-prefixed) without the addon-specific parse — the reuse the
+// module fetch (PullOCIChartFiles) depends on. Same fixture + seams.
 func TestOCIRegistryLoadFiles(t *testing.T) {
 	data, err := os.ReadFile("./testdata/helm-repo/fluxcd-1.0.0.tgz")
 	require.NoError(t, err)
 
-	reg := &ociRegistry{
+	reg := &ociHelmBackend{
 		name:     "ecr",
 		url:      "oci://reg.example.com/addon",
 		username: "AWS",
@@ -374,12 +350,12 @@ func TestOCIRegistryLoadFiles(t *testing.T) {
 		},
 	}
 
-	files, err := reg.loadFiles(context.Background(), "fluxcd", "")
+	resolved, err := reg.resolve(context.Background(), "fluxcd", "")
 	require.NoError(t, err)
-	require.NotEmpty(t, files)
+	require.NotEmpty(t, resolved.files)
 
 	var hasPrefixed bool
-	for _, f := range files {
+	for _, f := range resolved.files {
 		if strings.HasPrefix(f.Name, "fluxcd/") {
 			hasPrefixed = true
 			break
@@ -402,7 +378,7 @@ func TestOCIRegistryExplicitVersion(t *testing.T) {
 	data, err := os.ReadFile("./testdata/helm-repo/fluxcd-1.0.0.tgz")
 	require.NoError(t, err)
 
-	reg := &ociRegistry{
+	reg := &ociHelmBackend{
 		name: "ecr", url: "oci://reg.example.com/addon", username: "AWS", token: "secret",
 		tagsFn: func(_ context.Context, _, _, _, _ string) ([]string, error) {
 			t.Fatalf("tag listing must not be called when a version is pinned")
@@ -413,20 +389,20 @@ func TestOCIRegistryExplicitVersion(t *testing.T) {
 			return data, nil
 		},
 	}
-	pkg, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "3.0.1")
+	pkg, err := ociFacade(reg).GetAddonInstallPackage(context.Background(), "fluxcd", "3.0.1")
 	require.NoError(t, err)
 	assert.Equal(t, "fluxcd", pkg.Name)
 }
 
 // TestOCIRegistryNoTags errors clearly when no semver tags exist.
 func TestOCIRegistryNoTags(t *testing.T) {
-	reg := &ociRegistry{
+	reg := &ociHelmBackend{
 		name: "ecr", url: "oci://reg.example.com/addon",
 		tagsFn: func(_ context.Context, _, _, _, _ string) ([]string, error) {
 			return []string{}, nil
 		},
 	}
-	_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+	_, err := ociFacade(reg).GetAddonInstallPackage(context.Background(), "fluxcd", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no")
 }
@@ -491,7 +467,7 @@ func TestListOCIRepositoriesRefusesPlaintextPaginationLink(t *testing.T) {
 // the remaining registries.
 func TestOCILoadFailuresAreSkippable(t *testing.T) {
 	t.Run("a pull failure is a fetch error", func(t *testing.T) {
-		reg := &ociRegistry{
+		reg := &ociHelmBackend{
 			name: "ecr",
 			url:  "oci://registry.example.com/addon",
 			pullFn: func(context.Context, string, string, string, string) ([]byte, error) {
@@ -501,35 +477,35 @@ func TestOCILoadFailuresAreSkippable(t *testing.T) {
 				return []string{"1.0.0"}, nil
 			},
 		}
-		_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+		_, err := ociFacade(reg).GetAddonInstallPackage(context.Background(), "fluxcd", "")
 		require.Error(t, err)
 		assert.True(t, isSkippableRegistryError(err), "got %v", err)
 		assert.Contains(t, err.Error(), "unauthorized", "the underlying cause must stay visible")
 	})
 
 	t.Run("no semver tags means the addon does not exist here", func(t *testing.T) {
-		reg := &ociRegistry{
+		reg := &ociHelmBackend{
 			name: "ecr",
 			url:  "oci://registry.example.com/addon",
 			tagsFn: func(context.Context, string, string, string, string) ([]string, error) {
 				return nil, nil
 			},
 		}
-		_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+		_, err := ociFacade(reg).GetAddonInstallPackage(context.Background(), "fluxcd", "")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrNotExist)
 		assert.True(t, isSkippableRegistryError(err))
 	})
 
 	t.Run("a tag listing failure is a fetch error", func(t *testing.T) {
-		reg := &ociRegistry{
+		reg := &ociHelmBackend{
 			name: "ecr",
 			url:  "oci://registry.example.com/addon",
 			tagsFn: func(context.Context, string, string, string, string) ([]string, error) {
 				return nil, errors.New("dial tcp: i/o timeout")
 			},
 		}
-		_, err := reg.GetAddonInstallPackage(context.Background(), "fluxcd", "")
+		_, err := ociFacade(reg).GetAddonInstallPackage(context.Background(), "fluxcd", "")
 		require.Error(t, err)
 		assert.True(t, isSkippableRegistryError(err), "got %v", err)
 	})
@@ -583,13 +559,13 @@ func TestOCIListAddonKeepsReadFailuresDistinct(t *testing.T) {
 	readFail := errors.New("dial tcp: i/o timeout")
 
 	t.Run("both absent reports absent", func(t *testing.T) {
-		reg := &ociRegistry{
+		reg := &ociHelmBackend{
 			name:           "ecr",
 			url:            "oci://registry.example.com/addon",
 			catalogIndexFn: func(context.Context, string, string, string) ([]*UIData, error) { return nil, absent },
 			catalogFn:      func(context.Context, string, string, string) ([]string, error) { return nil, absent },
 		}
-		_, err := reg.ListAddon()
+		_, err := ociFacade(reg).ListAddon()
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrOCICatalogAbsent)
 	})
@@ -602,13 +578,13 @@ func TestOCIListAddonKeepsReadFailuresDistinct(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				idxErr, catErr := pair[0], pair[1]
-				reg := &ociRegistry{
+				reg := &ociHelmBackend{
 					name:           "ecr",
 					url:            "oci://registry.example.com/addon",
 					catalogIndexFn: func(context.Context, string, string, string) ([]*UIData, error) { return nil, idxErr },
 					catalogFn:      func(context.Context, string, string, string) ([]string, error) { return nil, catErr },
 				}
-				_, err := reg.ListAddon()
+				_, err := ociFacade(reg).ListAddon()
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, ErrOCICatalogAbsent,
 					"a read failure must never be reported as an absent catalog")
@@ -668,6 +644,108 @@ func TestClassifyCatalogAbsenceProbe(t *testing.T) {
 	})
 }
 
+// TestNewOCIClientWithPlainHTTP covers client construction for both transports.
+// Empty credentials skip Login, so this exercises the constructor without any
+// network call.
+func TestNewOCIClientWithPlainHTTP(t *testing.T) {
+	for _, plainHTTP := range []bool{true, false} {
+		client, err := newOCIClientWithPlainHTTP("reg.example.com", "", "", plainHTTP)
+		require.NoError(t, err)
+		assert.NotNil(t, client)
+	}
+}
+
+// TestNewOCIClientWithPlainHTTPLoginFailure covers the credentialed branch:
+// non-empty credentials trigger a real Login call, which fails fast and
+// deterministically against a closed loopback port.
+func TestNewOCIClientWithPlainHTTPLoginFailure(t *testing.T) {
+	_, err := newOCIClientWithPlainHTTP(closedPortHost, "AWS", "secret", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to login to OCI registry")
+}
+
+// closedPortRepoRef and closedPortHost point at a loopback port nothing is
+// listening on, so the dial fails immediately and deterministically without
+// any real network dependency.
+const (
+	closedPortHost    = "127.0.0.1:1"
+	closedPortRepoRef = "127.0.0.1:1/addon/fluxcd"
+)
+
+// TestPullOCIChartWithTransportDialFailure exercises the real Helm registry
+// client against a closed port for both transports, pinning the wrap text
+// callers rely on.
+func TestPullOCIChartWithTransportDialFailure(t *testing.T) {
+	for _, plainHTTP := range []bool{true, false} {
+		_, err := pullOCIChartWithTransport(closedPortRepoRef+":1.0.0", closedPortHost, "", "", plainHTTP)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to pull addon chart")
+	}
+}
+
+// TestPullOCIChartWrappers covers pullOCIChart and pullOCIChartWithPlainHTTP,
+// which only select a transport before delegating.
+func TestPullOCIChartWrappers(t *testing.T) {
+	_, err := pullOCIChart(context.Background(), closedPortRepoRef+":1.0.0", closedPortHost, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to pull addon chart")
+
+	_, err = pullOCIChartWithPlainHTTP(context.Background(), closedPortRepoRef+":1.0.0", closedPortHost, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to pull addon chart")
+}
+
+// TestListOCITagsWithTransportDialFailure exercises the real Helm registry
+// client against a closed port for both transports.
+func TestListOCITagsWithTransportDialFailure(t *testing.T) {
+	for _, plainHTTP := range []bool{true, false} {
+		_, err := listOCITagsWithTransport(closedPortRepoRef, closedPortHost, "", "", plainHTTP)
+		require.Error(t, err)
+	}
+}
+
+// TestListOCITagsWrappers covers listOCITags and listOCITagsWithPlainHTTP.
+func TestListOCITagsWrappers(t *testing.T) {
+	_, err := listOCITags(context.Background(), closedPortRepoRef, closedPortHost, "", "")
+	require.Error(t, err)
+
+	_, err = listOCITagsWithPlainHTTP(context.Background(), closedPortRepoRef, closedPortHost, "", "")
+	require.Error(t, err)
+}
+
+// TestGetAddonAvailableVersion covers both the success path (a real tagsFn
+// producing chart versions) and the tagsFn-error passthrough.
+func TestGetAddonAvailableVersion(t *testing.T) {
+	t.Run("returns a chart version per tag", func(t *testing.T) {
+		reg := &ociHelmBackend{
+			url: "oci://reg.example.com/addon",
+			tagsFn: func(_ context.Context, repoRef, host, _, _ string) ([]string, error) {
+				assert.Equal(t, "reg.example.com/addon/fluxcd", repoRef)
+				assert.Equal(t, "reg.example.com", host)
+				return []string{"2.0.0", "1.0.0"}, nil
+			},
+		}
+		versions, err := ociFacade(reg).GetAddonAvailableVersion("fluxcd")
+		require.NoError(t, err)
+		require.Len(t, versions, 2)
+		assert.Equal(t, "fluxcd", versions[0].Name)
+		assert.Equal(t, "2.0.0", versions[0].Version)
+		assert.Equal(t, "1.0.0", versions[1].Version)
+	})
+
+	t.Run("propagates a tag listing failure", func(t *testing.T) {
+		reg := &ociHelmBackend{
+			url: "oci://reg.example.com/addon",
+			tagsFn: func(context.Context, string, string, string, string) ([]string, error) {
+				return nil, errors.New("dial tcp: i/o timeout")
+			},
+		}
+		_, err := ociFacade(reg).GetAddonAvailableVersion("fluxcd")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "i/o timeout")
+	})
+}
+
 // TestOCIRegistryGetAddonUIDataCarriesAvailableVersions covers the field the UI
 // and the shared addon cache read to offer version choices. loadAddon builds the
 // package from the chart archive alone, which carries no notion of sibling tags,
@@ -676,7 +754,7 @@ func TestOCIRegistryGetAddonUIDataCarriesAvailableVersions(t *testing.T) {
 	data, err := os.ReadFile("./testdata/helm-repo/fluxcd-1.0.0.tgz")
 	require.NoError(t, err)
 
-	reg := &ociRegistry{
+	reg := &ociHelmBackend{
 		name: "ecr", url: "oci://reg.example.com/addon",
 		tagsFn: func(_ context.Context, _, _, _, _ string) ([]string, error) {
 			return []string{"3.0.1", "2.0.0", "1.0.0"}, nil
@@ -684,11 +762,63 @@ func TestOCIRegistryGetAddonUIDataCarriesAvailableVersions(t *testing.T) {
 		pullFn: func(_ context.Context, _, _, _, _ string) ([]byte, error) { return data, nil },
 	}
 
-	ui, err := reg.GetAddonUIData(context.Background(), "fluxcd", "")
+	ui, err := ociFacade(reg).GetAddonUIData(context.Background(), "fluxcd", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"3.0.1", "2.0.0", "1.0.0"}, ui.AvailableVersions)
 
-	whole, err := reg.GetDetailedAddon(context.Background(), "fluxcd", "")
+	whole, err := ociFacade(reg).GetDetailedAddon(context.Background(), "fluxcd", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"3.0.1", "2.0.0", "1.0.0"}, whole.AvailableVersions)
+}
+
+// TestOCIClientCacheReusesLogin pins the fix for the handshake storm: listing a
+// catalog resolves every addon, and without reuse each of those built a new
+// client and logged in again, which real registries reject once the catalog
+// holds more than a couple of addons.
+func TestOCIClientCacheReusesLogin(t *testing.T) {
+	ociClientCache.Lock()
+	ociClientCache.clients = map[string]*registry.Client{}
+	ociClientCache.Unlock()
+
+	first, err := newOCIClientWithPlainHTTP("reg.example.com", "", "", false)
+	require.NoError(t, err)
+	second, err := newOCIClientWithPlainHTTP("reg.example.com", "", "", false)
+	require.NoError(t, err)
+	assert.Same(t, first, second, "the same host and credentials must reuse one client")
+
+	other, err := newOCIClientWithPlainHTTP("other.example.com", "", "", false)
+	require.NoError(t, err)
+	assert.NotSame(t, first, other, "different hosts must not share a client")
+
+	// Credentialed clients log in, so assert the keying rather than build one.
+	// A rotated credential must miss the cache: an ECR login token lasts 12
+	// hours, and reusing the client holding the stale one would fail every pull.
+	assert.NotEqual(t,
+		ociClientCacheKey("reg.example.com", "AWS", "old-token", false),
+		ociClientCacheKey("reg.example.com", "AWS", "new-token", false),
+		"a rotated credential must not reuse the client holding the stale token")
+	assert.NotEqual(t,
+		ociClientCacheKey("reg.example.com", "u", "p", false),
+		ociClientCacheKey("reg.example.com", "u", "p", true),
+		"plain HTTP and TLS clients must be keyed apart")
+	assert.Equal(t,
+		ociClientCacheKey("reg.example.com", "u", "p", false),
+		ociClientCacheKey("reg.example.com", "u", "p", false),
+		"the same inputs must produce the same key")
+}
+
+func TestOCIClientCacheIsBounded(t *testing.T) {
+	ociClientCache.Lock()
+	ociClientCache.clients = map[string]*registry.Client{}
+	ociClientCache.Unlock()
+
+	for i := 0; i < ociClientCacheLimit*2; i++ {
+		_, err := newOCIClientWithPlainHTTP(fmt.Sprintf("reg%d.example.com", i), "", "", false)
+		require.NoError(t, err)
+	}
+
+	ociClientCache.Lock()
+	size := len(ociClientCache.clients)
+	ociClientCache.Unlock()
+	assert.LessOrEqual(t, size, ociClientCacheLimit, "the cache must stay bounded as credentials rotate")
 }

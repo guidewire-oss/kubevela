@@ -54,10 +54,11 @@ func ociURLIsPlainHTTP(rawURL string) bool {
 // "<host>[/<prefix>]/<name>:<tag>". It is exported so a caller can print the
 // target before pushing.
 func OCIChartRef(reg Registry, name, tag string) (string, error) {
-	if reg.OCI == nil {
+	oci := reg.OCIChartSource()
+	if oci == nil {
 		return "", errors.Errorf("registry %q is not an OCI registry", reg.Name)
 	}
-	repoRef, _ := ociRepoRef(reg.OCI.URL, name)
+	repoRef, _ := ociRepoRef(oci.URL, name)
 	return repoRef + ":" + tag, nil
 }
 
@@ -66,11 +67,12 @@ func OCIChartRef(reg Registry, name, tag string) (string, error) {
 // construction and the same authenticated Helm registry client, so a module
 // published here is pulled by the module fetch unchanged.
 func PushOCIChart(_ context.Context, reg Registry, name, version string, archive []byte) error {
-	if reg.OCI == nil {
+	oci := reg.OCIChartSource()
+	if oci == nil {
 		return errors.Errorf("registry %q is not an OCI registry", reg.Name)
 	}
-	repoRef, host := ociRepoRef(reg.OCI.URL, name)
-	client, err := newOCIClientWithPlainHTTP(host, reg.OCI.Username, reg.OCI.Token, ociURLIsPlainHTTP(reg.OCI.URL))
+	repoRef, host := ociRepoRef(oci.URL, name)
+	client, err := newOCIClientWithPlainHTTP(host, oci.Username, oci.Token, ociURLIsPlainHTTP(oci.URL))
 	if err != nil {
 		return err
 	}
@@ -85,11 +87,12 @@ func PushOCIChart(_ context.Context, reg Registry, name, version string, archive
 // A repository that does not exist yet is reported as "no such tag" rather
 // than an error: the first publish of a module is exactly that case.
 func OCIChartTagExists(ctx context.Context, reg Registry, name, tag string) (bool, error) {
-	if reg.OCI == nil {
+	oci := reg.OCIChartSource()
+	if oci == nil {
 		return false, errors.Errorf("registry %q is not an OCI registry", reg.Name)
 	}
-	repoRef, host := ociRepoRef(reg.OCI.URL, name)
-	tags, err := chartTagLister(repoRef, host, reg.OCI.Username, reg.OCI.Token, ociURLIsPlainHTTP(reg.OCI.URL))
+	repoRef, host := ociRepoRef(oci.URL, name)
+	tags, err := chartTagLister(repoRef, host, oci.Username, oci.Token, ociURLIsPlainHTTP(oci.URL))
 	if err != nil {
 		if IsOCIRepositoryNotFound(err) {
 			return false, nil

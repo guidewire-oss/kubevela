@@ -201,7 +201,11 @@ func (o *modulePublishOptions) resolveTarget(ctx context.Context, cli client.Cli
 	if o.ociRef != "" {
 		return pkgaddon.Registry{
 			Name: o.ociRef,
-			OCI:  &pkgaddon.OCIAddonSource{URL: o.ociRef, Username: o.username, Token: o.password},
+			// A positional reference is by definition an OCI target, stored as
+			// the Helm source every registry record now uses. It is kept exactly
+			// as typed -- oci://, http:// for a registry without TLS, or a bare
+			// ECR host -- all three of which OCIChartSource accepts.
+			Helm: &pkgaddon.HelmSource{URL: o.ociRef, Username: o.username, Token: o.password},
 		}, nil
 	}
 	if cli == nil {
@@ -211,18 +215,20 @@ func (o *modulePublishOptions) resolveTarget(ctx context.Context, cli client.Cli
 	if err != nil {
 		return pkgaddon.Registry{}, err
 	}
-	if reg.OCI == nil {
+	oci := reg.OCIChartSource()
+	if oci == nil {
 		return pkgaddon.Registry{}, fmt.Errorf("module registry %q is a %s source; vela module publish supports OCI/ECR only",
 			reg.Name, pkgmodule.SourceTypeName(reg))
 	}
 	if o.username != "" {
-		reg.OCI.Username = o.username
+		oci.Username = o.username
 	}
 	if o.password != "" {
-		reg.OCI.Token = o.password
+		oci.Token = o.password
 	}
 	return reg, nil
 }
+
 
 // publishError turns a registry rejection into a message naming the fix. ECR
 // creates no repository on push, and an IMMUTABLE repository refuses a tag
