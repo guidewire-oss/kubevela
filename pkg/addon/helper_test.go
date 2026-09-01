@@ -32,7 +32,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
@@ -174,7 +173,7 @@ var _ = Describe("test FindAddonPackagesDetailFromRegistry", func() {
 		BeforeEach(func() {
 			// Prepare local non-versioned registry
 			server = httptest.NewServer(ossHandler)
-			cm := v1.ConfigMap{}
+			cm := corev1.ConfigMap{}
 			cmYaml := strings.ReplaceAll(registryCmYaml, "TEST_SERVER_URL", server.URL)
 			cmYaml = strings.ReplaceAll(cmYaml, "KubeVela", "testreg")
 			Expect(yaml.Unmarshal([]byte(cmYaml), &cm)).Should(BeNil())
