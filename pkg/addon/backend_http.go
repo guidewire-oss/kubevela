@@ -20,7 +20,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
+	"strings"
 
 	"github.com/pkg/errors"
 	"helm.sh/helm/v3/pkg/chart/loader"
@@ -78,13 +80,21 @@ func (b *httpHelmBackend) resolve(ctx context.Context, addonName, version string
 		return nil, errors.Errorf("specified version %s for addon %s not exist", utils.Sanitize(version), addonName)
 	}
 	for _, chartURL := range addonVersion.URLs {
-		if !utils.IsValidURL(chartURL) {
+		reqOpts := b.opts
+		if utils.IsValidURL(chartURL) {
+			// The index gave an absolute URL, which may point at a host other
+			// than this registry's own (a mirror, a CDN, another repository
+			// entirely). This registry's credentials must not be sent there.
+			if !sameHost(chartURL, b.url) {
+				reqOpts = withoutCredentials(b.opts)
+			}
+		} else {
 			chartURL, err = utils.JoinURL(b.url, chartURL)
 			if err != nil {
 				return nil, fmt.Errorf("cannot join repository URL %s and chart URL %s, %w", b.url, chartURL, err)
 			}
 		}
-		archive, err := common.HTTPGetWithOption(ctx, chartURL, b.opts)
+		archive, err := common.HTTPGetWithOption(ctx, chartURL, reqOpts)
 		if err != nil {
 			klog.Warningf("failed to download the addon package %s:%s", chartURL, err.Error())
 			continue
@@ -106,6 +116,28 @@ func (b *httpHelmBackend) resolve(ctx context.Context, addonName, version string
 		}, nil
 	}
 	return nil, ErrFetch
+}
+
+// sameHost reports whether two URLs share a host, so the caller can decide
+// whether it is safe to send this registry's credentials to a URL the index
+// supplied.
+func sameHost(a, b string) bool {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	return errA == nil && errB == nil && strings.EqualFold(ua.Host, ub.Host)
+}
+
+// withoutCredentials returns a copy of opts with authentication removed, for
+// a request going to a host outside the configured repository origin.
+func withoutCredentials(opts *common.HTTPOption) *common.HTTPOption {
+	if opts == nil {
+		return nil
+	}
+	stripped := *opts
+	stripped.Username = ""
+	stripped.Password = ""
+	stripped.BearerToken = ""
+	return &stripped
 }
 
 func (b *httpHelmBackend) resolveAddonListFromIndex(index *repo.IndexFile) []*UIData {

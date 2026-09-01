@@ -79,7 +79,8 @@ func testChartFiles(t *testing.T) []*loader.BufferedFile {
 func TestHelmRegistrySystemRequirementsOverride(t *testing.T) {
 	files := testChartFiles(t)
 
-	resolveWith := func(resolved *resolvedChart) *WholeAddonPackage {
+	resolveWith := func(t *testing.T, resolved *resolvedChart) *WholeAddonPackage {
+		t.Helper()
 		r := &helmRegistry{
 			name: "my-registry",
 			backend: &fakeBackend{
@@ -94,10 +95,10 @@ func TestHelmRegistrySystemRequirementsOverride(t *testing.T) {
 	}
 
 	// A backend with no opinion leaves whatever the addon package itself declared.
-	fromPackage := resolveWith(&resolvedChart{files: files}).Meta.SystemRequirements
+	fromPackage := resolveWith(t, &resolvedChart{files: files}).Meta.SystemRequirements
 
 	t.Run("no opinion keeps the package value", func(t *testing.T) {
-		pkg := resolveWith(&resolvedChart{files: files, requirementsSet: false,
+		pkg := resolveWith(t, &resolvedChart{files: files, requirementsSet: false,
 			requirements: &SystemRequirements{VelaVersion: ">=1.5.0"}})
 		assert.Equal(t, fromPackage, pkg.Meta.SystemRequirements,
 			"requirements must be ignored unless the backend marks them as set")
@@ -105,14 +106,14 @@ func TestHelmRegistrySystemRequirementsOverride(t *testing.T) {
 
 	t.Run("an explicit value overrides", func(t *testing.T) {
 		want := &SystemRequirements{VelaVersion: ">=1.5.0", KubernetesVersion: ">=1.20.0"}
-		pkg := resolveWith(&resolvedChart{files: files, requirementsSet: true, requirements: want})
+		pkg := resolveWith(t, &resolvedChart{files: files, requirementsSet: true, requirements: want})
 		assert.Equal(t, want, pkg.Meta.SystemRequirements)
 	})
 
 	t.Run("an explicit nil overrides", func(t *testing.T) {
 		// The HTTP backend reads requirements from index annotations and must be
 		// able to say "the index declares none", which is distinct from silence.
-		pkg := resolveWith(&resolvedChart{files: files, requirementsSet: true, requirements: nil})
+		pkg := resolveWith(t, &resolvedChart{files: files, requirementsSet: true, requirements: nil})
 		assert.Nil(t, pkg.Meta.SystemRequirements)
 	})
 }

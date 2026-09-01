@@ -29,6 +29,7 @@ import (
 	"sync"
 
 	"github.com/pkg/errors"
+	"golang.org/x/sync/singleflight"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/registry"
@@ -70,9 +71,19 @@ type ociHelmBackend struct {
 	catalogIndexFn ociCatalogIndexLister
 }
 
+// ociScheme is the URL scheme prefix this file strips before building a
+// registry host and repository reference. IsOCIURL classifies the scheme
+// case-insensitively, so parsing here has to match, or a registry stored as
+// "OCI://..." would classify as OCI but build a malformed host such as "OCI:".
+const ociScheme = "oci://"
+
 // ociRegistryLocation returns the registry host and repository prefix.
 func ociRegistryLocation(rawURL string) (host, prefix string) {
-	base := strings.Trim(strings.TrimPrefix(rawURL, "oci://"), "/")
+	trimmed := rawURL
+	if len(rawURL) >= len(ociScheme) && strings.EqualFold(rawURL[:len(ociScheme)], ociScheme) {
+		trimmed = rawURL[len(ociScheme):]
+	}
+	base := strings.Trim(trimmed, "/")
 	host = base
 	if i := strings.Index(base, "/"); i >= 0 {
 		host = base[:i]
@@ -139,34 +150,27 @@ var ociClientCache = struct {
 // live set is small; the cap only stops unbounded growth as tokens rotate.
 const ociClientCacheLimit = 16
 
+// ociClientCreation coordinates concurrent creation of the same cache entry so
+// two goroutines resolving the same registry at once do not both dial and log
+// in. Keying it by cache key, rather than using ociClientCache's own lock for
+// this, keeps unrelated keys from blocking on each other's network I/O.
+var ociClientCreation singleflight.Group
+
 func ociClientCacheKey(host, username, password string, plainHTTP bool) string {
 	sum := sha256.Sum256([]byte(username + "\x00" + password))
 	return fmt.Sprintf("%s|%t|%x", host, plainHTTP, sum[:8])
 }
 
-func newOCIClientWithPlainHTTP(host, username, password string, plainHTTP bool) (*registry.Client, error) {
-	key := ociClientCacheKey(host, username, password, plainHTTP)
-
+func cachedOCIClient(key string) (*registry.Client, bool) {
 	ociClientCache.Lock()
 	defer ociClientCache.Unlock()
-	if client, ok := ociClientCache.clients[key]; ok {
-		return client, nil
-	}
+	client, ok := ociClientCache.clients[key]
+	return client, ok
+}
 
-	var opts []registry.ClientOption
-	if plainHTTP {
-		opts = append(opts, registry.ClientOptPlainHTTP())
-	}
-	client, err := registry.NewClient(opts...)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create OCI registry client")
-	}
-	if username != "" || password != "" {
-		if err := client.Login(host, registry.LoginOptBasicAuth(username, password)); err != nil {
-			return nil, errors.Wrapf(err, "failed to login to OCI registry %s", host)
-		}
-	}
-
+func storeOCIClient(key string, client *registry.Client) {
+	ociClientCache.Lock()
+	defer ociClientCache.Unlock()
 	if len(ociClientCache.clients) >= ociClientCacheLimit {
 		// Cheap eviction: the entries are interchangeable, and a dropped one is
 		// only re-logged-in on next use.
@@ -176,7 +180,44 @@ func newOCIClientWithPlainHTTP(host, username, password string, plainHTTP bool) 
 		}
 	}
 	ociClientCache.clients[key] = client
-	return client, nil
+}
+
+func newOCIClientWithPlainHTTP(host, username, password string, plainHTTP bool) (*registry.Client, error) {
+	key := ociClientCacheKey(host, username, password, plainHTTP)
+
+	if client, ok := cachedOCIClient(key); ok {
+		return client, nil
+	}
+
+	// The dial and login below run outside ociClientCache's lock: only the map
+	// reads and writes hold it, so a slow or unreachable registry blocks
+	// nothing but callers asking for this same key.
+	result, err, _ := ociClientCreation.Do(key, func() (interface{}, error) {
+		if client, ok := cachedOCIClient(key); ok {
+			return client, nil
+		}
+
+		var opts []registry.ClientOption
+		if plainHTTP {
+			opts = append(opts, registry.ClientOptPlainHTTP())
+		}
+		client, err := registry.NewClient(opts...)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create OCI registry client")
+		}
+		if username != "" || password != "" {
+			if err := client.Login(host, registry.LoginOptBasicAuth(username, password)); err != nil {
+				return nil, errors.Wrapf(err, "failed to login to OCI registry %s", host)
+			}
+		}
+
+		storeOCIClient(key, client)
+		return client, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.(*registry.Client), nil
 }
 
 // pullOCIChart is the production puller: it logs in (when credentials are set)
