@@ -251,6 +251,33 @@ func TestToVersionedRegistry(t *testing.T) {
 	actual, err = ToVersionedRegistry(registry)
 	assert.EqualError(t, err, "registry 'git-based-registry' is not a versioned registry")
 	assert.Nil(t, actual)
+
+	// Test case 4: a cm:// url stays on the HTTP backend. ChartMuseum registries
+	// are stored with a cm:// URL, which push.go rewrites to http(s) later.
+	// Rejecting the scheme here, or routing it to OCI, would break those records.
+	registry = Registry{Name: "cm", Helm: &HelmSource{URL: "cm://charts.example.com"}}
+	actual, err = ToVersionedRegistry(registry)
+	require.NoError(t, err)
+	cmReg, ok := actual.(*helmRegistry)
+	require.True(t, ok)
+	assert.IsType(t, &httpHelmBackend{}, cmReg.backend)
+
+	// Test case 5: mismatched credentials are rejected at construction.
+	registry = Registry{Name: "bad", Helm: &HelmSource{URL: "https://charts.example.com", Token: "tok"}}
+	_, err = ToVersionedRegistry(registry)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token")
+
+	// Test case 6: an oci registry never reaches BuildReader. The defect this
+	// guards: an OCI registry used to fall through to BuildReader, which has no
+	// chart-registry branch and fails with "registry don't have enough info to
+	// build a reader".
+	registry = Registry{Name: "ecr", Helm: &HelmSource{URL: "oci://reg.example.com/addon"}}
+	_, err = registry.BuildReader()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "don't have enough info")
+	assert.True(t, IsVersionRegistry(registry),
+		"chart-backed registries must be classified as version capable")
 }
 
 func TestResolveAddonListFromIndex(t *testing.T) {

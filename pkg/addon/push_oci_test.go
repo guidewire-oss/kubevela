@@ -86,7 +86,8 @@ func TestPushCmdRoutesConfiguredOCI(t *testing.T) {
 		}
 
 		require.NoError(t, p.Push(context.Background()))
-		require.NotNil(t, captured)
+		require.NotNil(t, captured, "a Helm block with an oci:// URL must take the OCI route")
+		assert.Equal(t, "oci://registry.example.com/addons", captured.URL)
 		assert.Equal(t, "stored-user", captured.Username)
 		assert.Equal(t, "stored-password", captured.Token)
 	})
@@ -180,40 +181,6 @@ func TestPushCmdRejectsOCIAuthAmbiguity(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
-}
-
-func TestPushCmdRoutesHelmBlockOCI(t *testing.T) {
-	// An OCI registry stored as a Helm source with an oci:// URL must route to
-	// the OCI push, not to the ChartMuseum client.
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	store := NewRegistryDataStore(kubeClient)
-	require.NoError(t, store.AddRegistry(context.Background(), Registry{
-		Name: "helm-oci",
-		Helm: &HelmSource{
-			URL:      "oci://registry.example.com/addons",
-			Username: "stored-user",
-			Token:    "stored-password",
-		},
-	}))
-
-	var captured *HelmSource
-	p := &PushCmd{
-		RepoName:  "helm-oci",
-		Client:    kubeClient,
-		ChartName: "unused-by-test-seam",
-		ociPushFn: func(_ context.Context, source *HelmSource, _ bool) error {
-			captured = source
-			return nil
-		},
-	}
-	require.NoError(t, p.Push(context.Background()))
-	require.NotNil(t, captured, "a Helm block with an oci:// URL must take the OCI route")
-	assert.Equal(t, "oci://registry.example.com/addons", captured.URL)
-	assert.Equal(t, "stored-user", captured.Username)
-	assert.Equal(t, "stored-password", captured.Token,
-		"the token must survive the secret round trip")
 }
 
 func TestGetHelmRepoSkipsOCIRegistries(t *testing.T) {

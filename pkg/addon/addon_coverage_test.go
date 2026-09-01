@@ -47,49 +47,14 @@ func TestIsSkippableRegistryErrorClassification(t *testing.T) {
 	}
 }
 
-// stubInfoLister implements ItemInfoLister for tests.
-type stubInfoLister struct {
-	addons map[string]ItemInfo
-	err    error
-}
-
-func (s *stubInfoLister) ListAddonInfo() (map[string]ItemInfo, error) {
-	return s.addons, s.err
-}
-
-func TestListAvailableAddonsSkipsSkippableErrors(t *testing.T) {
-	good := &stubInfoLister{
-		addons: map[string]ItemInfo{
-			"fluxcd": {Name: "fluxcd", AvailableVersions: []string{"1.0.0"}},
-		},
-	}
-
-	t.Run("skippable error is skipped, good registry still counted", func(t *testing.T) {
-		broken := &stubInfoLister{err: ErrNotExist}
-		result, err := listAvailableAddons([]ItemInfoLister{broken, good})
-		require.NoError(t, err)
-		assert.Contains(t, result, "fluxcd")
-	})
-
-	t.Run("ErrFetch is skipped", func(t *testing.T) {
-		broken := &stubInfoLister{err: errors.Wrap(ErrFetch, "OCI registry ecr")}
-		result, err := listAvailableAddons([]ItemInfoLister{broken, good})
-		require.NoError(t, err)
-		assert.Contains(t, result, "fluxcd")
-	})
-
-	t.Run("non-skippable error stops the listing", func(t *testing.T) {
-		broken := &stubInfoLister{err: errors.New("401 unauthorized")}
-		_, err := listAvailableAddons([]ItemInfoLister{broken, good})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to list addons")
-	})
-
-	t.Run("empty registries returns empty map", func(t *testing.T) {
-		result, err := listAvailableAddons(nil)
-		require.NoError(t, err)
-		assert.Empty(t, result)
-	})
+// TestListAvailableAddonsWithNilRegistries pins the nil-slice edge case; the
+// skippable-error and fatal-error branches are covered by
+// TestListAvailableAddonsSkipsFailingRegistry, TestListAvailableAddonsPropagatesFatalError
+// and TestListAvailableAddonsSkipsEveryUnreachableRegistry in addon_test.go.
+func TestListAvailableAddonsWithNilRegistries(t *testing.T) {
+	result, err := listAvailableAddons(nil)
+	require.NoError(t, err)
+	assert.Empty(t, result)
 }
 
 func TestVersionUnMatchError(t *testing.T) {
@@ -117,61 +82,6 @@ func TestVersionUnMatchError(t *testing.T) {
 		assert.NotContains(t, e.Error(), "Install fluxcd")
 		_, err := e.GetAvailableVersion()
 		require.Error(t, err)
-	})
-}
-
-func TestToVersionedRegistryConversion(t *testing.T) {
-	backendOf := func(t *testing.T, r Registry) chartBackend {
-		t.Helper()
-		vr, err := ToVersionedRegistry(r)
-		require.NoError(t, err)
-		reg, ok := vr.(*helmRegistry)
-		require.True(t, ok)
-		return reg.backend
-	}
-
-	t.Run("an oci url selects the OCI backend", func(t *testing.T) {
-		r := Registry{Name: "ecr", Helm: &HelmSource{URL: "oci://reg.example.com/addon"}}
-		assert.IsType(t, &ociHelmBackend{}, backendOf(t, r))
-	})
-
-	t.Run("an https url selects the HTTP backend", func(t *testing.T) {
-		r := Registry{Name: "helm", Helm: &HelmSource{URL: "https://charts.example.com"}}
-		assert.IsType(t, &httpHelmBackend{}, backendOf(t, r))
-	})
-
-	t.Run("a cm url stays on the HTTP backend", func(t *testing.T) {
-		// ChartMuseum registries are stored with a cm:// URL, which push.go
-		// rewrites to http(s) later. Rejecting the scheme here, or routing it to
-		// OCI, would break those records.
-		r := Registry{Name: "cm", Helm: &HelmSource{URL: "cm://charts.example.com"}}
-		assert.IsType(t, &httpHelmBackend{}, backendOf(t, r))
-	})
-
-	t.Run("mismatched credentials are rejected at construction", func(t *testing.T) {
-		r := Registry{Name: "bad", Helm: &HelmSource{URL: "https://charts.example.com", Token: "tok"}}
-		_, err := ToVersionedRegistry(r)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "token")
-	})
-
-	t.Run("an oci registry never reaches BuildReader", func(t *testing.T) {
-		// The defect this guards: an OCI registry used to fall through to
-		// BuildReader, which has no chart-registry branch and fails with
-		// "registry don't have enough info to build a reader".
-		r := Registry{Name: "ecr", Helm: &HelmSource{URL: "oci://reg.example.com/addon"}}
-		_, err := r.BuildReader()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "don't have enough info")
-		assert.True(t, IsVersionRegistry(r),
-			"chart-backed registries must be classified as version capable")
-	})
-
-	t.Run("git-only registry is not versioned", func(t *testing.T) {
-		r := Registry{Name: "git", Git: &GitAddonSource{URL: "https://github.com/x/y"}}
-		_, err := ToVersionedRegistry(r)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not a versioned registry")
 	})
 }
 
