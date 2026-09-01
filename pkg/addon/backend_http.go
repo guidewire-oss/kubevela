@@ -118,17 +118,22 @@ func (b *httpHelmBackend) resolve(ctx context.Context, addonName, version string
 	return nil, ErrFetch
 }
 
-// sameHost reports whether two URLs share a host, so the caller can decide
-// whether it is safe to send this registry's credentials to a URL the index
-// supplied.
+// sameHost reports whether two URLs share a scheme and a host, so the caller
+// can decide whether it is safe to send this registry's credentials to a URL
+// the index supplied. The scheme has to match too: an https:// repository
+// whose index lists an http:// URL on the same host must not reuse
+// credentials there, since that would put them on the wire in cleartext.
 func sameHost(a, b string) bool {
 	ua, errA := url.Parse(a)
 	ub, errB := url.Parse(b)
-	return errA == nil && errB == nil && strings.EqualFold(ua.Host, ub.Host)
+	return errA == nil && errB == nil &&
+		strings.EqualFold(ua.Scheme, ub.Scheme) && strings.EqualFold(ua.Host, ub.Host)
 }
 
 // withoutCredentials returns a copy of opts with authentication removed, for
-// a request going to a host outside the configured repository origin.
+// a request going to a host outside the configured repository origin. This
+// includes the mTLS client certificate: presenting it identifies the caller
+// to that host just as a bearer token or password would.
 func withoutCredentials(opts *common.HTTPOption) *common.HTTPOption {
 	if opts == nil {
 		return nil
@@ -137,6 +142,8 @@ func withoutCredentials(opts *common.HTTPOption) *common.HTTPOption {
 	stripped.Username = ""
 	stripped.Password = ""
 	stripped.BearerToken = ""
+	stripped.CertFile = ""
+	stripped.KeyFile = ""
 	return &stripped
 }
 
