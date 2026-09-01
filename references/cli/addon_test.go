@@ -29,6 +29,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
@@ -573,8 +574,8 @@ func TestGetOCIRegistryFromArgsUsesPassword(t *testing.T) {
 		)
 
 		assert.NoError(t, err)
-		assert.Equal(t, "robot", registry.OCI.Username)
-		assert.Equal(t, "secret", registry.OCI.Token)
+		assert.Equal(t, "robot", registry.Helm.Username)
+		assert.Equal(t, "secret", registry.Helm.Token)
 	})
 
 	t.Run("anonymous", func(t *testing.T) {
@@ -584,8 +585,8 @@ func TestGetOCIRegistryFromArgsUsesPassword(t *testing.T) {
 		)
 
 		assert.NoError(t, err)
-		assert.Empty(t, registry.OCI.Username)
-		assert.Empty(t, registry.OCI.Token)
+		assert.Empty(t, registry.Helm.Username)
+		assert.Empty(t, registry.Helm.Token)
 	})
 
 	t.Run("token flag is rejected", func(t *testing.T) {
@@ -663,4 +664,59 @@ func TestNewAddAddonRegistryCommandWiresIOStreamsIn(t *testing.T) {
 	password, err := cmd.Flags().GetString(addonPassword)
 	assert.NoError(t, err)
 	assert.Equal(t, "injected-password", password)
+}
+
+func TestGetRegistryFromArgsOCIWritesHelmBlock(t *testing.T) {
+	parse := func(flags ...string) (*pkgaddon.Registry, error) {
+		cmd := &cobra.Command{}
+		parseArgsFromFlag(cmd)
+		if err := cmd.Flags().Parse(flags); err != nil {
+			return nil, err
+		}
+		return getRegistryFromArgs(cmd, []string{"private"})
+	}
+
+	t.Run("--type oci writes a Helm block with a token", func(t *testing.T) {
+		registry, err := parse(
+			"--type=oci",
+			"--endpoint=oci://registry.example.com/addons",
+			"--username=robot",
+			"--password=secret",
+		)
+		require.NoError(t, err)
+		require.NotNil(t, registry.Helm)
+		assert.Equal(t, "oci://registry.example.com/addons", registry.Helm.URL)
+		assert.Equal(t, "secret", registry.Helm.Token)
+		assert.Empty(t, registry.Helm.Password, "an oci registry must not carry a ConfigMap password")
+	})
+
+	t.Run("--type helm with an oci endpoint produces the same record", func(t *testing.T) {
+		viaOCI, err := parse("--type=oci", "--endpoint=oci://registry.example.com/addons",
+			"--username=robot", "--password=secret")
+		require.NoError(t, err)
+		viaHelm, err := parse("--type=helm", "--endpoint=oci://registry.example.com/addons",
+			"--username=robot", "--password=secret")
+		require.NoError(t, err)
+		assert.Equal(t, viaOCI.Helm, viaHelm.Helm)
+	})
+
+	t.Run("--type helm with an https endpoint keeps using password", func(t *testing.T) {
+		registry, err := parse("--type=helm", "--endpoint=https://charts.example.com",
+			"--username=u", "--password=pw")
+		require.NoError(t, err)
+		assert.Equal(t, "pw", registry.Helm.Password)
+		assert.Empty(t, registry.Helm.Token, "an http repository must not carry a secret-backed token")
+	})
+
+	t.Run("--type oci rejects a non-oci endpoint", func(t *testing.T) {
+		_, err := parse("--type=oci", "--endpoint=https://registry.example.com/addons")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "oci://")
+	})
+
+	t.Run("credentials must be supplied together", func(t *testing.T) {
+		_, err := parse("--type=helm", "--endpoint=oci://registry.example.com/addons", "--password=secret")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "supplied together")
+	})
 }

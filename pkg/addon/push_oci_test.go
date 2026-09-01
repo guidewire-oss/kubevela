@@ -17,6 +17,7 @@ limitations under the License.
 package addon
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestIsDirectAddonPushTarget(t *testing.T) {
 }
 
 func TestPushCmdRoutesDirectOCI(t *testing.T) {
-	var captured *OCIAddonSource
+	var captured *HelmSource
 	var capturedPlainHTTP bool
 	p := &PushCmd{
 		RepoName:  "oci://registry.example.com/addons",
@@ -43,7 +44,7 @@ func TestPushCmdRoutesDirectOCI(t *testing.T) {
 		Password:  "secret",
 		ChartName: "unused-by-test-seam",
 		UseHTTP:   true,
-		ociPushFn: func(_ context.Context, source *OCIAddonSource, plainHTTP bool) error {
+		ociPushFn: func(_ context.Context, source *HelmSource, plainHTTP bool) error {
 			captured = source
 			capturedPlainHTTP = plainHTTP
 			return nil
@@ -65,7 +66,7 @@ func TestPushCmdRoutesConfiguredOCI(t *testing.T) {
 	store := NewRegistryDataStore(kubeClient)
 	require.NoError(t, store.AddRegistry(context.Background(), Registry{
 		Name: "private",
-		OCI: &OCIAddonSource{
+		Helm: &HelmSource{
 			URL:      "oci://registry.example.com/addons",
 			Username: "stored-user",
 			Token:    "stored-password",
@@ -73,12 +74,12 @@ func TestPushCmdRoutesConfiguredOCI(t *testing.T) {
 	}))
 
 	t.Run("stored credentials", func(t *testing.T) {
-		var captured *OCIAddonSource
+		var captured *HelmSource
 		p := &PushCmd{
 			RepoName:  "private",
 			Client:    kubeClient,
 			ChartName: "unused-by-test-seam",
-			ociPushFn: func(_ context.Context, source *OCIAddonSource, _ bool) error {
+			ociPushFn: func(_ context.Context, source *HelmSource, _ bool) error {
 				captured = source
 				return nil
 			},
@@ -91,14 +92,14 @@ func TestPushCmdRoutesConfiguredOCI(t *testing.T) {
 	})
 
 	t.Run("command line credentials override stored credentials", func(t *testing.T) {
-		var captured *OCIAddonSource
+		var captured *HelmSource
 		p := &PushCmd{
 			RepoName:  "private",
 			Client:    kubeClient,
 			ChartName: "unused-by-test-seam",
 			Username:  "override-user",
 			Password:  "override-password",
-			ociPushFn: func(_ context.Context, source *OCIAddonSource, _ bool) error {
+			ociPushFn: func(_ context.Context, source *HelmSource, _ bool) error {
 				captured = source
 				return nil
 			},
@@ -115,13 +116,13 @@ func TestPushCmdRoutesConfiguredOCI(t *testing.T) {
 	// merged credential pair is still complete, so this must not be rejected as
 	// ambiguous partial authentication.
 	t.Run("password-only override rotates stored credential without a username flag", func(t *testing.T) {
-		var captured *OCIAddonSource
+		var captured *HelmSource
 		p := &PushCmd{
 			RepoName:  "private",
 			Client:    kubeClient,
 			ChartName: "unused-by-test-seam",
 			Password:  "rotated-password",
-			ociPushFn: func(_ context.Context, source *OCIAddonSource, _ bool) error {
+			ociPushFn: func(_ context.Context, source *HelmSource, _ bool) error {
 				captured = source
 				return nil
 			},
@@ -170,7 +171,7 @@ func TestPushCmdRejectsOCIAuthAmbiguity(t *testing.T) {
 	for name, pushCmd := range tests {
 		t.Run(name, func(t *testing.T) {
 			pushCmd.ChartName = "unused-by-test-seam"
-			pushCmd.ociPushFn = func(_ context.Context, _ *OCIAddonSource, _ bool) error {
+			pushCmd.ociPushFn = func(_ context.Context, _ *HelmSource, _ bool) error {
 				t.Fatal("OCI push must not run when authentication is invalid")
 				return nil
 			}
@@ -179,4 +180,84 @@ func TestPushCmdRejectsOCIAuthAmbiguity(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestPushCmdRoutesHelmBlockOCI(t *testing.T) {
+	// An OCI registry stored as a Helm source with an oci:// URL must route to
+	// the OCI push, not to the ChartMuseum client.
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	store := NewRegistryDataStore(kubeClient)
+	require.NoError(t, store.AddRegistry(context.Background(), Registry{
+		Name: "helm-oci",
+		Helm: &HelmSource{
+			URL:      "oci://registry.example.com/addons",
+			Username: "stored-user",
+			Token:    "stored-password",
+		},
+	}))
+
+	var captured *HelmSource
+	p := &PushCmd{
+		RepoName:  "helm-oci",
+		Client:    kubeClient,
+		ChartName: "unused-by-test-seam",
+		ociPushFn: func(_ context.Context, source *HelmSource, _ bool) error {
+			captured = source
+			return nil
+		},
+	}
+	require.NoError(t, p.Push(context.Background()))
+	require.NotNil(t, captured, "a Helm block with an oci:// URL must take the OCI route")
+	assert.Equal(t, "oci://registry.example.com/addons", captured.URL)
+	assert.Equal(t, "stored-user", captured.Username)
+	assert.Equal(t, "stored-password", captured.Token,
+		"the token must survive the secret round trip")
+}
+
+func TestGetHelmRepoSkipsOCIRegistries(t *testing.T) {
+	// ChartMuseum cannot speak to an OCI registry. Handing it one would fail deep
+	// inside the upload with a confusing error instead of here.
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	kubeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	store := NewRegistryDataStore(kubeClient)
+	require.NoError(t, store.AddRegistry(context.Background(), Registry{
+		Name: "helm-oci",
+		Helm: &HelmSource{URL: "oci://registry.example.com/addons"},
+	}))
+
+	_, err := GetHelmRepo(context.Background(), kubeClient, "helm-oci")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "oci://", "the OCI URL must not reach the ChartMuseum client")
+}
+
+// TestPushOCI exercises the real pushOCI implementation (the existing
+// push_oci_test.go tests only cover routing via the ociPushFn test seam, never
+// pushOCI itself). A closed loopback port makes the final network push fail
+// fast and deterministically, so the test still walks the whole function --
+// chart loading, packaging, and building the OCI ref -- without depending on
+// a live registry.
+func TestPushOCI(t *testing.T) {
+	t.Run("bad chart path fails before contacting the registry", func(t *testing.T) {
+		p := &PushCmd{ChartName: "/this/this/not/a/chart"}
+		err := p.pushOCI(&HelmSource{URL: "oci://127.0.0.1:1/addon"})
+		require.Error(t, err)
+	})
+
+	t.Run("valid chart pushes to an unreachable registry and returns a wrapped error", func(t *testing.T) {
+		var out bytes.Buffer
+		p := &PushCmd{
+			ChartName:    "testdata/charts/sample-1.0.1.tgz",
+			ChartVersion: "9.9.9",
+			AppVersion:   "9.9.9",
+			Out:          &out,
+		}
+
+		err := p.pushOCI(&HelmSource{URL: "oci://127.0.0.1:1/addon"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to push OCI addon")
+		assert.Contains(t, out.String(), "Pushing")
+	})
 }

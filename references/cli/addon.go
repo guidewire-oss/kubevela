@@ -1054,7 +1054,7 @@ func listAddons(ctx context.Context, clt client.Client, registry string) (*uitab
 			continue
 		}
 		var addonList []*pkgaddon.UIData
-		if !pkgaddon.IsVersionRegistry(r) && !pkgaddon.IsOCIRegistry(r) {
+		if !pkgaddon.IsVersionRegistry(r) {
 			meta, err := r.ListAddonMeta()
 			if err != nil {
 				if registry != "" {

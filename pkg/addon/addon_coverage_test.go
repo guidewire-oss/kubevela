@@ -121,29 +121,50 @@ func TestVersionUnMatchError(t *testing.T) {
 }
 
 func TestToVersionedRegistryConversion(t *testing.T) {
-	t.Run("OCI-only registry converts to OCI versioned registry", func(t *testing.T) {
-		r := Registry{Name: "ecr", OCI: &OCIAddonSource{URL: "oci://reg.example.com/addon"}}
+	backendOf := func(t *testing.T, r Registry) chartBackend {
+		t.Helper()
 		vr, err := ToVersionedRegistry(r)
 		require.NoError(t, err)
-		assert.NotNil(t, vr)
+		reg, ok := vr.(*helmRegistry)
+		require.True(t, ok)
+		return reg.backend
+	}
+
+	t.Run("an oci url selects the OCI backend", func(t *testing.T) {
+		r := Registry{Name: "ecr", Helm: &HelmSource{URL: "oci://reg.example.com/addon"}}
+		assert.IsType(t, &ociHelmBackend{}, backendOf(t, r))
 	})
 
-	t.Run("Helm registry converts to Helm versioned registry", func(t *testing.T) {
+	t.Run("an https url selects the HTTP backend", func(t *testing.T) {
 		r := Registry{Name: "helm", Helm: &HelmSource{URL: "https://charts.example.com"}}
-		vr, err := ToVersionedRegistry(r)
-		require.NoError(t, err)
-		assert.NotNil(t, vr)
+		assert.IsType(t, &httpHelmBackend{}, backendOf(t, r))
 	})
 
-	t.Run("Helm+OCI keeps Helm precedence", func(t *testing.T) {
-		r := Registry{
-			Name: "both",
-			Helm: &HelmSource{URL: "https://charts.example.com"},
-			OCI:  &OCIAddonSource{URL: "oci://reg.example.com/addon"},
-		}
-		vr, err := ToVersionedRegistry(r)
-		require.NoError(t, err)
-		assert.IsType(t, &versionedRegistry{}, vr, "Helm must take precedence over OCI")
+	t.Run("a cm url stays on the HTTP backend", func(t *testing.T) {
+		// ChartMuseum registries are stored with a cm:// URL, which push.go
+		// rewrites to http(s) later. Rejecting the scheme here, or routing it to
+		// OCI, would break those records.
+		r := Registry{Name: "cm", Helm: &HelmSource{URL: "cm://charts.example.com"}}
+		assert.IsType(t, &httpHelmBackend{}, backendOf(t, r))
+	})
+
+	t.Run("mismatched credentials are rejected at construction", func(t *testing.T) {
+		r := Registry{Name: "bad", Helm: &HelmSource{URL: "https://charts.example.com", Token: "tok"}}
+		_, err := ToVersionedRegistry(r)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "token")
+	})
+
+	t.Run("an oci registry never reaches BuildReader", func(t *testing.T) {
+		// The defect this guards: an OCI registry used to fall through to
+		// BuildReader, which has no chart-registry branch and fails with
+		// "registry don't have enough info to build a reader".
+		r := Registry{Name: "ecr", Helm: &HelmSource{URL: "oci://reg.example.com/addon"}}
+		_, err := r.BuildReader()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "don't have enough info")
+		assert.True(t, IsVersionRegistry(r),
+			"chart-backed registries must be classified as version capable")
 	})
 
 	t.Run("git-only registry is not versioned", func(t *testing.T) {
