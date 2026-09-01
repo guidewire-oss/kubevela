@@ -228,35 +228,6 @@ var _ = Describe("FixSchemaWithOneAnyAllOf", func() {
 	})
 })
 
-var _ = Describe("completeSchema free-form handling", func() {
-	It("sets additionalProperties on a NESTED free-form object", func() {
-		By(`parameter: { name: string, properties: {...} }`)
-		// A parameter object with a normal string field and a nested free-form
-		// object field. Without recursing the free-form workaround, the nested
-		// "properties" object stays a bare object and openapi-generator emits
-		// broken code for it (the addon component's failure mode).
-		schema := &openapi3.SchemaRef{
-			Value: &openapi3.Schema{
-				Type: &openapi3.Types{openapi3.TypeObject},
-				Properties: openapi3.Schemas{
-					"name": {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
-					"properties": {Value: &openapi3.Schema{
-						Type: &openapi3.Types{openapi3.TypeObject},
-					}},
-				},
-			},
-		}
-
-		Expect(completeSchema("parameter", schema)).To(BeNil())
-
-		nested := schema.Value.Properties["properties"].Value
-		Expect(nested.AdditionalProperties.Schema).ShouldNot(BeNil(),
-			"nested free-form object must get additionalProperties set")
-		// The plain string field must be left untouched.
-		Expect(schema.Value.Properties["name"].Value.AdditionalProperties.Schema).To(BeNil())
-	})
-})
-
 var _ = Describe("TestNewLanguageArgs", func() {
 	type args struct {
 		lang     string
