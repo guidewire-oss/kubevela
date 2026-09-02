@@ -461,7 +461,7 @@ It is evaluated by listing clusters and matching their labels, which works today
 
 **One kind with a scope field, not three kinds.** All three share parameters, workflow, sources, permissions, `runAs`, retention and status; what differs is `attach`, part of the context, and which steps make sense. That is a mode rather than a different artifact, so splitting them would duplicate a schema to express one field. It also keeps RBAC, discovery and the webhook path singular, and means a future fourth scope is a value rather than another CRD. `None` in particular earns its keep only because it is a value here rather than a second controller with its own schema, RBAC and CLI verb; see [Execution Model](#execution-model) for what that convergence is worth.
 
-`OperationTemplate` avoids that by **mirroring `scope` into a label**, for the same reason [step scope](#workflowstepdefinition-scope) belongs in labels: they are server-side selectable. Discovery then filters with a selector rather than fetching and inspecting, and nobody has to build an index to answer "which of these apply to an Application" — or, for `None`, "which of these need no target at all".
+`OperationTemplate` avoids that by **mirroring `scope` into a label**, for the same reason [step scope](#workflowstepdefinition-scope) belongs in labels: they are server-side selectable. Discovery then filters with a selector rather than fetching and inspecting, and nobody has to build an index to answer "which of these apply to an Application" — or, for `None`, "which of these need no source at all".
 
 Fields that are only meaningful in one scope, `selector` under Application and `allowedComponentTypes` under Component, are rejected in the wrong one at admission; under `None` both are rejected. `clusterSelector` is the exception, being meaningful in every scope, `None` included. That is the same validation obligation as the [parameters union](#parameters), and the same two ways of discharging it.
 
@@ -471,19 +471,19 @@ Fields that are only meaningful in one scope, `selector` under Application and `
 
 ```yaml
 attach:
-  scope: None   # no target, no context, no placement resolution
+  scope: None   # no source, no context, no placement resolution
 ```
 
-**`spec.target` is optional, and only under this scope.** Every other scope requires it; `None` is the one case where an `Operation` may be created without one. When it is absent, the controller skips both steps that a target would otherwise drive: it does not build a CUE context from a target's live status (there is no target to read), and it does not resolve placement from a topology policy (there is nothing to place). The workflow's steps run directly, against whatever they name themselves, exactly as a `WorkflowRun`'s steps do today.
+**`spec.source` is optional, and only under this scope.** Every other scope requires it; `None` is the one case where an `Operation` may be created without one. When it is absent, the controller skips both steps that a source would otherwise drive: it does not build a CUE context from a source's live status (there is no source to read), and it does not resolve placement from a topology policy (there is nothing to place). The workflow's steps run directly, against whatever they name themselves, exactly as a `WorkflowRun`'s steps do today.
 
-**This is parity, not a reduced mode.** Permissions, discovery, retention, `runAs`, and the CLI are unchanged: an unattached operation is checked against the invoker exactly as an attached one is, [`clusterSelector`](#attachment) still restricts which clusters an operator may name in `spec.clusters` (there is no target to fan out over, but nothing stops an operator asking for a step to run in more than one), and it shows up in `vela operation list` and `status` like any other. What it does not get, because there is nothing for it to get, is a populated `context.output`/`context.outputs` and automatic multi-cluster placement — a step wanting either has to be pointed at a target instead, which is what the other two scopes are for.
+**This is parity, not a reduced mode.** Permissions, discovery, retention, `runAs`, and the CLI are unchanged: an unattached operation is checked against the invoker exactly as an attached one is, [`clusterSelector`](#attachment) still restricts which clusters an operator may name in `spec.clusters` (there is no source to fan out over, but nothing stops an operator asking for a step to run in more than one), and it shows up in `vela operation list` and `status` like any other. What it does not get, because there is nothing for it to get, is a populated `context.output`/`context.outputs` and automatic multi-cluster placement — a step wanting either has to be pointed at a source instead, which is what the other two scopes are for.
 
 **Why this, and not a fourth CRD or an upstream change to `WorkflowRun`.** `WorkflowRun` is delivered as an optional addon precisely so an install can omit it (KEP-2.7); extending its type would either force every install to carry the controller or leave `Operation` unable to rely on it being present, and the type itself lives in a separately-released module (`github.com/kubevela/workflow`), so the change would need upstream coordination before it reached here at all. `scope: None` needs none of that: it is a value on a type this KEP already introduces, checked by the webhook this KEP already specifies, so the cost of the unattached case is the cost of making `None` a first-class value rather than a fourth CRD, a second controller, or a second release train.
 
 Two enforcement points, serving the two requirements attachment exists for:
 
 - **Discovery**, `vela operation list --app <name>` and VelaUX offer only the templates whose selector matches, so a consumer can ask what can be done to a component and be told. This is requirement 2, and it is the primary purpose of the selector rather than a by-product of it.
-- **Admission** rejects an `Operation` whose target does not match. An operator is never offered a failover for something with no replica to promote, and cannot construct one by hand either.
+- **Admission** rejects an `Operation` whose source does not match. An operator is never offered a failover for something with no replica to promote, and cannot construct one by hand either.
 
 Attachment is therefore doing two jobs that look similar and are not: describing what an operation *understands* (which component types expose the status shape it reads), and controlling what it is *offered for*. Both are expressed here because they coincide in the common case, but a template that understands a type it should not be routinely offered on, a destructive repair procedure, say, is a real case, and one the selector should be able to express without widening what admission permits.
 
@@ -500,21 +500,21 @@ metadata:
 spec:
   template: s3-backup
 
-  # target names the Component or Application this operation attaches to.
+  # source names the Component or Application this operation attaches to.
   # Required for every scope except None, where it is omitted entirely:
-  # see [Scope: None](#scope-none-the-unattached-case) and [Target](#target).
-  target:
+  # see [Scope: None](#scope-none-the-unattached-case) and [Source](#source).
+  source:
     app: payments
     component: payments-db
 
-  # clusters restricts which of the target's clusters are operated on.
-  # Omitted means every cluster the target is dispatched to. Under scope
-  # None there is no target to dispatch from, so clusters names them directly.
+  # clusters restricts which of the source's clusters are operated on.
+  # Omitted means every cluster the source is dispatched to. Under scope
+  # None there is no source to dispatch from, so clusters names them directly.
   clusters: [eu-west-1, eu-central-1]
 
 
   # Flags only. Nothing here describes the bucket: the steps read that from
-  # the target's own context. With the optional expression layer, these values
+  # the source's own context. With the optional expression layer, these values
   # may themselves be expressions; in the baseline they are literals.
   parameters:
     retentionDays: 90
@@ -527,15 +527,15 @@ spec:
 
 ```
 
-### Target
+### Source
 
-`spec.target` names the containment path to what an operation acts on: `app` names the owning Application, and `component` names a Component within it, required or omitted according to the template's `attach.scope`.
+`spec.source` names the containment path to what an operation acts on: `app` names the owning Application, and `component` names a Component within it, required or omitted according to the template's `attach.scope`.
 
-| `attach.scope` | `target.app` | `target.component` |
+| `attach.scope` | `source.app` | `source.component` |
 |---|---|---|
 | `Component` | required | required |
 | `Application` | required | omitted |
-| `None` | `target` itself is omitted | — |
+| `None` | `source` itself is omitted | — |
 
 A component's name is only unique within its Application, not across a namespace, so `app` is required rather than optional: without it, `context.appName` and `context.componentName` (see [CUE Context](#cue-context)) cannot be resolved, and neither can the CLI's own `--app`/`--component` pair (see [CLI](#cli)).
 
@@ -653,8 +653,8 @@ The operation-controller follows the same sequence the application-controller us
 ```go
 // 1. Build the CUE process context. This is what steps see as `context`.
 //    The Application builds it from the app; the Operation builds it from the
-//    target, plus the parameters fixed on the CR.
-pCtx := velaprocess.NewContext(generateContextDataFromOperation(ctx, op, target))
+//    source, plus the parameters fixed on the CR.
+pCtx := velaprocess.NewContext(generateContextDataFromOperation(ctx, op, source))
 
 // 1a. Attach the identity the operation runs as, resolved from the template's
 //     runAs mode. Everything that touches the cluster inherits it.
@@ -703,7 +703,7 @@ Four points where an Operation differs:
 
 **Status round-trips through `WorkflowRunStatus`.** `copyWorkflowStatusToInstance` restores phase, suspend state, step statuses, and the context backend reference across reconciles, exactly as the Application does, which is what makes suspend/resume and re-execution work without bespoke state. Each entry in `Operation.status.workflows[]` stores one verbatim; the cluster, children and attempt history sit alongside rather than replacing it.
 
-**The execution identity is explicit.** The application-controller wraps its context with `auth.ContextWithUserInfo` before applying (`generator.go`), sourced from annotations on the Application. An Operation resolves the same annotations, but the value comes from [`runAs`](#choosing-the-identity-per-template) on the template rather than from the target: a named service account, the invoker, or the invoker regardless if the cluster gate demands it.
+**The execution identity is explicit.** The application-controller wraps its context with `auth.ContextWithUserInfo` before applying (`generator.go`), sourced from annotations on the Application. An Operation resolves the same annotations, but the value comes from [`runAs`](#choosing-the-identity-per-template) on the template rather than from the source: a named service account, the invoker, or the invoker regardless if the cluster gate demands it.
 
 **Terminal handling differs, and only here.** The Application maps `WorkflowStateSucceeded` back to `ApplicationRunning` and keeps reconciling. The Operation maps it to `Succeeded`, records `completionTime`, stops, and lets `spec.retention` govern the record. This is the entire behavioural difference between the two controllers.
 
@@ -1027,7 +1027,7 @@ Shell command substitution in a `command:` array has the same problem and the sa
 
 ## CUE Context
 
-**The context is the existing one, populated for the target.** No `context.target` namespace, no parallel vocabulary. `velaprocess.ContextData` (`pkg/cue/process/handle.go`) already carries `AppName`, `CompName`, `AppLabels`, `AppAnnotations`, `Cluster` and `Output`, and `process.NewContext` maps `CompName` to `context.componentName`. An Operation fills the same struct with its target's values.
+**The context is the existing one, populated for the source.** No `context.source` namespace, no parallel vocabulary. `velaprocess.ContextData` (`pkg/cue/process/handle.go`) already carries `AppName`, `CompName`, `AppLabels`, `AppAnnotations`, `Cluster` and `Output`, and `process.NewContext` maps `CompName` to `context.componentName`. An Operation fills the same struct with its source's values.
 
 The payoff is that a `ComponentDefinition` author who has written a `healthPolicy` against `context.output.status` already knows how to write an operation. The spelling is identical, and snippets move between the two unchanged.
 
@@ -1534,7 +1534,7 @@ metadata:
   namespace: payments-prod
 spec:
   template: payments-backup
-  target:
+  source:
     app: payments
   clusters: [eu-west-1, eu-central-1]
   parameters:
@@ -2565,7 +2565,7 @@ sre-tools
 ├── Application/payments
 └── Operation/backup-payments-0806
       template: s3-backup        -> resolves to vela-system/s3-backup
-      target:   payments         -> must be in sre-tools, targets stay local
+      source:   payments         -> must be in sre-tools, sources stay local
 ```
 
 **3. Resolving the bare name locally is the bug.** If the controller simply copies `op-backup` onto the `Operation` as a service-account name, `GetUserInfoInAnnotation` builds the subject from *that object's* namespace:
@@ -2666,4 +2666,4 @@ The existing `skipUsers` list on the handler covers controller and system identi
 
 2. **Whether reconciliation pausing needs finer granularity than an Application.** See [Drift Correction During an Operation](#drift-correction-during-an-operation). Pausing is an Application-level concern today, so `suspendTargetReconciliation` on an operation against one component also stops drift correction for every other component in that Application. A pause scoped to the target component would be the right granularity and does not exist. The question is whether that granularity is worth building, and whether it belongs here or in the Application controller, since nothing about the need is specific to Operations.
 
-3. **Whether to support Trait-scoped operations.** [`target`](#target)'s `app`/`component` path leaves room for a `trait` field naming a Trait within `target.component`, but that does not answer whether such a scope should exist: a Trait's status shape is generally thinner than a Component's, some traits have no independent lifecycle to operate on, and `attach.scope` would need another value with its own admission and discovery rules to match. This KEP takes no position on whether Trait scope is worth building.
+3. **Whether to support Trait-scoped operations.** [`source`](#source)'s `app`/`component` path leaves room for a `trait` field naming a Trait within `source.component`, but that does not answer whether such a scope should exist: a Trait's status shape is generally thinner than a Component's, some traits have no independent lifecycle to operate on, and `attach.scope` would need another value with its own admission and discovery rules to match. This KEP takes no position on whether Trait scope is worth building.

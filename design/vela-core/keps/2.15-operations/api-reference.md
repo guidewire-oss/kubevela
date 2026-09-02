@@ -9,7 +9,7 @@ Both kinds use `apiVersion: core.oam.dev/v2alpha1`.
 This reference reflects [Option 1](./README.md#option-1-static-template-context-read-by-the-step-definition)
 (the KEP's baseline): `OperationTemplate` as static YAML with a literal
 `workflow: WorkflowSpec`, no `sources[]` field. The `OperationParameters`,
-`OperationTarget`, `Operation`, and `status` shapes below hold under
+`OperationSource`, `Operation`, and `status` shapes below hold under
 [Option 3](./README.md#option-3-expressions-carry-context-into-generic-steps)
 too, but Option 3 adds a `spec.sources[]` field to **both** `OperationTemplate`
 and `Operation` (declarative source bindings, consumed via KEP-2.16's bounded
@@ -51,7 +51,7 @@ Namespaced. No status subresource — it's a template, not a running thing.
 under the wrong scope, and both are rejected under `scope: None`.
 `clusterSelector` is the one field valid in all three.
 
-Under `scope: None`, `spec.target` on the `Operation` is omitted entirely —
+Under `scope: None`, `spec.source` on the `Operation` is omitted entirely —
 see [Scope: None, the unattached case](./README.md#scope-none-the-unattached-case).
 
 ### `OperationParameters`
@@ -86,21 +86,21 @@ not a reused one.
 | Field | Type | Required | Notes |
 | - | - | - | - |
 | `template` | string | yes | names the `OperationTemplate` to invoke |
-| `target` | [`OperationTarget`](#operationtarget) | required for every scope except `None`, where it must be omitted entirely | what this operation acts on |
-| `clusters` | `[]string` | no | restricts which of the target's clusters are operated on; omitted means every cluster the target is dispatched to. Under `scope: None` there is no target to dispatch from, so `clusters` names them directly |
-| `parameters` | raw values (schema-validated per `OperationParameters`) | no | flags only — anything describing the target is read from context by the steps themselves |
+| `source` | [`OperationSource`](#operationsource) | required for every scope except `None`, where it must be omitted entirely | what this operation acts on |
+| `clusters` | `[]string` | no | restricts which of the source's clusters are operated on; omitted means every cluster the source is dispatched to. Under `scope: None` there is no source to dispatch from, so `clusters` names them directly |
+| `parameters` | raw values (schema-validated per `OperationParameters`) | no | flags only — anything describing the source is read from context by the steps themselves |
 | `sources` | `[]SourceBinding` (KEP-2.16 shape, reused verbatim) | no | **Option 3 only** — declarative source bindings consumable from `spec.parameters` via `$(source["name"].field)` |
 | `retention.ttlAfterFinished` | duration | no | deletes the `Operation` record after this delay once finished |
 | `retention.onFailure` | string, e.g. `Retain` | no | overrides the TTL for failed runs so a failure stays available for diagnosis |
 
-### `OperationTarget`
+### `OperationSource`
 
-See [Target](./README.md#target).
+See [Source](./README.md#source).
 
 | Field | Type | Required | Notes |
 | - | - | - | - |
 | `app` | string | yes | the owning Application's name |
-| `component` | string | required for `attach.scope: Component`; omitted for `attach.scope: Application`, which targets the Application itself | the target Component's name within `app` |
+| `component` | string | required for `attach.scope: Component`; omitted for `attach.scope: Application`, which targets the Application itself | the source Component's name within `app` |
 
 ### `status`
 
@@ -178,7 +178,7 @@ metadata:
   namespace: payments-prod
 spec:
   template: s3-backup
-  target:
+  source:
     app: payments
     component: payments-db
   clusters: [eu-west-1, eu-central-1]
@@ -193,4 +193,4 @@ spec:
 For the `scope: Application` and `scope: None` shapes, see the KEP's own
 [Application-scope example](./README.md#worked-example) and
 [`scope: None`](./README.md#scope-none-the-unattached-case) section
-respectively — both follow the same `attach`/`target` pairing shown above.
+respectively — both follow the same `attach`/`source` pairing shown above.
