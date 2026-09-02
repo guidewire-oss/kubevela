@@ -87,6 +87,11 @@ spec:
                             key:
                               type: string
                             operator:
+                              enum:
+                              - In
+                              - NotIn
+                              - Exists
+                              - DoesNotExist
                               type: string
                             values:
                               items:

@@ -140,6 +140,22 @@ func validateOperationClusterFlag(cluster string) error {
 	return nil
 }
 
+// validateOperationSourceFlags rejects an explicitly-empty --component or
+// --application (e.g. `--application=""`), which cobra makes
+// indistinguishable from an omitted flag once read as a plain string --
+// without this check, `run` would silently take the None-scope path
+// (source stays nil) instead of erroring on what was clearly meant as a
+// value.
+func validateOperationSourceFlags(cmd *cobra.Command, componentRef, appRef string) error {
+	if cmd.Flags().Changed(FlagComponent) && componentRef == "" {
+		return fmt.Errorf("--component must not be empty")
+	}
+	if cmd.Flags().Changed(FlagApplication) && appRef == "" {
+		return fmt.Errorf("--application must not be empty")
+	}
+	return nil
+}
+
 // validateOperationRestartOnlyFlag rejects flag combinations `restart`
 // doesn't support: --only without --step, and --only itself, since
 // restartFromStep (pkg/workflow/operation) always cascades to every step
@@ -424,6 +440,11 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 				if scope != v2alpha1.OperationAttachScopeComponent {
 					continue
 				}
+				// A Component-scoped template carrying a selector is
+				// invalid and the controller rejects it at resolveTemplate.
+				if tmpl.Spec.Attach.Selector != nil {
+					continue
+				}
 				if allowed := tmpl.Spec.Attach.AllowedComponentTypes; len(allowed) > 0 {
 					matched := false
 					for _, t := range allowed {
@@ -440,6 +461,12 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 				if scope != v2alpha1.OperationAttachScopeApplication {
 					continue
 				}
+				// An Application-scoped template carrying
+				// allowedComponentTypes is invalid and the controller
+				// rejects it at resolveTemplate.
+				if len(tmpl.Spec.Attach.AllowedComponentTypes) > 0 {
+					continue
+				}
 				if sel := tmpl.Spec.Attach.Selector; sel != nil {
 					if err := opoperation.MatchesApplicationSelector(app, sel); err != nil {
 						continue
@@ -447,6 +474,12 @@ func listAllowedOperationTemplates(ctx context.Context, k8sClient client.Client,
 				}
 			default: // operationListModeNone
 				if scope != v2alpha1.OperationAttachScopeNone {
+					continue
+				}
+				// A None-scoped template carrying either field is invalid
+				// and the controller rejects it at resolveTemplate -- don't
+				// offer it as if it were runnable.
+				if len(tmpl.Spec.Attach.AllowedComponentTypes) > 0 || tmpl.Spec.Attach.Selector != nil {
 					continue
 				}
 			}
@@ -576,6 +609,10 @@ func NewOperationRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.C
 			}
 			params, err := parseOperationParams(paramFlags)
 			if err != nil {
+				return err
+			}
+
+			if err := validateOperationSourceFlags(cmd, componentRef, appRef); err != nil {
 				return err
 			}
 

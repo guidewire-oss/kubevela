@@ -39,8 +39,10 @@ type OperationSource struct {
 	App string `json:"app"`
 
 	// Component is the name of the source Component within App. Omit to
-	// source from the Application as a whole.
+	// source from the Application as a whole; an explicit empty string is
+	// rejected at admission rather than silently treated as omitted.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	Component *string `json:"component,omitempty"`
 }
 

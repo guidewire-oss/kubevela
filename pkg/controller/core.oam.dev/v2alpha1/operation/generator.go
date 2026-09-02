@@ -240,9 +240,15 @@ func (r *Reconciler) resolveTemplate(ctx context.Context, op *v2alpha1.Operation
 	case v2alpha1.OperationAttachScopeComponent:
 		// AllowedComponentTypes is checked in resolveSource, once the
 		// source's component type is known.
+		if tmpl.Spec.Attach.Selector != nil {
+			return nil, fmt.Errorf("operation template %q: selector is not valid under attach.scope %q", tmpl.Name, v2alpha1.OperationAttachScopeComponent)
+		}
 	case v2alpha1.OperationAttachScopeApplication:
 		// Selector is checked in resolveSource, once the source
 		// Application is resolved.
+		if len(tmpl.Spec.Attach.AllowedComponentTypes) > 0 {
+			return nil, fmt.Errorf("operation template %q: allowedComponentTypes is not valid under attach.scope %q", tmpl.Name, v2alpha1.OperationAttachScopeApplication)
+		}
 	case v2alpha1.OperationAttachScopeNone:
 		if len(tmpl.Spec.Attach.AllowedComponentTypes) > 0 {
 			return nil, fmt.Errorf("operation template %q: allowedComponentTypes is not valid under attach.scope %q", tmpl.Name, tmpl.Spec.Attach.Scope)

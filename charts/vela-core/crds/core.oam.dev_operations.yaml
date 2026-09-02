@@ -96,7 +96,9 @@ spec:
                   component:
                     description: |-
                       Component is the name of the source Component within App. Omit to
-                      source from the Application as a whole.
+                      source from the Application as a whole; an explicit empty string is
+                      rejected at admission rather than silently treated as omitted.
+                    minLength: 1
                     type: string
                 required:
                 - app
@@ -185,6 +187,11 @@ spec:
                                 key:
                                   type: string
                                 operator:
+                                  enum:
+                                  - In
+                                  - NotIn
+                                  - Exists
+                                  - DoesNotExist
                                   type: string
                                 values:
                                   items:

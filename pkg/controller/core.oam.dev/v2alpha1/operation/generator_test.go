@@ -137,6 +137,32 @@ func TestResolveTemplateNoneScopeRejectsComponentFields(t *testing.T) {
 	assert.ErrorContains(t, err, "allowedComponentTypes is not valid")
 }
 
+func TestResolveTemplateRejectsFieldsWrongForScope(t *testing.T) {
+	scheme := newTestScheme(t)
+	componentWithSelector := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "component-with-selector", Namespace: "myns"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:    v2alpha1.OperationAttachScopeComponent,
+			Selector: &v2alpha1.OperationApplicationSelector{MatchLabels: map[string]string{"env": "prod"}},
+		}},
+	}
+	applicationWithAllowedTypes := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "application-with-allowed-types", Namespace: "myns"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:                 v2alpha1.OperationAttachScopeApplication,
+			AllowedComponentTypes: []string{"webservice"},
+		}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(componentWithSelector, applicationWithAllowedTypes).Build()
+	r := &Reconciler{Client: cli}
+
+	_, err := r.resolveTemplate(context.Background(), &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "component-with-selector"}})
+	assert.ErrorContains(t, err, "selector is not valid")
+
+	_, err = r.resolveTemplate(context.Background(), &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "application-with-allowed-types"}})
+	assert.ErrorContains(t, err, "allowedComponentTypes is not valid")
+}
+
 func TestResolveSourceNoneScope(t *testing.T) {
 	r := &Reconciler{}
 	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}}

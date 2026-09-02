@@ -43,4 +43,10 @@ func TestMatchesApplicationSelector(t *testing.T) {
 	assert.Error(t, MatchesApplicationSelector(app, &v2alpha1.OperationApplicationSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 		{Key: "bogus", Operator: metav1.LabelSelectorOpExists},
 	}}))
+	assert.NoError(t, MatchesApplicationSelector(app, &v2alpha1.OperationApplicationSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+		{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"prod"}},
+	}}))
+	assert.Error(t, MatchesApplicationSelector(app, &v2alpha1.OperationApplicationSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+		{Key: "env", Operator: metav1.LabelSelectorOpIn, Values: []string{"staging"}},
+	}}))
 }

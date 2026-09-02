@@ -150,6 +150,30 @@ func TestValidateOperationRestartOnlyFlag(t *testing.T) {
 	assert.ErrorContains(t, err, "step1")
 }
 
+func TestValidateOperationSourceFlags(t *testing.T) {
+	newCmd := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "run"}
+		cmd.Flags().StringP(FlagComponent, "c", "", "")
+		cmd.Flags().String(FlagApplication, "", "")
+		return cmd
+	}
+
+	cmd := newCmd()
+	assert.NoError(t, validateOperationSourceFlags(cmd, "", ""), "neither flag given: fine, None scope")
+
+	cmd = newCmd()
+	require.NoError(t, cmd.Flags().Set(FlagComponent, "myapp/mycomp"))
+	assert.NoError(t, validateOperationSourceFlags(cmd, "myapp/mycomp", ""))
+
+	cmd = newCmd()
+	require.NoError(t, cmd.Flags().Set(FlagComponent, ""))
+	assert.ErrorContains(t, validateOperationSourceFlags(cmd, "", ""), "--component must not be empty")
+
+	cmd = newCmd()
+	require.NoError(t, cmd.Flags().Set(FlagApplication, ""))
+	assert.ErrorContains(t, validateOperationSourceFlags(cmd, "", ""), "--application must not be empty")
+}
+
 func TestSplitComponentRef(t *testing.T) {
 	app, name, err := splitComponentRef("myapp/mycomp")
 	require.NoError(t, err)
@@ -273,4 +297,42 @@ func TestListAllowedOperationTemplatesApplicationAndNoneScope(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, templates, 1)
 	assert.Equal(t, "notify", templates[0].Name)
+}
+
+func TestListAllowedOperationTemplatesExcludesInvalidForScope(t *testing.T) {
+	scheme := newOperationTestScheme(t)
+	componentWithSelector := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "component-with-selector", Namespace: "default"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:    v2alpha1.OperationAttachScopeComponent,
+			Selector: &v2alpha1.OperationApplicationSelector{MatchLabels: map[string]string{"env": "prod"}},
+		}},
+	}
+	applicationWithAllowedTypes := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "application-with-allowed-types", Namespace: "default"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:                 v2alpha1.OperationAttachScopeApplication,
+			AllowedComponentTypes: []string{"webservice"},
+		}},
+	}
+	noneWithAllowedTypes := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "none-with-allowed-types", Namespace: "default"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:                 v2alpha1.OperationAttachScopeNone,
+			AllowedComponentTypes: []string{"webservice"},
+		}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(componentWithSelector, applicationWithAllowedTypes, noneWithAllowedTypes).Build()
+
+	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeComponent, "webservice", nil)
+	require.NoError(t, err)
+	assert.Empty(t, templates, "a Component-scoped template carrying a selector would be rejected by the controller, so it must not be offered")
+
+	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeApplication, "", &v1beta1.Application{})
+	require.NoError(t, err)
+	assert.Empty(t, templates, "an Application-scoped template carrying allowedComponentTypes would be rejected by the controller, so it must not be offered")
+
+	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeNone, "", nil)
+	require.NoError(t, err)
+	assert.Empty(t, templates, "a None-scoped template carrying allowedComponentTypes would be rejected by the controller, so it must not be offered")
 }
