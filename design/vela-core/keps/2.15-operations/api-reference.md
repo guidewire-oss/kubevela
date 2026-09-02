@@ -6,6 +6,12 @@ for rationale and behavior; this page just tabulates the shape.
 
 Both kinds use `apiVersion: core.oam.dev/v2alpha1`.
 
+> **Don't confuse `source` with `sources[]`.** `spec.source` (singular, this
+> KEP) is what an `Operation` acts on — a Component or Application.
+> `spec.sources[]` (plural, KEP-2.16, Option 3 only) is an unrelated
+> declarative-data-binding list. Coincidentally similar names, different
+> concepts.
+
 This reference reflects [Option 1](./README.md#option-1-static-template-context-read-by-the-step-definition)
 (the KEP's baseline): `OperationTemplate` as static YAML with a literal
 `workflow: WorkflowSpec`, no `sources[]` field. The `OperationParameters`,
@@ -32,7 +38,7 @@ Namespaced. No status subresource — it's a template, not a running thing.
 | `attach` | [`OperationAttach`](#operationattach) | yes | what this template may be run against |
 | `parameters` | [`OperationParameters`](#operationparameters) | no | what an operator may supply at invocation |
 | `workflow` | `WorkflowSpec` (`github.com/kubevela/pkg`, reused verbatim) | yes | the steps this template runs — this shape is Option 1/3; see the note above for Option 2 |
-| `sources` | `[]SourceBinding` (KEP-2.16 shape, reused verbatim) | no | **Option 3 only** — declarative source bindings consumable from step properties via `$(source["name"].field)` |
+| `sources` | `[]SourceBinding` (KEP-2.16 shape, reused verbatim) | no | **Option 3 only, unrelated to `Operation.spec.source` below** — declarative source bindings consumable from step properties via `$(source["name"].field)` |
 | `runAs` | [`RunAs`](#runas) | no | identity the operation executes under; defaults to `mode: Platform` with no named account |
 | `requireDirectGrant` | bool, default `false` | no | if `true`, this template cannot be reached transitively as a dispatched child — the invoker must hold a grant on it directly, see [Requiring a direct grant instead](./README.md#requiring-a-direct-grant-instead) |
 
@@ -86,10 +92,10 @@ not a reused one.
 | Field | Type | Required | Notes |
 | - | - | - | - |
 | `template` | string | yes | names the `OperationTemplate` to invoke |
-| `source` | [`OperationSource`](#operationsource) | required for every scope except `None`, where it must be omitted entirely | what this operation acts on |
+| `source` | [`OperationSource`](#operationsource) | required for every scope except `None`, where it must be omitted entirely | what this operation acts on — not to be confused with `sources[]` below |
 | `clusters` | `[]string` | no | restricts which of the source's clusters are operated on; omitted means every cluster the source is dispatched to. Under `scope: None` there is no source to dispatch from, so `clusters` names them directly |
 | `parameters` | raw values (schema-validated per `OperationParameters`) | no | flags only — anything describing the source is read from context by the steps themselves |
-| `sources` | `[]SourceBinding` (KEP-2.16 shape, reused verbatim) | no | **Option 3 only** — declarative source bindings consumable from `spec.parameters` via `$(source["name"].field)` |
+| `sources` | `[]SourceBinding` (KEP-2.16 shape, reused verbatim) | no | **Option 3 only, unrelated to `source` above** — declarative source bindings consumable from `spec.parameters` via `$(source["name"].field)` |
 | `retention.ttlAfterFinished` | duration | no | deletes the `Operation` record after this delay once finished |
 | `retention.onFailure` | string, e.g. `Retain` | no | overrides the TTL for failed runs so a failure stays available for diagnosis |
 
@@ -106,7 +112,7 @@ See [Source](./README.md#source).
 
 | Field | Type | Notes |
 | - | - | - |
-| `phase` | `Pending \| Running \| Succeeded \| Failed \| Cancelled` | |
+| `phase` | `Pending \| Running \| Succeeded \| Failed \| Suspended \| Cancelled` | |
 | `startTime` / `completionTime` | `metav1.Time` | |
 | `template` | object (`name`, `hash`, `spec`) | the template as copied at creation, with expressions intact; the snapshot is reused while values resolve according to their documented timing |
 | `resolved.parameters` | object | the parameters actually used |

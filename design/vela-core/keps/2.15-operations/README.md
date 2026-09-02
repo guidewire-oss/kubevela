@@ -529,7 +529,7 @@ spec:
 
 ### Source
 
-`spec.source` names the containment path to what an operation acts on: `app` names the owning Application, and `component` names a Component within it, required or omitted according to the template's `attach.scope`.
+`spec.source` names the containment path to what an operation acts on: `app` names the owning Application, and `component` names a Component within it, required or omitted according to the template's `attach.scope`. Not to be confused with `spec.sources[]` ([Option 3](#option-3-in-detail-expression-based-inputs) only, KEP-2.16's unrelated declarative-data-binding list).
 
 | `attach.scope` | `source.app` | `source.component` |
 |---|---|---|
@@ -699,7 +699,7 @@ state, err := executor.New(instance).ExecuteRunners(authCtx, runners)
 
 Four points where an Operation differs:
 
-**The process context is built from the target, not the app.** `generateContextDataFromOperation` is the analogue of `generateContextDataFromApp`, and it is the single place the OAM context the KEP is built on gets assembled: target output and outputs from the health-assessment routine, the operation's parameters, cluster metadata. Sources are not in it. They only exist at all under [Option 3](#option-3-in-detail-expression-based-inputs), and there they resolve per step as their expressions are evaluated rather than being assembled into the context up front.
+**The process context is built from the source, not the app.** `generateContextDataFromOperation` is the analogue of `generateContextDataFromApp`, and it is the single place the OAM context the KEP is built on gets assembled: `spec.source`'s output and outputs from the health-assessment routine, the operation's parameters, cluster metadata. `spec.sources[]` bindings (a different, unrelated field — see [Source](#source)) are not in it. They only exist at all under [Option 3](#option-3-in-detail-expression-based-inputs), and there they resolve per step as their expressions are evaluated rather than being assembled into the context up front.
 
 **Status round-trips through `WorkflowRunStatus`.** `copyWorkflowStatusToInstance` restores phase, suspend state, step statuses, and the context backend reference across reconciles, exactly as the Application does, which is what makes suspend/resume and re-execution work without bespoke state. Each entry in `Operation.status.workflows[]` stores one verbatim; the cluster, children and attempt history sit alongside rather than replacing it.
 
@@ -1053,7 +1053,7 @@ The solid path is the only part that does any work: the target is rendered and i
 | `context.name` | the `Operation`'s name, the thing this execution is about | all three | existing (`CompName`) |
 | `context.operationName` | `Operation` CR name | all three | **new** |
 | `context.operationParams` | the `Operation`'s resolved parameters, validated against the template's schema | all three | **new** |
-| `context.operationScope` | `Component`, `Application` or `Cluster`, from `attach.scope` | all three | **new** |
+| `context.operationScope` | `Component`, `Application` or `None`, from `attach.scope` | all three | **new** |
 | `context.startTime` | ISO8601 timestamp when the Operation was triggered | all three | **new** |
 | `context.stepName` | the name of the step currently executing | all three | existing |
 | `context.appName` | owning Application name | Component, Application | existing |
