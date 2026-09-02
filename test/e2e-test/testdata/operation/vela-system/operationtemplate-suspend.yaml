@@ -1,10 +1,7 @@
-# Test fixture for KEP-2.15 re-execution (see RETRY_PLAN.md): exercises
-# `vela operation suspend`/`resume`. Uses vela-core's own built-in `suspend`
-# step type (charts/vela-core/templates/defwithtemplate/suspend.yaml,
-# resolved from vela-system same as our own fixtures) with no `duration`,
-# so it suspends unconditionally and deterministically the moment it runs --
-# no race to catch an arbitrary step mid-execution, unlike ok-step/
-# flaky-step's near-instant Jobs.
+# Test fixture for KEP-2.15 re-execution: exercises `vela operation
+# suspend`/`resume`. Uses vela-core's own built-in `suspend` step type with
+# no `duration`, so it suspends unconditionally and deterministically the
+# moment it runs.
 apiVersion: core.oam.dev/v2alpha1
 kind: OperationTemplate
 metadata:

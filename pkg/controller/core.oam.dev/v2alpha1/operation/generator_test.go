@@ -402,3 +402,65 @@ func TestStepRestartAttemptHistoryRoundTrip(t *testing.T) {
 	assert.EqualValues(t, 1, finalStep3.Attempts[0].AttemptNumber)
 	assert.EqualValues(t, 2, finalStep3.Attempts[1].AttemptNumber)
 }
+
+// TestResolveOperationParams covers CUE schema unification against
+// Operation.spec.parameters, including defaulting and required-field checks.
+func TestResolveOperationParams(t *testing.T) {
+	t.Run("no declared schema: caller's raw values pass through unvalidated", func(t *testing.T) {
+		params, err := resolveOperationParams(nil, &runtime.RawExtension{Raw: []byte(`{"shouldFail":"true"}`)})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"shouldFail": "true"}, params)
+	})
+
+	t.Run("no declared schema, no caller value: nil params, not an error", func(t *testing.T) {
+		params, err := resolveOperationParams(nil, nil)
+		require.NoError(t, err)
+		assert.Nil(t, params)
+	})
+
+	tmplParams := &v2alpha1.OperationTemplateParameters{
+		CUE: `parameter: {
+	shouldFail: *"false" | string
+}`,
+	}
+
+	t.Run("declared default applies when the caller omits the parameter", func(t *testing.T) {
+		params, err := resolveOperationParams(tmplParams, nil)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"shouldFail": "false"}, params)
+	})
+
+	t.Run("declared default applies when the caller sends an empty object", func(t *testing.T) {
+		params, err := resolveOperationParams(tmplParams, &runtime.RawExtension{Raw: []byte(`{}`)})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"shouldFail": "false"}, params)
+	})
+
+	t.Run("caller-supplied value overrides the declared default", func(t *testing.T) {
+		params, err := resolveOperationParams(tmplParams, &runtime.RawExtension{Raw: []byte(`{"shouldFail":"true"}`)})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"shouldFail": "true"}, params)
+	})
+
+	requiredParams := &v2alpha1.OperationTemplateParameters{
+		CUE: `parameter: {
+	reason: string
+}`,
+	}
+
+	t.Run("a required parameter (no default) left unset is an error, not a silently-missing field", func(t *testing.T) {
+		_, err := resolveOperationParams(requiredParams, nil)
+		assert.Error(t, err)
+	})
+
+	t.Run("a required parameter satisfied by the caller is passed through", func(t *testing.T) {
+		params, err := resolveOperationParams(requiredParams, &runtime.RawExtension{Raw: []byte(`{"reason":"e2e-test-restart"}`)})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"reason": "e2e-test-restart"}, params)
+	})
+
+	t.Run("malformed spec.parameters JSON is an error", func(t *testing.T) {
+		_, err := resolveOperationParams(tmplParams, &runtime.RawExtension{Raw: []byte(`not-json`)})
+		assert.Error(t, err)
+	})
+}

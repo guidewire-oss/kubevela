@@ -1,8 +1,7 @@
-# Test fixture for KEP-2.15 re-execution (see RETRY_PLAN.md). Succeeds or
-# fails based on operationParams.shouldFail, so a restart has something to
-# actually retry. Pairs with workflowstepdefinition-ok.yaml. Makes no
-# Kubernetes API calls from inside its Job, so it needs no ServiceAccount/
-# RBAC of its own.
+# Test fixture for KEP-2.15 re-execution. Succeeds or fails based on
+# operationParams.shouldFail, so a restart has something to actually retry.
+# Pairs with workflowstepdefinition-ok.yaml. Pure CUE, no Job (e2e-only for
+# now; expected to move to envtest).
 apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
@@ -15,67 +14,13 @@ spec:
     cue:
       template: |
         import (
-        	"vela/kube"
         	"vela/builtin"
-        	"vela/util"
         )
-        job: kube.#Apply & {
-        	$params: value: {
-        		apiVersion: "batch/v1"
-        		kind:       "Job"
-        		metadata: {
-        			// context.stepSessionID changes each time this step (re)starts,
-        			// so a restart creates a brand-new Job instead of colliding
-        			// with the failed one -- Jobs are immutable once created.
-        			name:      "\(context.name)-\(context.stepName)-\(context.stepSessionID)"
-        			namespace: "vela-system"
-        			labels: "operation.oam.dev/template": "flaky-step"
-        		}
-        		spec: {
-        			// No Job-level retries: one failed pod should surface to the
-        			// workflow step immediately, so it's `vela operation restart`
-        			// doing the retrying here, not the Job's own backoff.
-        			backoffLimit:            0
-        			ttlSecondsAfterFinished: 300
-        			template: {
-        				metadata: labels: "workflow.oam.dev/step-name": "\(context.name)-\(context.stepName)"
-        				spec: {
-        					containers: [
-        						{
-        							name:  "flaky"
-        							image: "busybox"
-        							command: ["sh", "-c", "if [ \"$SHOULD_FAIL\" = \"true\" ]; then echo 'failing on purpose (shouldFail=true)'; exit 1; fi; echo 'succeeding (shouldFail=false)'"]
-        							env: [
-        								{name: "SHOULD_FAIL", value: "\(context.operationParams.shouldFail)"},
-        							]
-        						},
-        					]
-        					restartPolicy: "Never"
-        				}
-        			}
-        		}
-        	}
-        }
-
-        log: util.#Log & {
-        	$params: source: resources: [{
-        		namespace:     "vela-system"
-        		labelSelector: "workflow.oam.dev/step-name": "\(context.name)-\(context.stepName)"
-        	}]
-        }
 
         fail: {
-        	if job.$returns.value.status != _|_ if job.$returns.value.status.failed != _|_ {
-        		if job.$returns.value.status.failed > 0 {
-        			breakWorkflow: builtin.#Fail & {
-        				$params: message: "flaky-step Job failed (shouldFail=\(context.operationParams.shouldFail))"
-        			}
+        	if context.operationParams.shouldFail == "true" {
+        		breakWorkflow: builtin.#Fail & {
+        			$params: message: "flaky-step failed on purpose (shouldFail=true)"
         		}
-        	}
-        }
-
-        wait: builtin.#ConditionalWait & {
-        	if job.$returns.value.status != _|_ if job.$returns.value.status.succeeded != _|_ {
-        		$params: continue: job.$returns.value.status.succeeded > 0
         	}
         }

@@ -175,10 +175,9 @@ func pollOperationUntilTerminal(ctx context.Context, cmd *cobra.Command, k8sClie
 }
 
 // pollOperationUntilSuspended polls op's status.phase until it reaches
-// Suspended -- IsTerminal() won't do, Suspended is deliberately non-terminal
-// (see RETRY_PLAN.md design decision #4) -- or, failing that, any terminal
-// phase (so a race against the workflow finishing on its own doesn't hang
-// the CLI forever).
+// Suspended -- IsTerminal() won't do, Suspended is deliberately non-terminal --
+// or, failing that, any terminal phase (so a race against the workflow
+// finishing on its own doesn't hang the CLI forever).
 func pollOperationUntilSuspended(ctx context.Context, cmd *cobra.Command, k8sClient client.Client, op *v2alpha1.Operation) error {
 	for {
 		if err := k8sClient.Get(ctx, types2.NamespacedName{Namespace: op.Namespace, Name: op.Name}, op); err != nil {
@@ -196,8 +195,8 @@ func pollOperationUntilSuspended(ctx context.Context, cmd *cobra.Command, k8sCli
 // NewOperationRestartCommand creates the `vela operation restart` command.
 //
 // No idempotency check is performed and no phase precondition is enforced
-// on the target step -- see RETRY_PLAN.md design decisions #5 and #7. The
-// operator is trusted to know whether a restart is safe.
+// on the target step. The operator is trusted to know whether a restart is
+// safe.
 func NewOperationRestartCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "restart <name>",

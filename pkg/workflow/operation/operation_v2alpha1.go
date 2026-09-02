@@ -260,8 +260,7 @@ func (wo operationWorkflowOperator) Rollback(_ context.Context) error {
 //
 // Unlike CleanStatusFromStep/RestartFromStep upstream, restarting is not
 // gated on the operation's (or, for --step, the target step's) current
-// phase being Failed -- see RETRY_PLAN.md design decisions #5 and #7. The
-// operator is trusted to know what it's doing.
+// phase being Failed. The operator is trusted to know what it's doing.
 func (wo operationWorkflowOperator) Restart(ctx context.Context) error {
 	return wo.restartFrom(ctx, "")
 }
@@ -500,11 +499,11 @@ func recordAttempt(ws *v2alpha1.OperationWorkflowStatus, name string, s workflow
 // cleanOperationStatusFromStep resets stepName (and, in Operations' default
 // sequential mode, every step positioned after it) so it re-executes.
 // Mirrors github.com/kubevela/workflow/pkg/utils.CleanStatusFromStep, minus
-// the "can not restart from a non-failed step" precondition -- see
-// RETRY_PLAN.md design decisions #5 and #7. Returns the reset step status,
-// the affected status entries (so the caller can snapshot them before
-// they're gone), and the dependency set by name (so the caller can clear
-// the same steps' recorded outputs from the context-backend ConfigMap).
+// the "can not restart from a non-failed step" precondition. Returns the
+// reset step status, the affected status entries (so the caller can
+// snapshot them before they're gone), and the dependency set by name (so
+// the caller can clear the same steps' recorded outputs from the
+// context-backend ConfigMap).
 func cleanOperationStatusFromStep(steps []oamv1alpha1.WorkflowStep, stepStatus []v2alpha1.OperationWorkflowStepStatus, mode oamv1alpha1.WorkflowExecuteMode, stepName string) ([]v2alpha1.OperationWorkflowStepStatus, []v2alpha1.OperationWorkflowStepStatus, []string, error) {
 	found := false
 	var affected []v2alpha1.OperationWorkflowStepStatus
