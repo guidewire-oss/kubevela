@@ -143,9 +143,8 @@ func validateOperationClusterFlag(cluster string) error {
 // validateOperationSourceFlags rejects an explicitly-empty --component or
 // --application (e.g. `--application=""`), which cobra makes
 // indistinguishable from an omitted flag once read as a plain string --
-// without this check, `run` would silently take the None-scope path
-// (source stays nil) instead of erroring on what was clearly meant as a
-// value.
+// without this check, `list`/`run` would silently take the None-scope path
+// instead of erroring on what was clearly meant as a value.
 func validateOperationSourceFlags(cmd *cobra.Command, componentRef, appRef string) error {
 	if cmd.Flags().Changed(FlagComponent) && componentRef == "" {
 		return fmt.Errorf("--component must not be empty")
@@ -507,6 +506,9 @@ func NewOperationListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.
 			}
 			appRef, err := cmd.Flags().GetString(FlagApplication)
 			if err != nil {
+				return err
+			}
+			if err := validateOperationSourceFlags(cmd, componentRef, appRef); err != nil {
 				return err
 			}
 			ns, err := GetFlagNamespace(cmd, c)

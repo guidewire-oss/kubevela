@@ -44,7 +44,10 @@ const (
 type OperationApplicationSelector struct {
 	// +optional
 	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+	// CEL rule enforces valid operator values at admission (the vendored
+	// LabelSelectorRequirement type has no such constraint of its own).
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.all(e, e.operator in ['In','NotIn','Exists','DoesNotExist'])",message="operator must be one of In, NotIn, Exists, DoesNotExist"
 	MatchExpressions []metav1.LabelSelectorRequirement `json:"matchExpressions,omitempty"`
 	// RequiredComponentTypes: every listed ComponentDefinition type must be
 	// present among the Application's components for a match.
