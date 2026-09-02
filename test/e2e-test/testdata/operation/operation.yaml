@@ -4,7 +4,7 @@ metadata:
   name: restart-op
 spec:
   template: restart-webservice
-  target:
+  source:
     app: operation-app
     component: webservice
   parameters:

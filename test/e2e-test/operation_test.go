@@ -35,6 +35,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
@@ -117,6 +118,27 @@ func applyIOOperationTemplate(ctx context.Context) {
 	Expect(k8sClient.Create(ctx, &tmpl)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 }
 
+// applyAppScopeCheckWorkflowStepDefinition, applyApplicationScopeOperationTemplate,
+// and applyNoneScopeOperationTemplate install the Application/None scope
+// test fixtures into vela-system. Torn down in AfterAll.
+func applyAppScopeCheckWorkflowStepDefinition(ctx context.Context) {
+	var def v1beta1.WorkflowStepDefinition
+	Expect(common.ReadYamlToObject("testdata/operation/vela-system/workflowstepdefinition-appscope-check.yaml", &def)).Should(BeNil())
+	Expect(k8sClient.Create(ctx, &def)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+}
+
+func applyApplicationScopeOperationTemplate(ctx context.Context) {
+	var tmpl v2alpha1.OperationTemplate
+	Expect(common.ReadYamlToObject("testdata/operation/vela-system/operationtemplate-application-scope.yaml", &tmpl)).Should(BeNil())
+	Expect(k8sClient.Create(ctx, &tmpl)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+}
+
+func applyNoneScopeOperationTemplate(ctx context.Context) {
+	var tmpl v2alpha1.OperationTemplate
+	Expect(common.ReadYamlToObject("testdata/operation/vela-system/operationtemplate-none-scope.yaml", &tmpl)).Should(BeNil())
+	Expect(k8sClient.Create(ctx, &tmpl)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+}
+
 // applyOperationTargetApp installs the shared target Application into
 // namespaceName and waits for its webservice Deployment to be ready, so an
 // Operation's `target` immediately resolves to a healthy Component.
@@ -194,6 +216,9 @@ func deleteOperationVelaSystemFixtures(ctx context.Context) {
 		&v2alpha1.OperationTemplate{ObjectMeta: metav1.ObjectMeta{Name: "retry-flaky", Namespace: "vela-system"}},
 		&v2alpha1.OperationTemplate{ObjectMeta: metav1.ObjectMeta{Name: "suspend-then-ok", Namespace: "vela-system"}},
 		&v2alpha1.OperationTemplate{ObjectMeta: metav1.ObjectMeta{Name: "io-flaky", Namespace: "vela-system"}},
+		&v1beta1.WorkflowStepDefinition{ObjectMeta: metav1.ObjectMeta{Name: "appscope-check", Namespace: "vela-system"}},
+		&v2alpha1.OperationTemplate{ObjectMeta: metav1.ObjectMeta{Name: "app-scope", Namespace: "vela-system"}},
+		&v2alpha1.OperationTemplate{ObjectMeta: metav1.ObjectMeta{Name: "none-scope", Namespace: "vela-system"}},
 	}
 	for _, obj := range objs {
 		Expect(k8sClient.Delete(ctx, obj)).Should(SatisfyAny(BeNil(), &util.NotFoundMatcher{}))
@@ -296,7 +321,7 @@ var _ = Describe("Operation (v2alpha1)", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "retry-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:   "retry-flaky",
-				Target:     v2alpha1.OperationTarget{App: "operation-app", Component: "webservice"},
+				Source:     &v2alpha1.OperationSource{App: "operation-app", Component: ptr.To("webservice")},
 				Parameters: operationParams(map[string]string{"shouldFail": "true"}),
 			},
 		}
@@ -357,7 +382,7 @@ var _ = Describe("Operation (v2alpha1)", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "suspend-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template: "suspend-then-ok",
-				Target:   v2alpha1.OperationTarget{App: "operation-app", Component: "webservice"},
+				Source:   &v2alpha1.OperationSource{App: "operation-app", Component: ptr.To("webservice")},
 			},
 		}
 		Expect(k8sClient.Create(ctx, op)).Should(BeNil())
@@ -390,7 +415,7 @@ var _ = Describe("Operation (v2alpha1)", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "io-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:   "io-flaky",
-				Target:     v2alpha1.OperationTarget{App: "operation-app", Component: "webservice"},
+				Source:     &v2alpha1.OperationSource{App: "operation-app", Component: ptr.To("webservice")},
 				Parameters: operationParams(map[string]string{"shouldFail": "true"}),
 			},
 		}
@@ -449,7 +474,7 @@ var _ = Describe("Operation (v2alpha1)", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "ttl-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:                "retry-flaky",
-				Target:                  v2alpha1.OperationTarget{App: "operation-app", Component: "webservice"},
+				Source:                  &v2alpha1.OperationSource{App: "operation-app", Component: ptr.To("webservice")},
 				TTLSecondsAfterFinished: &ttl,
 			},
 		}
@@ -473,7 +498,7 @@ var _ = Describe("Operation (v2alpha1)", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "ttl-suspend-", Namespace: namespaceName},
 			Spec: v2alpha1.OperationSpec{
 				Template:                "suspend-then-ok",
-				Target:                  v2alpha1.OperationTarget{App: "operation-app", Component: "webservice"},
+				Source:                  &v2alpha1.OperationSource{App: "operation-app", Component: ptr.To("webservice")},
 				TTLSecondsAfterFinished: &ttl,
 			},
 		}
@@ -495,5 +520,45 @@ var _ = Describe("Operation (v2alpha1)", Ordered, func() {
 		Eventually(func() bool {
 			return kerrors.IsNotFound(k8sClient.Get(ctx, client.ObjectKeyFromObject(suspendOp), &v2alpha1.Operation{}))
 		}, 30*time.Second, 2*time.Second).Should(BeTrue())
+	})
+
+	// TODO: move to envtest -- e2e should stay a slim smoke test.
+	It("resolves Application-scope context against the source Application, with no component", func() {
+		By("applying the appscope-check WorkflowStepDefinition and the app-scope OperationTemplate (vela-system)")
+		applyAppScopeCheckWorkflowStepDefinition(ctx)
+		applyApplicationScopeOperationTemplate(ctx)
+
+		By("applying the target Application")
+		applyOperationTargetApp(ctx, namespaceName)
+
+		By("creating an Application-scoped Operation, no component")
+		op := &v2alpha1.Operation{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "app-scope-", Namespace: namespaceName},
+			Spec: v2alpha1.OperationSpec{
+				Template: "app-scope",
+				Source:   &v2alpha1.OperationSource{App: "operation-app"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, op)).Should(BeNil())
+
+		By("waiting for it to succeed")
+		waitForOperationPhase(ctx, op, v2alpha1.OperationPhaseSucceeded)
+	})
+
+	// TODO: move to envtest -- e2e should stay a slim smoke test.
+	It("runs a None-scope Operation with no source at all", func() {
+		By("applying the ok-step WorkflowStepDefinition and the none-scope OperationTemplate (vela-system)")
+		applyOkStepWorkflowStepDefinition(ctx)
+		applyNoneScopeOperationTemplate(ctx)
+
+		By("creating a None-scope Operation, no spec.source")
+		op := &v2alpha1.Operation{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "none-scope-", Namespace: namespaceName},
+			Spec:       v2alpha1.OperationSpec{Template: "none-scope"},
+		}
+		Expect(k8sClient.Create(ctx, op)).Should(BeNil())
+
+		By("waiting for it to succeed")
+		waitForOperationPhase(ctx, op, v2alpha1.OperationPhaseSucceeded)
 	})
 })

@@ -26,16 +26,24 @@ import (
 	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 )
 
-// OperationTarget identifies what an Operation's workflow steps read through
-// `context` -- the same target a healthPolicy already evaluates against.
-type OperationTarget struct {
-	// App is the name of the Application that owns the target Component.
+// OperationSource identifies what an Operation's workflow steps read
+// through `context` -- the same target a healthPolicy already evaluates
+// against. A Component never exists apart from its owning Application, so
+// it's expressed as App+Component rather than as a peer "kind" of App
+// alone: App alone sources from the Application; App+Component sources
+// from the Component within it. None scope is expressed by
+// OperationSpec.Source being nil.
+type OperationSource struct {
+	// App is the name of the source Application.
 	// +kubebuilder:validation:MinLength=1
 	App string `json:"app"`
 
-	// Component is the name of the target Component within App.
+	// Component is the name of the source Component within App. Omit to
+	// source from the Application as a whole; an explicit empty string is
+	// rejected at admission rather than silently treated as omitted.
+	// +optional
 	// +kubebuilder:validation:MinLength=1
-	Component string `json:"component"`
+	Component *string `json:"component,omitempty"`
 }
 
 // OperationSpec is the spec of Operation.
@@ -45,8 +53,10 @@ type OperationSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Template string `json:"template"`
 
-	// Target is what the workflow steps read through `context`.
-	Target OperationTarget `json:"target"`
+	// Source is what the workflow steps read through `context`. Required
+	// for every attach.scope except None, which must omit it.
+	// +optional
+	Source *OperationSource `json:"source,omitempty"`
 
 	// Clusters is reserved for multi-cluster dispatch (KEP 2.15). Only a
 	// single (local) cluster is resolved so far; a non-empty value beyond
@@ -89,8 +99,9 @@ const (
 	// error. Terminal -- re-execution isn't supported yet.
 	OperationPhaseFailed OperationPhase = "Failed"
 	// OperationPhaseSuspended means the workflow is paused (a `suspend` step,
-	// or a manual `vela operation suspend`). Non-terminal: the concurrency
-	// lease keeps renewing.
+	// or a manual `vela operation suspend`). Non-terminal: a
+	// `vela operation resume` (or a resolved suspend step) is what moves it
+	// forward.
 	OperationPhaseSuspended OperationPhase = "Suspended"
 	// OperationPhaseCancelled means a human stopped the operation before it
 	// reached a natural terminal phase. Terminal.
@@ -239,7 +250,7 @@ type OperationStatus struct {
 	Phase OperationPhase `json:"phase,omitempty"`
 
 	// Message carries a human-readable explanation, mainly used when Phase
-	// is Failed before a workflow could even start (e.g. template/target
+	// is Failed before a workflow could even start (e.g. template/source
 	// resolution failure).
 	// +optional
 	Message string `json:"message,omitempty"`
@@ -272,17 +283,17 @@ type OperationStatus struct {
 // +kubebuilder:object:root=true
 
 // Operation is the Schema for the Operation API: one run-to-completion
-// invocation of an OperationTemplate against a target.
+// invocation of an OperationTemplate against a source.
 //
 // KEP 2.15 permission model: not implemented yet. Any RBAC principal able
 // to create an Operation can invoke any OperationTemplate against any
-// target in its namespace. Do not release or promote this code path
+// source in its namespace. Do not release or promote this code path
 // until the permission model lands.
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories={oam},shortName={op,vop}
 // +kubebuilder:printcolumn:name="TEMPLATE",type=string,JSONPath=`.spec.template`
-// +kubebuilder:printcolumn:name="APP",type=string,JSONPath=`.spec.target.app`
-// +kubebuilder:printcolumn:name="COMPONENT",type=string,JSONPath=`.spec.target.component`
+// +kubebuilder:printcolumn:name="SOURCE-APP",type=string,JSONPath=`.spec.source.app`
+// +kubebuilder:printcolumn:name="SOURCE-COMPONENT",type=string,JSONPath=`.spec.source.component`
 // +kubebuilder:printcolumn:name="PHASE",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="AGE",type=date,JSONPath=".metadata.creationTimestamp"
 // +genclient
