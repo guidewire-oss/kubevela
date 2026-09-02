@@ -22,29 +22,53 @@ import (
 	wfv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 )
 
-// OperationAttachScope is the kind of target an OperationTemplate can be
-// invoked against. Only Component is implemented so far; Application-scoped
-// attach (and Composition/Fan-out, KEP 2.15) is not yet implemented.
+// OperationAttachScope is the kind of source an OperationTemplate can be
+// invoked against.
 type OperationAttachScope string
 
 const (
 	// OperationAttachScopeComponent means the template is invoked against a
 	// single Component.
 	OperationAttachScopeComponent OperationAttachScope = "Component"
+	// OperationAttachScopeApplication means the template is invoked against
+	// an Application as a whole, selected by label.
+	OperationAttachScopeApplication OperationAttachScope = "Application"
+	// OperationAttachScopeNone means the template carries no OAM source at
+	// all -- no placement resolution, no OAM context. Parity with
+	// WorkflowRun inside the Operation primitive.
+	OperationAttachScopeNone OperationAttachScope = "None"
 )
+
+// OperationApplicationSelector restricts which Applications an
+// Application-scoped OperationTemplate may be invoked against.
+type OperationApplicationSelector struct {
+	// +optional
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+	// +optional
+	MatchExpressions []metav1.LabelSelectorRequirement `json:"matchExpressions,omitempty"`
+	// RequiredComponentTypes: every listed ComponentDefinition type must be
+	// present among the Application's components for a match.
+	// +optional
+	RequiredComponentTypes []string `json:"requiredComponentTypes,omitempty"`
+}
 
 // OperationAttach describes what an OperationTemplate can be invoked against.
 type OperationAttach struct {
-	// Scope is the kind of target this template attaches to. Only
-	// "Component" is supported so far.
-	// +kubebuilder:validation:Enum=Component
+	// Scope is the kind of source this template attaches to.
+	// +kubebuilder:validation:Enum=Component;Application;None
 	// +kubebuilder:default=Component
 	Scope OperationAttachScope `json:"scope,omitempty"`
 
 	// AllowedComponentTypes restricts which ComponentDefinition types this
-	// template may be invoked against. Empty means any type is allowed.
+	// template may be invoked against. Component scope only. Empty means
+	// any type is allowed.
 	// +optional
 	AllowedComponentTypes []string `json:"allowedComponentTypes,omitempty"`
+
+	// Selector restricts which Applications this template may be invoked
+	// against. Application scope only.
+	// +optional
+	Selector *OperationApplicationSelector `json:"selector,omitempty"`
 }
 
 // OperationTemplateParameters declares the input parameters an Operation may
@@ -81,7 +105,7 @@ type OperationTemplateSpec struct {
 //
 // KEP 2.15 permission model: not implemented yet. Any RBAC principal able
 // to create an Operation can invoke any OperationTemplate against any
-// target in its namespace. Do not release or promote this code path
+// source in its namespace. Do not release or promote this code path
 // until the permission model lands.
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:categories={oam},shortName={opt,optemplate}

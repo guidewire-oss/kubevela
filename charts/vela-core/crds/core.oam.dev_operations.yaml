@@ -23,11 +23,11 @@ spec:
     - jsonPath: .spec.template
       name: TEMPLATE
       type: string
-    - jsonPath: .spec.target.app
-      name: APP
+    - jsonPath: .spec.source.app
+      name: SOURCE-APP
       type: string
-    - jsonPath: .spec.target.component
-      name: COMPONENT
+    - jsonPath: .spec.source.component
+      name: SOURCE-COMPONENT
       type: string
     - jsonPath: .status.phase
       name: PHASE
@@ -40,11 +40,11 @@ spec:
       openAPIV3Schema:
         description: |-
           Operation is the Schema for the Operation API: one run-to-completion
-          invocation of an OperationTemplate against a target.
+          invocation of an OperationTemplate against a source.
 
           KEP 2.15 permission model: not implemented yet. Any RBAC principal able
           to create an Operation can invoke any OperationTemplate against any
-          target in its namespace. Do not release or promote this code path
+          source in its namespace. Do not release or promote this code path
           until the permission model lands.
         properties:
           apiVersion:
@@ -84,22 +84,22 @@ spec:
                   OperationTemplate's parameter schema once admission lands.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
-              target:
-                description: Target is what the workflow steps read through `context`.
+              source:
+                description: |-
+                  Source is what the workflow steps read through `context`. Required
+                  for every attach.scope except None, which must omit it.
                 properties:
                   app:
-                    description: App is the name of the Application that owns the
-                      target Component.
+                    description: App is the name of the source Application.
                     minLength: 1
                     type: string
                   component:
-                    description: Component is the name of the target Component within
-                      App.
-                    minLength: 1
+                    description: |-
+                      Component is the name of the source Component within App. Omit to
+                      source from the Application as a whole.
                     type: string
                 required:
                 - app
-                - component
                 type: object
               template:
                 description: |-
@@ -118,7 +118,6 @@ spec:
                 minimum: 0
                 type: integer
             required:
-            - target
             - template
             type: object
           status:
@@ -138,7 +137,7 @@ spec:
               message:
                 description: |-
                   Message carries a human-readable explanation, mainly used when Phase
-                  is Failed before a workflow could even start (e.g. template/target
+                  is Failed before a workflow could even start (e.g. template/source
                   resolution failure).
                 type: string
               phase:
@@ -161,18 +160,53 @@ spec:
                       allowedComponentTypes:
                         description: |-
                           AllowedComponentTypes restricts which ComponentDefinition types this
-                          template may be invoked against. Empty means any type is allowed.
+                          template may be invoked against. Component scope only. Empty means
+                          any type is allowed.
                         items:
                           type: string
                         type: array
                       scope:
                         default: Component
-                        description: |-
-                          Scope is the kind of target this template attaches to. Only
-                          "Component" is supported so far.
+                        description: Scope is the kind of source this template attaches
+                          to.
                         enum:
                         - Component
+                        - Application
+                        - None
                         type: string
+                      selector:
+                        description: |-
+                          Selector restricts which Applications this template may be invoked
+                          against. Application scope only.
+                        properties:
+                          matchExpressions:
+                            items:
+                              properties:
+                                key:
+                                  type: string
+                                operator:
+                                  type: string
+                                values:
+                                  items:
+                                    type: string
+                                  type: array
+                              required:
+                              - key
+                              - operator
+                              type: object
+                            type: array
+                          matchLabels:
+                            additionalProperties:
+                              type: string
+                            type: object
+                          requiredComponentTypes:
+                            description: |-
+                              RequiredComponentTypes: every listed ComponentDefinition type must be
+                              present among the Application's components for a match.
+                            items:
+                              type: string
+                            type: array
+                        type: object
                     type: object
                   description:
                     description: Description is a human-readable summary shown by

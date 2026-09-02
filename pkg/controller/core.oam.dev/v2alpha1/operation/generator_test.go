@@ -53,7 +53,7 @@ func TestResolveTemplateNamespaceFallback(t *testing.T) {
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	tmpl, err := r.resolveTemplate(context.Background(), op, "webservice")
+	tmpl, err := r.resolveTemplate(context.Background(), op)
 	require.NoError(t, err)
 	assert.Equal(t, systemDefinitionNamespace, tmpl.Namespace)
 }
@@ -72,7 +72,7 @@ func TestResolveTemplatePrefersOwnNamespace(t *testing.T) {
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	tmpl, err := r.resolveTemplate(context.Background(), op, "webservice")
+	tmpl, err := r.resolveTemplate(context.Background(), op)
 	require.NoError(t, err)
 	assert.Equal(t, "myns", tmpl.Namespace)
 }
@@ -83,7 +83,7 @@ func TestResolveTemplateNotFound(t *testing.T) {
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "missing"}}
-	_, err := r.resolveTemplate(context.Background(), op, "webservice")
+	_, err := r.resolveTemplate(context.Background(), op)
 	assert.Error(t, err)
 }
 
@@ -91,37 +91,88 @@ func TestResolveTemplateRejectsUnsupportedScope(t *testing.T) {
 	scheme := newTestScheme(t)
 	tmpl := &v2alpha1.OperationTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: "myns"},
-		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: "Application"}},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: "Bogus"}},
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tmpl).Build()
 	r := &Reconciler{Client: cli}
 
 	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	_, err := r.resolveTemplate(context.Background(), op, "webservice")
+	_, err := r.resolveTemplate(context.Background(), op)
 	assert.ErrorContains(t, err, "unsupported attach.scope")
 }
 
-func TestResolveTemplateRejectsDisallowedComponentType(t *testing.T) {
+func TestResolveTemplateAllowsApplicationAndNoneScope(t *testing.T) {
+	scheme := newTestScheme(t)
+	appTmpl := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-scoped", Namespace: "myns"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}},
+	}
+	noneTmpl := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "none-scoped", Namespace: "myns"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(appTmpl, noneTmpl).Build()
+	r := &Reconciler{Client: cli}
+
+	_, err := r.resolveTemplate(context.Background(), &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "app-scoped"}})
+	assert.NoError(t, err)
+	_, err = r.resolveTemplate(context.Background(), &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "none-scoped"}})
+	assert.NoError(t, err)
+}
+
+func TestResolveTemplateNoneScopeRejectsComponentFields(t *testing.T) {
 	scheme := newTestScheme(t)
 	tmpl := &v2alpha1.OperationTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "restart", Namespace: "myns"},
-		Spec: v2alpha1.OperationTemplateSpec{
-			Attach: v2alpha1.OperationAttach{
-				Scope:                 v2alpha1.OperationAttachScopeComponent,
-				AllowedComponentTypes: []string{"webservice"},
-			},
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: "none-scoped", Namespace: "myns"},
+		Spec: v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{
+			Scope:                 v2alpha1.OperationAttachScopeNone,
+			AllowedComponentTypes: []string{"webservice"},
+		}},
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tmpl).Build()
 	r := &Reconciler{Client: cli}
 
-	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "restart"}}
-	_, err := r.resolveTemplate(context.Background(), op, "worker")
-	assert.ErrorContains(t, err, "does not allow component type")
+	op := &v2alpha1.Operation{ObjectMeta: metav1.ObjectMeta{Namespace: "myns"}, Spec: v2alpha1.OperationSpec{Template: "none-scoped"}}
+	_, err := r.resolveTemplate(context.Background(), op)
+	assert.ErrorContains(t, err, "allowedComponentTypes is not valid")
+}
 
-	tmpl2, err := r.resolveTemplate(context.Background(), op, "webservice")
+func TestResolveSourceNoneScope(t *testing.T) {
+	r := &Reconciler{}
+	tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}}
+
+	source, err := r.resolveSource(context.Background(), &v2alpha1.Operation{}, tmpl)
 	require.NoError(t, err)
-	assert.Equal(t, "restart", tmpl2.Name)
+	assert.Nil(t, source)
+
+	compName := "web"
+	opWithSource := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{Source: &v2alpha1.OperationSource{App: "app", Component: &compName}}}
+	_, err = r.resolveSource(context.Background(), opWithSource, tmpl)
+	assert.ErrorContains(t, err, "must be omitted")
+}
+
+func TestResolveSourceRequiresSourceUnlessNone(t *testing.T) {
+	r := &Reconciler{}
+	for _, scope := range []v2alpha1.OperationAttachScope{v2alpha1.OperationAttachScopeComponent, v2alpha1.OperationAttachScopeApplication} {
+		tmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: scope}}
+		_, err := r.resolveSource(context.Background(), &v2alpha1.Operation{}, tmpl)
+		assert.ErrorContains(t, err, "spec.source is required")
+	}
+}
+
+func TestResolveSourceScopeMismatch(t *testing.T) {
+	r := &Reconciler{}
+	compName := "web"
+
+	componentTmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeComponent}}
+	appSourceOp := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{Source: &v2alpha1.OperationSource{App: "app"}}}
+	_, err := r.resolveSource(context.Background(), appSourceOp, componentTmpl)
+	assert.ErrorContains(t, err, "cannot be invoked against an Application source")
+
+	appTmpl := &v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}}
+	compSourceOp := &v2alpha1.Operation{Spec: v2alpha1.OperationSpec{Source: &v2alpha1.OperationSource{App: "app", Component: &compName}}}
+	_, err = r.resolveSource(context.Background(), compSourceOp, appTmpl)
+	assert.ErrorContains(t, err, "cannot be invoked against a Component source")
 }
 
 func TestBuildWorkflowInstanceCarriesForwardPreviousStatus(t *testing.T) {

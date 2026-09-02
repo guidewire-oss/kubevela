@@ -232,7 +232,7 @@ func TestListAllowedOperationTemplates(t *testing.T) {
 	}
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(restart, scaleWebOnly, dup).Build()
 
-	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", "webservice")
+	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeComponent, "webservice", nil)
 	require.NoError(t, err)
 	byName := map[string]v2alpha1.OperationTemplate{}
 	for _, tmpl := range templates {
@@ -242,7 +242,7 @@ func TestListAllowedOperationTemplates(t *testing.T) {
 	require.Contains(t, byName, "scale")
 	assert.Equal(t, "restart the component", byName["restart"].Spec.Description)
 
-	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", "worker")
+	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeComponent, "worker", nil)
 	require.NoError(t, err)
 	byName = map[string]v2alpha1.OperationTemplate{}
 	for _, tmpl := range templates {
@@ -250,4 +250,27 @@ func TestListAllowedOperationTemplates(t *testing.T) {
 	}
 	assert.Contains(t, byName, "restart")
 	assert.NotContains(t, byName, "scale", "scale is restricted to webservice")
+}
+
+func TestListAllowedOperationTemplatesApplicationAndNoneScope(t *testing.T) {
+	scheme := newOperationTestScheme(t)
+	appTmpl := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "patch-app", Namespace: "default"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeApplication}},
+	}
+	noneTmpl := &v2alpha1.OperationTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "notify", Namespace: "default"},
+		Spec:       v2alpha1.OperationTemplateSpec{Attach: v2alpha1.OperationAttach{Scope: v2alpha1.OperationAttachScopeNone}},
+	}
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(appTmpl, noneTmpl).Build()
+
+	templates, err := listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeApplication, "", &v1beta1.Application{})
+	require.NoError(t, err)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "patch-app", templates[0].Name)
+
+	templates, err = listAllowedOperationTemplates(context.Background(), cli, "default", operationListModeNone, "", nil)
+	require.NoError(t, err)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "notify", templates[0].Name)
 }

@@ -34,7 +34,7 @@ spec:
 
           KEP 2.15 permission model: not implemented yet. Any RBAC principal able
           to create an Operation can invoke any OperationTemplate against any
-          target in its namespace. Do not release or promote this code path
+          source in its namespace. Do not release or promote this code path
           until the permission model lands.
         properties:
           apiVersion:
@@ -69,12 +69,46 @@ spec:
                     type: array
                   scope:
                     default: Component
-                    description: |-
-                      Scope is the kind of target this template attaches to. Only
-                      "Component" is supported so far.
+                    description: Scope is the kind of source this template attaches
+                      to.
                     enum:
                     - Component
+                    - Application
+                    - None
                     type: string
+                  selector:
+                    description: |-
+                      Selector restricts which Applications this template may be invoked
+                      against. Application scope only.
+                    properties:
+                      matchExpressions:
+                        items:
+                          properties:
+                            key:
+                              type: string
+                            operator:
+                              type: string
+                            values:
+                              items:
+                                type: string
+                              type: array
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      requiredComponentTypes:
+                        description: |-
+                          RequiredComponentTypes: every listed ComponentDefinition type must be
+                          present among the Application's components for a match.
+                        items:
+                          type: string
+                        type: array
+                    type: object
                 type: object
               description:
                 description: Description is a human-readable summary shown by `vela

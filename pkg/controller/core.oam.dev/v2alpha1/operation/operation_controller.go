@@ -19,7 +19,7 @@
 //
 // TODO(KEP 2.15): this controller performs no admission checks yet. Any
 // RBAC principal able to create an Operation can invoke any
-// OperationTemplate against any target Component in its namespace -- the
+// OperationTemplate against any source in its namespace -- the
 // two SubjectAccessReviews the KEP requires are not implemented. Do not
 // run outside a disposable namespace against non-destructive templates.
 package operation
@@ -93,13 +93,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.fail(logCtx, op, fmt.Errorf("spec.clusters only supports %q so far, got %v", localCluster, op.Spec.Clusters))
 	}
 
-	target, err := r.resolveTarget(logCtx, op)
-	if err != nil {
-		return r.fail(logCtx, op, err)
-	}
-
+	// Template is resolved before source: "is a source required" is a fact
+	// about the template's scope, and the template isn't known yet on a
+	// fresh Operation, so source resolution can't tell a legitimate nil
+	// (None scope) from a genuine error (Component/Application scope)
+	// without it. On a resumed reconcile (restart/resume), Status.Template
+	// is already snapshotted and resolveTemplate is skipped entirely --
+	// scope comes from that snapshot instead.
 	if op.Status.Template == nil {
-		tmpl, err := r.resolveTemplate(logCtx, op, target.component.Type)
+		tmpl, err := r.resolveTemplate(logCtx, op)
 		if err != nil {
 			return r.fail(logCtx, op, err)
 		}
@@ -110,7 +112,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		op.Status.Attempts = 1
 	}
 
-	pCtx, err := buildProcessContext(logCtx, op, target)
+	source, err := r.resolveSource(logCtx, op, op.Status.Template)
+	if err != nil {
+		return r.fail(logCtx, op, err)
+	}
+
+	pCtx, err := buildProcessContext(logCtx, op, source)
 	if err != nil {
 		return r.fail(logCtx, op, err)
 	}
@@ -191,7 +198,7 @@ func (r *Reconciler) finish(ctx context.Context, op *v2alpha1.Operation) (ctrl.R
 }
 
 // fail marks the Operation Failed before any workflow step ran (template or
-// target resolution failure) and persists the status.
+// source resolution failure) and persists the status.
 func (r *Reconciler) fail(ctx context.Context, op *v2alpha1.Operation, cause error) (ctrl.Result, error) {
 	if lg, ok := ctx.(monitorContext.Context); ok {
 		lg.Error(cause, "operation failed before workflow execution")
