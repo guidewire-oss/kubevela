@@ -62,12 +62,12 @@ const (
 	LabelDefinitionName = "definition.oam.dev/name"
 	// LabelDefinitionModule is the module a definition came from.
 	LabelDefinitionModule = "definition.oam.dev/module"
-	// LabelDefinitionAPIVersion is the module API line a definition belongs to.
-	LabelDefinitionAPIVersion = "definition.oam.dev/api-version"
-	// AnnoDefinitionFullName carries the untruncated {module}-{apiVersion}-{name}
+	// LabelDefinitionModuleAPIVersion is the module API line a definition belongs to.
+	LabelDefinitionModuleAPIVersion = "definition.oam.dev/module-api-version"
+	// AnnoDefinitionModuleFullName carries the untruncated {module}-{apiVersion}-{name}
 	// identity, for definitions whose full name exceeds the 253-char object-name
 	// limit and therefore had to be truncated and hashed.
-	AnnoDefinitionFullName = "definition.oam.dev/full-name"
+	AnnoDefinitionModuleFullName = "definition.oam.dev/module-full-name"
 	// AnnoDefinitionModuleVersion carries the concrete module package version
 	// (the OCI/ECR tag) that was fetched and installed, on the module's owned
 	// Application.

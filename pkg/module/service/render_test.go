@@ -363,12 +363,12 @@ func TestRenderApplication_StampsDefinitionIdentity(t *testing.T) {
 
 	labels := meta["labels"].(map[string]interface{})
 	require.Equal(t, "s3", labels[types.LabelDefinitionModule])
-	require.Equal(t, "v1", labels[types.LabelDefinitionAPIVersion])
+	require.Equal(t, "v1", labels[types.LabelDefinitionModuleAPIVersion])
 	require.Equal(t, "bucket", labels[types.LabelDefinitionName])
 	require.Equal(t, "s3", labels[oam.LabelAddonName])
 
 	annos := meta["annotations"].(map[string]interface{})
-	require.Equal(t, "s3-v1-bucket", annos[types.AnnoDefinitionFullName])
+	require.Equal(t, "s3-v1-bucket", annos[types.AnnoDefinitionModuleFullName])
 
 	spec := def["spec"].(map[string]interface{})
 	require.Equal(t, "s3", spec["module"])
@@ -418,7 +418,7 @@ func TestRenderApplication_TruncatesLongNamesWithAStableHash(t *testing.T) {
 			objs := c["properties"].(map[string]interface{})["objects"].([]interface{})
 			meta := objs[0].(map[string]interface{})["metadata"].(map[string]interface{})
 			annos := meta["annotations"].(map[string]interface{})
-			require.Equal(t, "s3-v1-"+long, annos[types.AnnoDefinitionFullName])
+			require.Equal(t, "s3-v1-"+long, annos[types.AnnoDefinitionModuleFullName])
 
 			// The name label value stays within the Kubernetes 63-char label limit,
 			// so the definitions tier can apply even for an over-long definition name.
