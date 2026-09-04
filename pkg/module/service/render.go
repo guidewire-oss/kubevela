@@ -40,13 +40,14 @@ type rendererImpl struct {
 }
 
 // NewRenderer builds the module render service. It reads the Kubernetes client
-// from the kubevela-pkg singleton at call time, not at construction, so a blank
-// import can wire it during package init.
+// from the kubevela-pkg singleton at call time, not at construction, so callers
+// may register it before the client is configured.
 func NewRenderer() api.Renderer { return &rendererImpl{} }
 
-// init registers the default renderer so a blank import of this package from
-// cmd/core wires the module CueX provider, instead of injecting it in server.go.
-func init() { api.SetDefaultRenderer(NewRenderer()) }
+// Register installs the render-only module service as the process-wide renderer
+// used by the vela/module CueX provider.
+
+func Register() { api.SetDefaultRenderer(NewRenderer()) }
 
 // fetch resolves the module through the injected seam (tests) or the real
 // registry-backed FetchModule (production).
