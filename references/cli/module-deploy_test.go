@@ -84,13 +84,13 @@ func TestModuleTierNames(t *testing.T) {
 	app := &v1beta1.Application{
 		Spec: v1beta1.ApplicationSpec{
 			Components: []oamcommon.ApplicationComponent{
-				{Name: "s3-aux-established"},
+				{Name: "s3-aux"},
 				{Name: "s3-v1-aux"},
 				{Name: "s3-v1-defs"},
 			},
 		},
 	}
-	assert.Equal(t, []string{"s3-aux-established", "s3-v1-aux", "s3-v1-defs"}, moduleTierNames(app))
+	assert.Equal(t, []string{"s3-aux", "s3-v1-aux", "s3-v1-defs"}, moduleTierNames(app))
 }
 
 func TestModuleTierNamesNoComponents(t *testing.T) {
