@@ -25,40 +25,7 @@ spec:
         		}
         	}
         }
-        parameter: {
-        	// The raw objects to apply. The first one carries the health check.
-        	objects: [...{}]
-        	// The status condition type that must be True before this component
-        	// reports healthy. Empty (default) means healthy once applied.
-        	readyConditionType: *"" | string
-        }
-  status:
-    healthPolicy: |-
-      ready: {
-      	conditions: *[] | [...]
-      } & {
-      	// Only read the object's conditions when a readyConditionType is set.
-      	// With none set (the backward-compatible default) leave conditions as
-      	// the empty default, so an object whose status.conditions is null or a
-      	// non-list shape cannot break the health evaluation.
-      	if _wantType != "" && context.output.status != _|_ {
-      		if context.output.status.conditions != _|_ {
-      			conditions: context.output.status.conditions
-      		}
-      	}
-      }
-      // readyConditionType is optional. An omitted OR empty value keeps the
-      // historical behavior (healthy once applied) — which is what keeps every
-      // existing k8s-objects component backward compatible: the health evaluation
-      // gets the raw parameter, so the schema default (*"") is not applied here and
-      // the absent field must be handled explicitly. A named type demands that
-      // condition be True before this component reports healthy, so a component
-      // that dependsOn it waits for real readiness rather than mere application.
-      _wantType: *"" | string
-      if parameter.readyConditionType != _|_ {
-      	_wantType: parameter.readyConditionType
-      }
-      isHealth: _wantType == "" || len([for c in ready.conditions if c.type == _wantType if c.status == "True" {c}]) > 0
+        parameter: objects: [...{}]
   workload:
     type: autodetects.core.oam.dev
 
