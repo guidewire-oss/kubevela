@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,6 +50,45 @@ type TokenSource interface {
 	GetTokenSecretRef() string
 }
 
+// OCISource returns the registry's chart source when it addresses an OCI
+// registry, or nil for every other kind of entry. An OCI registry is a Helm
+// source whose URL carries the oci:// scheme -- there is no separate field for
+// it -- so callers that need to tell the two apart go through this rather than
+// repeating the scheme test.
+func (r *Registry) OCISource() *HelmSource {
+	if r.Helm == nil || !IsOCIURL(r.Helm.URL) {
+		return nil
+	}
+	return r.Helm
+}
+
+// OCIChartSource returns the chart source for a registry the module chart
+// pull/push path can talk to, or nil for every other kind of entry. It widens
+// OCISource by the two spellings that path has always accepted:
+//
+//   - http://host/prefix, an OCI registry served without TLS (a local or
+//     port-forwarded test registry). IsOCIURL rejects that because for an
+//     addon registry http(s):// means a ChartMuseum repository, but modules
+//     never supported ChartMuseum, so the spelling is free here.
+//   - a bare host such as an ECR endpoint, the form `vela module publish`
+//     documents. ociRegistryLocation parses it the same either way.
+//
+// https:// is still not OCI: that one really does address a chart repository,
+// and treating it as a registry would misroute a hand-edited helm entry that
+// ResolveRegistry is supposed to reject.
+func (r *Registry) OCIChartSource() *HelmSource {
+	if oci := r.OCISource(); oci != nil {
+		return oci
+	}
+	if r.Helm == nil || r.Helm.URL == "" {
+		return nil
+	}
+	if ociURLIsPlainHTTP(r.Helm.URL) || !strings.Contains(r.Helm.URL, "://") {
+		return r.Helm
+	}
+	return nil
+}
+
 // GetTokenSource return the token source of the registry
 func (r *Registry) GetTokenSource() TokenSource {
 	if r.Git != nil {
@@ -64,8 +104,8 @@ func (r *Registry) GetTokenSource() TokenSource {
 	// keeps its password in the ConfigMap, which is the behaviour released
 	// versions already have; returning it here would start rewriting those
 	// records into Secrets as a side effect of this refactor.
-	if r.Helm != nil && IsOCIURL(r.Helm.URL) {
-		return r.Helm
+	if oci := r.OCISource(); oci != nil {
+		return oci
 	}
 	return nil
 }
@@ -92,17 +132,27 @@ type RegistryDataStore interface {
 
 // NewRegistryDataStore get RegistryDataStore operation interface
 func NewRegistryDataStore(cli client.Client) RegistryDataStore {
-	return registryImpl{cli}
+	return registryImpl{cli, registryConfigMapName, tokenSecretNamePrefix}
+}
+
+// NewRegistryDataStoreFor returns a RegistryDataStore backed by the ConfigMap named
+// cmName, storing registry tokens in secrets named secretNamePrefix + registry name.
+// The module registry store uses this so its entries and credentials stay separate
+// from the addon registry store.
+func NewRegistryDataStoreFor(cli client.Client, cmName, secretNamePrefix string) RegistryDataStore {
+	return registryImpl{cli, cmName, secretNamePrefix}
 }
 
 type registryImpl struct {
-	client client.Client
+	client           client.Client
+	cmName           string
+	secretNamePrefix string
 }
 
 // getRegistries is a helper to fetch and unmarshal all registries from the ConfigMap
 func (r registryImpl) getRegistries(ctx context.Context) (map[string]Registry, *v1.ConfigMap, error) {
 	cm := &v1.ConfigMap{}
-	err := r.client.Get(ctx, types.NamespacedName{Namespace: velatypes.DefaultKubeVelaNS, Name: registryConfigMapName}, cm)
+	err := r.client.Get(ctx, types.NamespacedName{Namespace: velatypes.DefaultKubeVelaNS, Name: r.cmName}, cm)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -153,7 +203,7 @@ func (r registryImpl) ListRegistries(ctx context.Context) ([]Registry, error) {
 }
 
 func (r registryImpl) AddRegistry(ctx context.Context, registry Registry) error {
-	if err := createOrUpdateTokenSecret(ctx, r.client, &registry); err != nil {
+	if err := createOrUpdateTokenSecret(ctx, r.client, &registry, r.secretNamePrefix); err != nil {
 		return err
 	}
 
@@ -168,7 +218,7 @@ func (r registryImpl) AddRegistry(ctx context.Context, registry Registry) error 
 			}
 			cm := &v1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      registryConfigMapName,
+					Name:      r.cmName,
 					Namespace: velatypes.DefaultKubeVelaNS,
 				},
 				Data: map[string]string{
@@ -190,7 +240,7 @@ func (r registryImpl) AddRegistry(ctx context.Context, registry Registry) error 
 }
 
 // createOrUpdateTokenSecret will create or update a secret to store registry token
-func createOrUpdateTokenSecret(ctx context.Context, cli client.Client, registry *Registry) error {
+func createOrUpdateTokenSecret(ctx context.Context, cli client.Client, registry *Registry, secretNamePrefix string) error {
 	source := registry.GetTokenSource()
 	if source == nil {
 		return nil
@@ -199,14 +249,14 @@ func createOrUpdateTokenSecret(ctx context.Context, cli client.Client, registry 
 	if token == "" {
 		return nil
 	}
-	return migrateInlineTokenToSecret(ctx, cli, registry, source, token)
+	return migrateInlineTokenToSecret(ctx, cli, registry, source, token, secretNamePrefix)
 }
 
 // migrateInlineTokenToSecret will migrate an inline token to a secret.
 // It will take the token from the registry object, create/update a secret, and set the secret ref on the registry object.
-func migrateInlineTokenToSecret(ctx context.Context, cli client.Client, registry *Registry, source TokenSource, token string) error {
+func migrateInlineTokenToSecret(ctx context.Context, cli client.Client, registry *Registry, source TokenSource, token, secretNamePrefix string) error {
 	log := logf.FromContext(ctx)
-	secretName := tokenSecretNamePrefix + registry.Name
+	secretName := secretNamePrefix + registry.Name
 	source.SetTokenSecretRef(secretName)
 
 	secret := &v1.Secret{
@@ -278,7 +328,7 @@ func (r registryImpl) DeleteRegistry(ctx context.Context, name string) error {
 }
 
 func (r registryImpl) UpdateRegistry(ctx context.Context, registry Registry) error {
-	if err := createOrUpdateTokenSecret(ctx, r.client, &registry); err != nil {
+	if err := createOrUpdateTokenSecret(ctx, r.client, &registry, r.secretNamePrefix); err != nil {
 		return err
 	}
 	registries, cm, err := r.getRegistries(ctx)

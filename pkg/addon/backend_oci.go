@@ -71,19 +71,25 @@ type ociHelmBackend struct {
 	catalogIndexFn ociCatalogIndexLister
 }
 
-// ociScheme is the URL scheme prefix this file strips before building a
-// registry host and repository reference. IsOCIURL classifies the scheme
-// case-insensitively, so parsing here has to match, or a registry stored as
-// "OCI://..." would classify as OCI but build a malformed host such as "OCI:".
+// ociScheme is the canonical OCI URL scheme prefix. IsOCIURL classifies the
+// scheme case-insensitively, so the stripping in ociRegistryLocation has to
+// match, or a registry stored as "OCI://..." would classify as OCI but build a
+// malformed host such as "OCI:".
 const ociScheme = "oci://"
 
-// ociRegistryLocation returns the registry host and repository prefix.
+// ociRegistryLocation returns the registry host and repository prefix. Any of
+// the schemes a registry URL is written with is stripped first: without that,
+// an "http://" URL splits at the scheme's own slash and yields the host
+// "http:".
 func ociRegistryLocation(rawURL string) (host, prefix string) {
-	trimmed := rawURL
-	if len(rawURL) >= len(ociScheme) && strings.EqualFold(rawURL[:len(ociScheme)], ociScheme) {
-		trimmed = rawURL[len(ociScheme):]
+	base := rawURL
+	for _, scheme := range []string{ociScheme, "https://", "http://"} {
+		if len(base) >= len(scheme) && strings.EqualFold(base[:len(scheme)], scheme) {
+			base = base[len(scheme):]
+			break
+		}
 	}
-	base := strings.Trim(trimmed, "/")
+	base = strings.Trim(base, "/")
 	host = base
 	if i := strings.Index(base, "/"); i >= 0 {
 		host = base[:i]
@@ -399,6 +405,24 @@ func (b *ociHelmBackend) classify(err error) error {
 		return err
 	}
 	return errors.Wrapf(ErrFetch, "OCI registry %s: %v", b.name, err)
+}
+
+// PullOCIChartFiles pulls the module's Helm-chart artifact for name[:version]
+// (empty version resolves the highest semver tag) and returns its files, paths
+// prefixed by the chart (module) name. It goes through the OCI backend's own
+// resolve, so module fetch reuses the exact pull, version-resolution and
+// archive-loading that vela addon uses.
+func PullOCIChartFiles(ctx context.Context, reg Registry, name, version string) ([]*loader.BufferedFile, error) {
+	oci := reg.OCIChartSource()
+	if oci == nil {
+		return nil, errors.Errorf("registry %q is not an OCI registry", reg.Name)
+	}
+	b := &ociHelmBackend{name: reg.Name, url: oci.URL, username: oci.Username, token: oci.Token}
+	resolved, err := b.resolve(ctx, name, version)
+	if err != nil {
+		return nil, err
+	}
+	return resolved.files, nil
 }
 
 // supportsVersionRequirements reports false. Versions here are synthesized from

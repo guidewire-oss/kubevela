@@ -75,10 +75,11 @@ type PushCmd struct {
 // nil when the registry is not OCI-backed. The inline token is carried over
 // explicitly because a safe copy deliberately drops it.
 func ociPushSource(reg Registry) *HelmSource {
-	if reg.Helm == nil || !IsOCIURL(reg.Helm.URL) {
+	oci := reg.OCISource()
+	if oci == nil {
 		return nil
 	}
-	return &HelmSource{URL: reg.Helm.URL, Username: reg.Helm.Username, Token: reg.Helm.Token}
+	return &HelmSource{URL: oci.URL, Username: oci.Username, Token: oci.Token}
 }
 
 // IsDirectAddonPushTarget reports whether target can be used without resolving
