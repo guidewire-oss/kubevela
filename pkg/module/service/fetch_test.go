@@ -26,34 +26,34 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/module"
+	"github.com/oam-dev/kubevela/pkg/registry/component"
 )
 
-// fakeItem implements pkgaddon.Item.
+// fakeItem implements component.Item.
 type fakeItem struct{ path, typ string }
 
 func (f fakeItem) GetType() string { return f.typ }
 func (f fakeItem) GetPath() string { return f.path }
 func (f fakeItem) GetName() string { return f.path }
 
-// fakeReader implements pkgaddon.AsyncReader over an in-memory file map keyed by
+// fakeReader implements component.AsyncReader over an in-memory file map keyed by
 // path relative to the modules root (i.e. "<module>/<rel>"). RelativePath
 // returns that same path — the reader-agnostic form readerFS feeds to ReadFile.
 type fakeReader struct{ files map[string]string }
 
-func (r fakeReader) ListAddonMeta() (map[string]pkgaddon.SourceMeta, error) {
-	byModule := map[string]*pkgaddon.SourceMeta{}
+func (r fakeReader) ListAddonMeta() (map[string]component.SourceMeta, error) {
+	byModule := map[string]*component.SourceMeta{}
 	for p := range r.files {
 		mod := p[:indexSlash(p)]
 		sm := byModule[mod]
 		if sm == nil {
-			sm = &pkgaddon.SourceMeta{Name: mod}
+			sm = &component.SourceMeta{Name: mod}
 			byModule[mod] = sm
 		}
-		sm.Items = append(sm.Items, fakeItem{path: p, typ: pkgaddon.FileType})
+		sm.Items = append(sm.Items, fakeItem{path: p, typ: component.FileType})
 	}
-	out := map[string]pkgaddon.SourceMeta{}
+	out := map[string]component.SourceMeta{}
 	for k, v := range byModule {
 		out[k] = *v
 	}
@@ -62,7 +62,7 @@ func (r fakeReader) ListAddonMeta() (map[string]pkgaddon.SourceMeta, error) {
 
 func (r fakeReader) ReadFile(p string) (string, error) { return r.files[p], nil }
 
-func (r fakeReader) RelativePath(item pkgaddon.Item) string { return item.GetPath() }
+func (r fakeReader) RelativePath(item component.Item) string { return item.GetPath() }
 
 func indexSlash(s string) int {
 	for i := 0; i < len(s); i++ {
@@ -73,35 +73,37 @@ func indexSlash(s string) int {
 	return len(s)
 }
 
-// fakeStore is an pkgaddon.RegistryDataStore over an in-memory slice. Unknown names
+// fakeStore is an component.RegistryDataStore over an in-memory slice. Unknown names
 // return a k8s NotFound (as the real ConfigMap-backed store does), so
 // module.ResolveRegistry takes its not-found path.
-type fakeStore struct{ regs []pkgaddon.Registry }
+type fakeStore struct{ regs []component.Registry }
 
-func (s fakeStore) GetRegistry(_ context.Context, name string) (pkgaddon.Registry, error) {
+func (s fakeStore) GetRegistry(_ context.Context, name string) (component.Registry, error) {
 	for i := range s.regs {
 		if s.regs[i].Name == name {
 			return s.regs[i], nil
 		}
 	}
-	return pkgaddon.Registry{}, apierrors.NewNotFound(schema.GroupResource{Resource: "Registry"}, name)
+	return component.Registry{}, apierrors.NewNotFound(schema.GroupResource{Resource: "Registry"}, name)
 }
 
-func (s fakeStore) ListRegistries(_ context.Context) ([]pkgaddon.Registry, error) { return s.regs, nil }
+func (s fakeStore) ListRegistries(_ context.Context) ([]component.Registry, error) {
+	return s.regs, nil
+}
 
-func (s fakeStore) AddRegistry(context.Context, pkgaddon.Registry) error { return nil }
+func (s fakeStore) AddRegistry(context.Context, component.Registry) error { return nil }
 
-func (s fakeStore) UpdateRegistry(context.Context, pkgaddon.Registry) error { return nil }
+func (s fakeStore) UpdateRegistry(context.Context, component.Registry) error { return nil }
 
 func (s fakeStore) DeleteRegistry(context.Context, string) error { return nil }
 
-func gitRegistry(name string) pkgaddon.Registry {
-	return pkgaddon.Registry{Name: name, Git: &pkgaddon.GitAddonSource{URL: "https://example.com/repo", Path: "module"}}
+func gitRegistry(name string) component.Registry {
+	return component.Registry{Name: name, Git: &component.GitAddonSource{URL: "https://example.com/repo", Path: "module"}}
 }
 
-func newServiceWithFakes(store pkgaddon.RegistryDataStore, files map[string]string) *Service {
+func newServiceWithFakes(store component.RegistryDataStore, files map[string]string) *Service {
 	s := NewService(store)
-	s.newReader = func(_ *pkgaddon.Registry) (pkgaddon.AsyncReader, error) { return fakeReader{files: files}, nil }
+	s.newReader = func(_ *component.Registry) (component.AsyncReader, error) { return fakeReader{files: files}, nil }
 	return s
 }
 
@@ -111,7 +113,7 @@ func TestFetchModule_Git(t *testing.T) {
 		"s3/v1/_version.cue":            "apiVersion: \"v1\"",
 		"s3/v1/definitions/bucket.yaml": "apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: atmos-s3-v1\n",
 	}
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{gitRegistry("catalog")}}, files)
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{gitRegistry("catalog")}}, files)
 
 	mod, err := s.FetchModule(context.Background(), "catalog", "s3", "")
 	require.NoError(t, err)
@@ -130,7 +132,7 @@ func TestFetchModule_Git_IgnoresVersion(t *testing.T) {
 		"s3/v1/_version.cue":            "apiVersion: \"v1\"",
 		"s3/v1/definitions/bucket.yaml": "apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: atmos-s3-v1\n",
 	}
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{gitRegistry("catalog")}}, files)
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{gitRegistry("catalog")}}, files)
 
 	mod, err := s.FetchModule(context.Background(), "catalog", "s3", "9.9.9-does-not-exist")
 	require.NoError(t, err)
@@ -144,7 +146,7 @@ func TestFetchModule_EmptyNameResolvesSole(t *testing.T) {
 		"s3/v1/_version.cue":            "apiVersion: \"v1\"",
 		"s3/v1/definitions/bucket.yaml": "apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: atmos-s3-v1\n",
 	}
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{gitRegistry("only")}}, files)
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{gitRegistry("only")}}, files)
 
 	mod, err := s.FetchModule(context.Background(), "", "s3", "")
 	require.NoError(t, err)
@@ -152,7 +154,7 @@ func TestFetchModule_EmptyNameResolvesSole(t *testing.T) {
 }
 
 func TestFetchModule_EmptyNameAmbiguous(t *testing.T) {
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{gitRegistry("a"), gitRegistry("b")}}, nil)
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{gitRegistry("a"), gitRegistry("b")}}, nil)
 
 	_, err := s.FetchModule(context.Background(), "", "s3", "")
 	require.Error(t, err)
@@ -161,7 +163,7 @@ func TestFetchModule_EmptyNameAmbiguous(t *testing.T) {
 }
 
 func TestFetchModule_UnknownRegistry(t *testing.T) {
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{gitRegistry("catalog")}}, nil)
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{gitRegistry("catalog")}}, nil)
 
 	_, err := s.FetchModule(context.Background(), "missing", "s3", "")
 	require.Error(t, err)
@@ -173,8 +175,8 @@ func TestFetchModule_UnknownRegistry(t *testing.T) {
 func TestFetchModule_RejectsUnsupportedSource(t *testing.T) {
 	// A helm entry can live in the shared ConfigMap; module.ResolveRegistry must
 	// reject it before any fetch. Verifies fetch honors the git/OCI-only scope.
-	helmReg := pkgaddon.Registry{Name: "legacy", Helm: &pkgaddon.HelmSource{URL: "https://charts.example.com"}}
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{helmReg}}, nil)
+	helmReg := component.Registry{Name: "legacy", Helm: &component.HelmSource{URL: "https://charts.example.com"}}
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{helmReg}}, nil)
 
 	_, err := s.FetchModule(context.Background(), "legacy", "s3", "")
 	require.Error(t, err)
@@ -189,7 +191,7 @@ func TestFetchModule_EmptyNameDefaultsToCatalog(t *testing.T) {
 		"s3/v1/_version.cue":            "apiVersion: \"v1\"",
 		"s3/v1/definitions/bucket.yaml": "apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: atmos-s3-v1\n",
 	}
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{gitRegistry("other"), gitRegistry("catalog")}}, files)
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{gitRegistry("other"), gitRegistry("catalog")}}, files)
 
 	mod, err := s.FetchModule(context.Background(), "", "s3", "")
 	require.NoError(t, err)
@@ -200,7 +202,7 @@ func TestFetchModule_ModuleNotFound(t *testing.T) {
 	files := map[string]string{
 		"other/_module.cue": "module: \"other\"\nversion: \"1.0.0\"",
 	}
-	s := newServiceWithFakes(fakeStore{regs: []pkgaddon.Registry{gitRegistry("catalog")}}, files)
+	s := newServiceWithFakes(fakeStore{regs: []component.Registry{gitRegistry("catalog")}}, files)
 
 	_, err := s.FetchModule(context.Background(), "catalog", "s3", "")
 	require.Error(t, err)
@@ -209,8 +211,8 @@ func TestFetchModule_ModuleNotFound(t *testing.T) {
 	require.ErrorIs(t, err, module.ErrModuleNotFound)
 }
 
-func ociRegistry(name string) pkgaddon.Registry {
-	return pkgaddon.Registry{Name: name, Helm: &pkgaddon.HelmSource{URL: "oci://registry.example.com/modules"}}
+func ociRegistry(name string) component.Registry {
+	return component.Registry{Name: name, Helm: &component.HelmSource{URL: "oci://registry.example.com/modules"}}
 }
 
 // TestFetchModule_OCI_EqualsGit drives the OCI branch (pull -> MemoryReader ->
@@ -226,8 +228,8 @@ func TestFetchModule_OCI_EqualsGit(t *testing.T) {
 		{Name: "s3/Chart.yaml", Data: []byte("name: s3\nversion: 1.0.0\n")}, // chart wrapper; parser ignores it
 	}
 
-	s := NewService(fakeStore{regs: []pkgaddon.Registry{ociRegistry("oci")}})
-	s.pullChart = func(_ context.Context, _ *pkgaddon.Registry, _, _ string) ([]*loader.BufferedFile, error) {
+	s := NewService(fakeStore{regs: []component.Registry{ociRegistry("oci")}})
+	s.pullChart = func(_ context.Context, _ *component.Registry, _, _ string) ([]*loader.BufferedFile, error) {
 		return bufs, nil
 	}
 
@@ -250,8 +252,8 @@ func TestFetchModule_OCI_PassesRequestedVersion(t *testing.T) {
 	}
 
 	var gotVersion string
-	s := NewService(fakeStore{regs: []pkgaddon.Registry{ociRegistry("oci")}})
-	s.pullChart = func(_ context.Context, _ *pkgaddon.Registry, _, version string) ([]*loader.BufferedFile, error) {
+	s := NewService(fakeStore{regs: []component.Registry{ociRegistry("oci")}})
+	s.pullChart = func(_ context.Context, _ *component.Registry, _, version string) ([]*loader.BufferedFile, error) {
 		gotVersion = version
 		return bufs, nil
 	}
@@ -266,8 +268,8 @@ func TestFetchModule_OCI_PassesRequestedVersion(t *testing.T) {
 // real registry client returns for a tag that does not exist) surfaces as a
 // FetchModule error naming the module, before any parse is attempted.
 func TestFetchModule_OCI_UnknownVersionFails(t *testing.T) {
-	s := NewService(fakeStore{regs: []pkgaddon.Registry{ociRegistry("oci")}})
-	s.pullChart = func(_ context.Context, _ *pkgaddon.Registry, _, version string) ([]*loader.BufferedFile, error) {
+	s := NewService(fakeStore{regs: []component.Registry{ociRegistry("oci")}})
+	s.pullChart = func(_ context.Context, _ *component.Registry, _, version string) ([]*loader.BufferedFile, error) {
 		return nil, errors.Errorf("failed to pull addon chart s3:%s: manifest unknown", version)
 	}
 

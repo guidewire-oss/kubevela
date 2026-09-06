@@ -23,10 +23,10 @@ template: {
 	output: _render.$returns.application
 
 	parameter: {
-		// Module name.
-		module: string
+		// Module name; defaults to the component name.
+		module: *context.name | string
 		// Registry name; empty means the configured default.
-		registry: string
+		registry: *"" | string
 		// Install namespace; empty means the default system namespace (vela-system).
 		namespace: *"" | string
 		// Module package version (the OCI/ECR tag vela module publish writes from

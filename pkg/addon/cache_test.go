@@ -29,6 +29,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/oam-dev/kubevela/pkg/registry/component"
 )
 
 func TestPutVersionedUIData2cache(t *testing.T) {
@@ -100,11 +102,7 @@ func TestPutAddonMeta2Cache(t *testing.T) {
 		"fluxcd": {
 			Name: "fluxcd",
 			Items: []Item{
-				&OSSItem{
-					tp:   FileType,
-					path: "fluxcd/definitions/helm-release.yaml",
-					name: "helm-release.yaml",
-				},
+				component.NewOSSItem(FileType, "fluxcd/definitions/helm-release.yaml", "helm-release.yaml"),
 			},
 		},
 	}
@@ -120,11 +118,7 @@ func TestGetCachedAddonMeta(t *testing.T) {
 		"fluxcd": {
 			Name: "fluxcd",
 			Items: []Item{
-				&OSSItem{
-					tp:   FileType,
-					path: "fluxcd/definitions/helm-release.yaml",
-					name: "helm-release.yaml",
-				},
+				component.NewOSSItem(FileType, "fluxcd/definitions/helm-release.yaml", "helm-release.yaml"),
 			},
 		},
 	}

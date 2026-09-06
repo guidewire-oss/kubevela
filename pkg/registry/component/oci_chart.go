@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package addon
+package component
 
 import (
 	"context"
@@ -24,13 +24,13 @@ import (
 )
 
 // ociChartTagLister lists a repository's tags over a chosen transport. It
-// mirrors listOCITagsWithTransport rather than ociTagLister because a push
+// mirrors ListOCITagsWithTransport rather than ociTagLister because a push
 // target's transport comes from its own URL scheme, not from a caller flag.
 type ociChartTagLister func(repoRef, host, username, password string, plainHTTP bool) ([]string, error)
 
 // chartTagLister lists a repository's tags. It is a package variable so tests
-// can substitute a fake; production always uses listOCITagsWithTransport.
-var chartTagLister ociChartTagLister = listOCITagsWithTransport
+// can substitute a fake; production always uses ListOCITagsWithTransport.
+var chartTagLister ociChartTagLister = ListOCITagsWithTransport
 
 // ociTagListerForTest swaps the package tag lister and returns a function that
 // restores it. It exists for tests in this package only.
@@ -58,7 +58,7 @@ func OCIChartRef(reg Registry, name, tag string) (string, error) {
 	if oci == nil {
 		return "", errors.Errorf("registry %q is not an OCI registry", reg.Name)
 	}
-	repoRef, _ := ociRepoRef(oci.URL, name)
+	repoRef, _ := OCIRepoRef(oci.URL, name)
 	return repoRef + ":" + tag, nil
 }
 
@@ -71,8 +71,8 @@ func PushOCIChart(_ context.Context, reg Registry, name, version string, archive
 	if oci == nil {
 		return errors.Errorf("registry %q is not an OCI registry", reg.Name)
 	}
-	repoRef, host := ociRepoRef(oci.URL, name)
-	client, err := newOCIClientWithPlainHTTP(host, oci.Username, oci.Token, ociURLIsPlainHTTP(oci.URL))
+	repoRef, host := OCIRepoRef(oci.URL, name)
+	client, err := NewOCIClientWithPlainHTTP(host, oci.Username, oci.Token, ociURLIsPlainHTTP(oci.URL))
 	if err != nil {
 		return err
 	}
@@ -91,7 +91,7 @@ func OCIChartTagExists(ctx context.Context, reg Registry, name, tag string) (boo
 	if oci == nil {
 		return false, errors.Errorf("registry %q is not an OCI registry", reg.Name)
 	}
-	repoRef, host := ociRepoRef(oci.URL, name)
+	repoRef, host := OCIRepoRef(oci.URL, name)
 	tags, err := chartTagLister(repoRef, host, oci.Username, oci.Token, ociURLIsPlainHTTP(oci.URL))
 	if err != nil {
 		if IsOCIRepositoryNotFound(err) {

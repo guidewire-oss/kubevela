@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package service fetches a module from a registry and parses it into a
 // module.Module, server-side, for the type: module render path. It reuses the
-// pkg/addon transport (git reader, OCI Helm-chart client) and the Registry
+// shared transport (git reader, OCI Helm-chart client) and the Registry
 // model; it does not reuse the addon parsing/packaging layer.
 package service
 
@@ -28,24 +28,24 @@ import (
 
 	"helm.sh/helm/v3/pkg/chart/loader"
 
-	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	"github.com/oam-dev/kubevela/pkg/module"
+	"github.com/oam-dev/kubevela/pkg/registry/component"
 )
 
 // Service fetches modules. It resolves registries through module.ResolveRegistry
-// over an pkgaddon.RegistryDataStore — reusing that story's default
+// over an component.RegistryDataStore — reusing that story's default
 // policy, source rejection, token loading, and not-found reporting. Its
 // reader/puller seams are wired to the real addon transport by NewService and
 // overridden by tests.
 type Service struct {
-	store     pkgaddon.RegistryDataStore
-	newReader func(reg *pkgaddon.Registry) (pkgaddon.AsyncReader, error)
+	store     component.RegistryDataStore
+	newReader func(reg *component.Registry) (component.AsyncReader, error)
 	pullChart ociChartPuller
 }
 
 // NewService wires the real addon transport. In production the store is
 // module.NewStore(cli) (the vela-module-registry ConfigMap).
-func NewService(store pkgaddon.RegistryDataStore) *Service {
+func NewService(store component.RegistryDataStore) *Service {
 	return &Service{
 		store:     store,
 		newReader: buildModuleReader,
@@ -55,9 +55,9 @@ func NewService(store pkgaddon.RegistryDataStore) *Service {
 
 // buildModuleReader builds the reader for a module registry, pointed at its
 // modules root (the source Path); ListAddonMeta then keys each module by name.
-// It reuses the addon transport (reg.BuildReader), returning the pkgaddon.AsyncReader
+// It reuses the addon transport (reg.BuildReader), returning the component.AsyncReader
 // readerFS consumes.
-func buildModuleReader(reg *pkgaddon.Registry) (pkgaddon.AsyncReader, error) {
+func buildModuleReader(reg *component.Registry) (component.AsyncReader, error) {
 	return reg.BuildReader()
 }
 
@@ -92,7 +92,7 @@ func (s *Service) FetchModule(ctx context.Context, registry, moduleName, version
 // pulled chart. readerFS errors are wrapped with the registry name so a failing
 // Application status is actionable. version applies only to the OCI branch; git
 // has no tag concept and always reads its configured path off the default branch.
-func (s *Service) sourceFS(ctx context.Context, reg *pkgaddon.Registry, moduleName, version string) (fs.FS, error) {
+func (s *Service) sourceFS(ctx context.Context, reg *component.Registry, moduleName, version string) (fs.FS, error) {
 	switch {
 	case reg.OCIChartSource() != nil:
 		return s.ociChartFS(ctx, reg, moduleName, version)
@@ -112,12 +112,12 @@ func (s *Service) sourceFS(ctx context.Context, reg *pkgaddon.Registry, moduleNa
 }
 
 // readerFS is the single source->tree adapter. It reads the module's files from
-// any pkgaddon.AsyncReader and assembles a mapFS keyed module-root-relative. It uses
+// any component.AsyncReader and assembles a mapFS keyed module-root-relative. It uses
 // RelativePath (not the raw item path) because that is the reader-agnostic path
 // both the live git reader and MemoryReader accept for ReadFile: the git reader
 // strips its configured base, and MemoryReader returns "<module>/<rel>". Both
 // forms start with "<module>/", which readerFS then strips.
-func readerFS(r pkgaddon.AsyncReader, moduleName string) (fs.FS, error) {
+func readerFS(r component.AsyncReader, moduleName string) (fs.FS, error) {
 	metas, err := r.ListAddonMeta()
 	if err != nil {
 		return nil, fmt.Errorf("list modules: %w", err)
@@ -129,7 +129,7 @@ func readerFS(r pkgaddon.AsyncReader, moduleName string) (fs.FS, error) {
 	prefix := moduleName + "/"
 	files := mapFS{}
 	for _, item := range meta.Items {
-		if item.GetType() != pkgaddon.FileType {
+		if item.GetType() != component.FileType {
 			continue
 		}
 		readPath := r.RelativePath(item)
@@ -149,15 +149,15 @@ func readerFS(r pkgaddon.AsyncReader, moduleName string) (fs.FS, error) {
 	return files, nil
 }
 
-type ociChartPuller func(ctx context.Context, reg *pkgaddon.Registry, moduleName, version string) ([]*loader.BufferedFile, error)
+type ociChartPuller func(ctx context.Context, reg *component.Registry, moduleName, version string) ([]*loader.BufferedFile, error)
 
 // pullModuleChart pulls the module's Helm-chart OCI artifact (same semantics as
 // vela addon push) and returns its buffered files, paths prefixed by the chart
 // (module) name. It reuses addon's pull verbatim; ociChartFS wraps the files in a
 // MemoryReader and runs readerFS. version "" resolves the highest semver tag; a
 // non-existent tag surfaces as a pull error naming the module and tag.
-func pullModuleChart(ctx context.Context, reg *pkgaddon.Registry, moduleName, version string) ([]*loader.BufferedFile, error) {
-	buffered, err := pkgaddon.PullOCIChartFiles(ctx, *reg, moduleName, version)
+func pullModuleChart(ctx context.Context, reg *component.Registry, moduleName, version string) ([]*loader.BufferedFile, error) {
+	buffered, err := component.PullOCIChartFiles(ctx, *reg, moduleName, version)
 	if err != nil {
 		return nil, fmt.Errorf("module %q: pull OCI chart: %w", moduleName, err)
 	}
@@ -165,14 +165,14 @@ func pullModuleChart(ctx context.Context, reg *pkgaddon.Registry, moduleName, ve
 }
 
 // ociChartFS pulls the module's Helm chart and reuses readerFS by wrapping the
-// buffered files in pkgaddon.MemoryReader (itself an pkgaddon.AsyncReader). No new
+// buffered files in component.MemoryReader (itself an component.AsyncReader). No new
 // adapter — the OCI blob just becomes a reader.
-func (s *Service) ociChartFS(ctx context.Context, reg *pkgaddon.Registry, moduleName, version string) (fs.FS, error) {
+func (s *Service) ociChartFS(ctx context.Context, reg *component.Registry, moduleName, version string) (fs.FS, error) {
 	bufs, err := s.pullChart(ctx, reg, moduleName, version)
 	if err != nil {
 		return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 	}
-	fsys, err := readerFS(&pkgaddon.MemoryReader{Name: moduleName, Files: bufs}, moduleName)
+	fsys, err := readerFS(&component.MemoryReader{Name: moduleName, Files: bufs}, moduleName)
 	if err != nil {
 		return nil, fmt.Errorf("registry %q: %w", reg.Name, err)
 	}

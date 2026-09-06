@@ -229,7 +229,6 @@ func (o *modulePublishOptions) resolveTarget(ctx context.Context, cli client.Cli
 	return reg, nil
 }
 
-
 // publishError turns a registry rejection into a message naming the fix. ECR
 // creates no repository on push, and an IMMUTABLE repository refuses a tag
 // move no matter what the client asks for.

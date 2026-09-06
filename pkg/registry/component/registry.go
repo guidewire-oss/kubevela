@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package addon
+package component
 
 import (
 	"context"
@@ -157,7 +157,7 @@ func (r registryImpl) getRegistries(ctx context.Context) (map[string]Registry, *
 		return nil, nil, err
 	}
 	if _, ok := cm.Data[registriesKey]; !ok {
-		return nil, nil, NewAddonError("error addon registry configmap registry-key not exist")
+		return nil, nil, NewError("error addon registry configmap registry-key not exist")
 	}
 	registries := map[string]Registry{}
 	if err := json.Unmarshal([]byte(cm.Data[registriesKey]), &registries); err != nil {
