@@ -741,7 +741,13 @@ func makeWorkloadWithContext(pCtx process.Context, comp *Component, ns, appName 
 		}
 	}
 	commonLabels := definition.GetCommonLabels(definition.GetBaseContextLabels(pCtx))
-	util.AddLabels(workload, util.MergeMapOverrideWithDst(commonLabels, map[string]string{oam.WorkloadTypeLabel: comp.Type}))
+	// Use the resolved definition name for the label so that module type strings
+	// containing slashes (e.g. "s3/v1/bucket") don't produce invalid label values.
+	resolvedType := comp.Type
+	if comp.FullTemplate != nil && comp.FullTemplate.ComponentDefinition != nil {
+		resolvedType = comp.FullTemplate.ComponentDefinition.Name
+	}
+	util.AddLabels(workload, util.MergeMapOverrideWithDst(commonLabels, map[string]string{oam.WorkloadTypeLabel: resolvedType}))
 	return workload, nil
 }
 
