@@ -18,8 +18,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 
@@ -27,6 +25,7 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/module"
+	"github.com/oam-dev/kubevela/pkg/module/naming"
 	"github.com/oam-dev/kubevela/pkg/module/service/api"
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
@@ -178,12 +177,6 @@ func objectsTier(name string, objects []interface{}, dependsOn string) map[strin
 	return c
 }
 
-// maxObjectNameLen is the Kubernetes limit for a metadata.name.
-const maxObjectNameLen = 253
-
-// maxLabelValueLen is the Kubernetes limit for a label value.
-const maxLabelValueLen = 63
-
 // stampIdentity returns a copy of def carrying its module identity: the
 // {module}-{apiVersion}-{name} object name, the definition identity labels, the
 // full-name annotation, and the spec identity fields. It copies rather than
@@ -199,7 +192,7 @@ func stampIdentity(def map[string]interface{}, moduleName, apiVersion string) ma
 	shortName, _ := meta["name"].(string)
 
 	fullName := fmt.Sprintf("%s-%s-%s", moduleName, apiVersion, shortName)
-	meta["name"] = truncateName(fullName)
+	meta["name"] = naming.DefinitionName(moduleName, apiVersion, shortName)
 
 	labels, _ := meta["labels"].(map[string]interface{})
 	if labels == nil {
@@ -211,7 +204,7 @@ func stampIdentity(def map[string]interface{}, moduleName, apiVersion string) ma
 	// The definition name can be up to the object-name limit, but a label value
 	// caps at 63 chars, so bound it; the untruncated name lives on the full-name
 	// annotation below.
-	labels[types.LabelDefinitionName] = truncateWithHash(shortName, maxLabelValueLen)
+	labels[types.LabelDefinitionName] = naming.TruncateWithHash(shortName, naming.MaxLabelValueLen)
 	labels[oam.LabelAddonName] = moduleName
 
 	annos, _ := meta["annotations"].(map[string]interface{})
@@ -230,25 +223,6 @@ func stampIdentity(def map[string]interface{}, moduleName, apiVersion string) ma
 	spec["apiVersion"] = apiVersion
 
 	return out
-}
-
-// truncateName keeps name within the Kubernetes object-name limit, appending a
-// stable 8-char digest of the full name so two long names that share a prefix
-// still get distinct objects. The untruncated name lives on the full-name
-// annotation.
-func truncateName(name string) string {
-	return truncateWithHash(name, maxObjectNameLen)
-}
-
-// truncateWithHash keeps s within max bytes, appending a stable 8-char digest of
-// the full value so two long values sharing a prefix stay distinct.
-func truncateWithHash(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	sum := sha256.Sum256([]byte(s))
-	suffix := "-" + hex.EncodeToString(sum[:])[:8]
-	return s[:max-len(suffix)] + suffix
 }
 
 // deepCopyMap copies nested maps and slices so stamping never writes through to

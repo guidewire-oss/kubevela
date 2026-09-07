@@ -18,15 +18,11 @@ package module
 
 import (
 	"fmt"
-	"regexp"
 
 	"github.com/Masterminds/semver/v3"
-)
 
-// apiVersionPattern is the required format for a module line's apiVersion,
-// following the Kubernetes API stability level convention (e.g. v1, v2,
-// v1beta1, v1alpha2).
-var apiVersionPattern = regexp.MustCompile(`^v\d+(alpha\d+|beta\d+)?$`)
+	"github.com/oam-dev/kubevela/pkg/module/naming"
+)
 
 // validateModuleName rejects an empty module name, naming the file it was
 // read from.
@@ -51,8 +47,8 @@ func validateModuleVersion(version, path string) error {
 // validateAPIVersion rejects an apiVersion that does not match
 // ^v\d+(alpha\d+|beta\d+)?$, naming the file it was read from.
 func validateAPIVersion(apiVersion, path string) error {
-	if !apiVersionPattern.MatchString(apiVersion) {
-		return fmt.Errorf("apiVersion %q in %s is invalid, must match %s", apiVersion, path, apiVersionPattern.String())
+	if !naming.IsValidAPIVersion(apiVersion) {
+		return fmt.Errorf("apiVersion %q in %s is invalid, must match %s", apiVersion, path, naming.APIVersionPattern())
 	}
 	return nil
 }
