@@ -240,6 +240,37 @@ func (b *ociHelmBackend) listUIData(ctx context.Context) ([]*UIData, error) {
 	return addons, nil
 }
 
+// classifyCatalogListStatus turns a /v2/_catalog response status into the
+// enumeration result. Split out from listOCIRepositoriesWithScheme's HTTP
+// loop so the Docker-Hub-specific 401 handling is unit-testable without a
+// real HTTP round trip.
+//
+// Docker Hub's registry front door never grants the registry:catalog:* scope
+// to anyone, including the account owner, so it deterministically answers
+// /v2/_catalog with 401 regardless of credentials. For every other registry a
+// 401 here usually means a real permission problem worth surfacing, so the
+// relaxation is scoped to Docker Hub's known hosts rather than applied
+// globally. This is safe even for a Docker Hub user with wrong credentials:
+// listOCIRepositoriesWithScheme is only ever called alongside a portable
+// catalog read that performs its own real login, and a genuine auth failure
+// there still surfaces as a hard error (see ociHelmBackend.listUIData).
+//
+// It stays in pkg/addon rather than moving to pkg/registry/component with the
+// other OCI primitives because it speaks addon's catalog protocol: the
+// ErrOCICatalogAbsent sentinel it returns is what the addon push path reads to
+// decide it may bootstrap a portable catalog.
+func classifyCatalogListStatus(host string, status int, statusText string) error {
+	switch status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return errors.Wrapf(ErrOCICatalogAbsent, "OCI catalog enumeration is unsupported at %s: server returned %s", host, statusText)
+	case http.StatusUnauthorized:
+		if component.IsDockerHubHost(host) {
+			return errors.Wrapf(ErrOCICatalogAbsent, "OCI catalog enumeration is unsupported at %s: Docker Hub does not grant catalog listing to any credential: server returned %s", host, statusText)
+		}
+	}
+	return errors.Errorf("failed to list OCI catalog at %s: server returned %s", host, statusText)
+}
+
 // listOCIRepositories enumerates the OCI distribution catalog and returns
 // repository names relative to the configured registry prefix. The catalog API
 // is paginated through RFC 5988 Link headers.
@@ -282,16 +313,12 @@ func listOCIRepositoriesWithScheme(ctx context.Context, registryURL, username, p
 		closeErr := resp.Body.Close()
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			// Not every registry implements /v2/_catalog. Treat a refusal that
-			// names the route as unsupported as "no catalog to enumerate" rather
-			// than a read failure, so a push can still bootstrap a portable
-			// catalog there. Anything else stays a read failure, because
-			// rebuilding the catalog from a misread empty list would drop every
-			// entry already published.
-			switch resp.StatusCode {
-			case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
-				return nil, errors.Wrapf(ErrOCICatalogAbsent, "OCI catalog enumeration is unsupported at %s: server returned %s", host, resp.Status)
-			}
-			return nil, errors.Errorf("failed to list OCI catalog at %s: server returned %s", host, resp.Status)
+			// names the route as unsupported (or, for Docker Hub specifically, its
+			// deterministic 401) as "no catalog to enumerate" rather than a read
+			// failure, so a push can still bootstrap a portable catalog there.
+			// Anything else stays a read failure, because rebuilding the catalog
+			// from a misread empty list would drop every entry already published.
+			return nil, classifyCatalogListStatus(host, resp.StatusCode, resp.Status)
 		}
 		if decodeErr != nil {
 			return nil, errors.Wrap(decodeErr, "failed to decode OCI catalog response")

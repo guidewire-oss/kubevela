@@ -231,6 +231,27 @@ func IsOCIRepositoryAbsentError(err error) bool {
 	return strings.Contains(err.Error(), ociErrCodeNameUnknown)
 }
 
+// IsDockerHubHost reports whether host is a known Docker Hub registry alias.
+// Mirrors the alias list in pkg/cue/cuex/providers/helm/auth.go's
+// normalizeDockerHubAliases; kept here rather than imported because that
+// package is a different, heavier dependency (CUE #Helm chart-fetch auth)
+// that the registry code does not otherwise need.
+//
+// It lives with the generic OCI primitives rather than in pkg/addon because
+// which hosts are Docker Hub is a property of the registry, not of addons:
+// the module publish and fetch paths reach the same registries.
+func IsDockerHubHost(host string) bool {
+	h := strings.ToLower(host)
+	if i := strings.IndexByte(h, ':'); i >= 0 {
+		h = h[:i]
+	}
+	switch h {
+	case "docker.io", "index.docker.io", "registry-1.docker.io":
+		return true
+	}
+	return false
+}
+
 // resolveOCITag returns the tag to pull. A pinned version is used as-is; an
 // empty version resolves to the highest semver tag published in the repository.
 func resolveOCITag(ctx context.Context, repoRef, host, username, password, version string) (string, error) {

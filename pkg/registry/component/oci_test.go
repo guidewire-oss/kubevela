@@ -76,3 +76,28 @@ func TestOCIClientCacheIsBounded(t *testing.T) {
 	ociClientCache.Unlock()
 	assert.LessOrEqual(t, size, ociClientCacheLimit, "the cache must stay bounded as credentials rotate")
 }
+
+// TestIsDockerHubHost pins the alias list, including the port-stripping and
+// case-folding, since a miss here silently turns Docker Hub's deterministic
+// catalog 401 back into a hard failure.
+func TestIsDockerHubHost(t *testing.T) {
+	for _, host := range []string{
+		"docker.io",
+		"index.docker.io",
+		"registry-1.docker.io",
+		"DOCKER.IO",
+		"registry-1.docker.io:443",
+	} {
+		assert.True(t, IsDockerHubHost(host), "%q should be Docker Hub", host)
+	}
+	for _, host := range []string{
+		"",
+		"ghcr.io",
+		"776719623202.dkr.ecr.us-west-2.amazonaws.com",
+		"notdocker.io",
+		"docker.io.evil.com",
+		"localhost:5000",
+	} {
+		assert.False(t, IsDockerHubHost(host), "%q should not be Docker Hub", host)
+	}
+}
