@@ -28,7 +28,7 @@ import (
 )
 
 // closedPortRegistryURL points listPortableOCICatalog* at a loopback port
-// nothing listens on, so listOCITagsWithTransport fails to dial rather than
+// nothing listens on, so component.ListOCITagsWithTransport fails to dial rather than
 // answering "repository does not exist" -- exercising the "unavailable" branch
 // deterministically without any real network dependency.
 const closedPortRegistryURL = "127.0.0.1:1/addon"

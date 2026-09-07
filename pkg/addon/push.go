@@ -37,6 +37,8 @@ import (
 	helmrepo "helm.sh/helm/v3/pkg/repo"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/oam-dev/kubevela/pkg/registry/component"
 )
 
 var chartMuseumURLPattern = regexp.MustCompile(`^https?://`)
@@ -75,10 +77,11 @@ type PushCmd struct {
 // nil when the registry is not OCI-backed. The inline token is carried over
 // explicitly because a safe copy deliberately drops it.
 func ociPushSource(reg Registry) *HelmSource {
-	if reg.Helm == nil || !IsOCIURL(reg.Helm.URL) {
+	oci := reg.OCISource()
+	if oci == nil {
 		return nil
 	}
-	return &HelmSource{URL: reg.Helm.URL, Username: reg.Helm.Username, Token: reg.Helm.Token}
+	return &HelmSource{URL: oci.URL, Username: oci.Username, Token: oci.Token}
 }
 
 // IsDirectAddonPushTarget reports whether target can be used without resolving
@@ -227,7 +230,7 @@ func (p *PushCmd) pushToOCI(ctx context.Context, source *HelmSource) error {
 		return errors.New("--access-token and --auth-header are only supported for ChartMuseum; use --username/--password (or --password-stdin) or configured Helm/Docker credentials for OCI registries")
 	}
 	if p.CaFile != "" || p.CertFile != "" || p.KeyFile != "" || p.InsecureSkipVerify {
-		// The OCI client built by newOCIClientWithPlainHTTP has no seam for a
+		// The OCI client built by component.NewOCIClientWithPlainHTTP has no seam for a
 		// custom transport, so these silently had no effect. Reject rather than
 		// let a caller believe a custom CA or client cert was applied.
 		return errors.New("--ca-file, --cert-file, --key-file, and --insecure are only supported for ChartMuseum; OCI registries use the ambient Docker/Helm TLS configuration")
@@ -276,8 +279,8 @@ func (p *PushCmd) pushOCI(source *HelmSource) error {
 		return err
 	}
 
-	repoRef, host := ociRepoRef(source.URL, loadedChart.Metadata.Name)
-	ociClient, err := newOCIClientWithPlainHTTP(host, source.Username, source.Token, p.UseHTTP)
+	repoRef, host := component.OCIRepoRef(source.URL, loadedChart.Metadata.Name)
+	ociClient, err := component.NewOCIClientWithPlainHTTP(host, source.Username, source.Token, p.UseHTTP)
 	if err != nil {
 		return err
 	}
