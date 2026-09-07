@@ -85,8 +85,9 @@ func TestNewResourceKeeper(t *testing.T) {
 	_rk, err := NewResourceKeeper(context.Background(), cli, app)
 	r.NoError(err)
 	rk := _rk.(*resourceKeeper)
-	r.NotNil(rk.applyOncePolicy)
-	r.True(rk.applyOncePolicy.Enable)
+	// An addon application used to be implicitly apply-once. It is an Application like
+	// any other now, and declares the policy itself if it wants it.
+	r.Nil(rk.applyOncePolicy)
 	r.NotNil(rk.garbageCollectPolicy)
 	r.True(rk.garbageCollectPolicy.KeepLegacyResource)
 	rootRT, err := rk.getRootRT(context.Background())

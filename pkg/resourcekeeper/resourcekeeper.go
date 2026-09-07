@@ -22,7 +22,6 @@ import (
 
 	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -30,7 +29,6 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
-	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/policy"
 	"github.com/oam-dev/kubevela/pkg/resourcetracker"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
@@ -102,9 +100,6 @@ func (h *resourceKeeper) getComponentRevisionRT(ctx context.Context) (crRT *v1be
 func (h *resourceKeeper) parseApplicationResourcePolicy() (err error) {
 	if h.applyOncePolicy, err = policy.ParsePolicy[v1alpha1.ApplyOncePolicySpec](h.app); err != nil {
 		return errors.Wrapf(err, "failed to parse apply-once policy")
-	}
-	if h.applyOncePolicy == nil && metav1.HasLabel(h.app.ObjectMeta, oam.LabelAddonName) {
-		h.applyOncePolicy = &v1alpha1.ApplyOncePolicySpec{Enable: true}
 	}
 	if h.garbageCollectPolicy, err = policy.ParsePolicy[v1alpha1.GarbageCollectPolicySpec](h.app); err != nil {
 		return errors.Wrapf(err, "failed to parse garbage-collect policy")

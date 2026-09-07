@@ -388,6 +388,9 @@ const (
 	PolicyResourceCreator string = "policy"
 	// WorkflowResourceCreator create the resource in workflow.
 	WorkflowResourceCreator string = "workflow"
+	// AddonResourceCreator create the resource directly from the addon installer,
+	// outside any workflow or policy.
+	AddonResourceCreator string = "addon"
 )
 
 // OAMObjectReference defines the object reference for an oam resource

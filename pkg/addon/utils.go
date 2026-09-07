@@ -31,13 +31,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
+	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/definition"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/resourcetracker"
 	"github.com/oam-dev/kubevela/pkg/utils/addon"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
@@ -551,4 +555,68 @@ func FilterDependencyRegistries(i int, rs []Registry) []Registry {
 	copy(ret, rs[:i])
 	copy(ret[i:], rs[i+1:])
 	return ret
+}
+
+// markAddonAuxiliaryResource labels an auxiliary resource as belonging to the addon
+// application. These are the labels apply.MustBeControlledByApp reads, so state-keep
+// can re-apply the resource with no take-over policy on the application.
+func markAddonAuxiliaryResource(o *unstructured.Unstructured, app *v1beta1.Application) {
+	util.AddLabels(o, map[string]string{
+		oam.LabelAppName:      app.Name,
+		oam.LabelAppNamespace: app.Namespace,
+		oam.LabelAppCluster:   multicluster.ClusterLocalName,
+	})
+}
+
+// recordAuxiliaryResources adopts already-applied auxiliary resources into the
+// application's root ResourceTracker. This records, it does not dispatch, and it leaves
+// the application spec alone.
+//
+// The root tracker rather than the versioned one: it survives every re-render,
+// PruneComponentResources only walks the current tracker, and garbage collection marks
+// the root tracker only when the application is being deleted.
+func recordAuxiliaryResources(ctx context.Context, cli client.Client, app *v1beta1.Application, resources []*unstructured.Unstructured) error {
+	if len(resources) == 0 {
+		return nil
+	}
+	// The application controller writes the root tracker too, so a racing reconcile is
+	// expected rather than exceptional.
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		rt, err := rootResourceTracker(ctx, cli, app)
+		if err != nil {
+			return err
+		}
+		return resourcetracker.RecordManifestsInResourceTracker(ctx, cli, rt, resources,
+			false, // record the manifests, state-keep replays them to correct drift
+			false, // recycled with the application, like every other addon resource
+			common2.AddonResourceCreator)
+	})
+}
+
+// rootResourceTracker returns the application's root ResourceTracker, creating it if the
+// controller has not reconciled the application yet. The application must already exist,
+// since the tracker is labelled with its UID.
+func rootResourceTracker(ctx context.Context, cli client.Client, app *v1beta1.Application) (*v1beta1.ResourceTracker, error) {
+	rootRT, _, _, _, err := resourcetracker.ListApplicationResourceTrackers(ctx, cli, app)
+	if err != nil {
+		return nil, err
+	}
+	if rootRT != nil {
+		return rootRT, nil
+	}
+	rootRT, err = resourcetracker.CreateRootResourceTracker(ctx, cli, app)
+	if errors2.IsAlreadyExists(err) {
+		rootRT, _, _, _, err = resourcetracker.ListApplicationResourceTrackers(ctx, cli, app)
+	}
+	return rootRT, err
+}
+
+// auxiliaryResourceTrack reports whether the addon's auxiliary resources should be
+// recorded in the Application's ResourceTracker and kept from drifting. Addons opt out
+// to get the previous behaviour, where they are applied and then untracked.
+func auxiliaryResourceTrack(addon *InstallPackage) bool {
+	if addon.AuxiliaryResources == nil || addon.AuxiliaryResources.ResourceTrack == nil {
+		return true
+	}
+	return *addon.AuxiliaryResources.ResourceTrack
 }

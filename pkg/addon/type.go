@@ -101,6 +101,22 @@ type Meta struct {
 	SystemRequirements *SystemRequirements `json:"system,omitempty"`
 	// Annotations used for addon maintainers to add their own description or extensions to metadata.
 	Annotations map[string]string `json:"annotations,omitempty"`
+	// AuxiliaryResources controls how the resources installed outside the addon's Application are managed.
+	AuxiliaryResources *AuxiliaryResources `json:"auxiliaryResources,omitempty"`
+}
+
+// AuxiliaryResources controls how the resources an addon installs outside its
+// Application are managed: definitions, config templates, definition schemas and
+// velaQL views.
+type AuxiliaryResources struct {
+	// ResourceTrack records these resources in the Application's ResourceTracker and
+	// keeps them from drifting. Defaults to true. Set it false for exactly the previous
+	// behaviour, where they are applied and then untracked.
+	//
+	// Deliberately independent of the Application's apply-once policy, which an addon
+	// uses for its own components: these resources are contracts that VelaUX, the CLI
+	// and the renderer read, not workloads an operator tunes.
+	ResourceTrack *bool `json:"resourceTrack,omitempty"`
 }
 
 // DeployTo defines where the addon to deploy to

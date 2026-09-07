@@ -1572,6 +1572,9 @@ func (h *Installer) dispatchAddonResource(ctx context.Context, addon *InstallPac
 	auxiliaryOutputs = append(auxiliaryOutputs, schemas...)
 	auxiliaryOutputs = append(auxiliaryOutputs, views...)
 
+	track := auxiliaryResourceTrack(addon)
+
+	var applied []*unstructured.Unstructured
 	for _, o := range auxiliaryOutputs {
 		// bind-component means the content is related with the component
 		// if component not exists, the resources shouldn't be applied
@@ -1588,16 +1591,29 @@ func (h *Installer) dispatchAddonResource(ctx context.Context, addon *InstallPac
 			h.dryRunBuff.WriteString("\n")
 			continue
 		}
+		if track {
+			markAddonAuxiliaryResource(o, app)
+		}
 		addOwner(o, app)
+		// Snapshot before applying: Apply writes the server's response back into the
+		// object, and a manifest carrying resourceVersion can never be re-applied.
+		recorded := o.DeepCopy()
 		err = h.apply.Apply(h.ctx, o, apply.DisableUpdateAnnotation())
 		if err != nil {
 			return err
 		}
+		applied = append(applied, recorded)
 	}
 
 	if h.dryRun {
 		fmt.Print(h.dryRunBuff.String())
 		return nil
+	}
+
+	if track {
+		if err = recordAuxiliaryResources(h.ctx, h.cli, app, applied); err != nil {
+			return errors.Wrap(err, "adopt addon auxiliary resources into the application resourcetracker")
+		}
 	}
 
 	if len(h.args) > 0 {
