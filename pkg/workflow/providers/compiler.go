@@ -76,12 +76,11 @@ var compiler = singleton.NewSingletonE[*cuex.Compiler](func() (*cuex.Compiler, e
 		runtime.Must(cuexruntime.NewInternalPackage("query", query.GetTemplate(), query.GetProviders())),
 		runtime.Must(cuexruntime.NewInternalPackage("terraform", terraform.GetTemplate(), terraform.GetProviders())),
 
-		// component/addon provider package so definitions importing "vela/addon"
-		// can be compiled for OpenAPI schema generation and definition validation.
-		addonprovider.Package,
-		// component/module provider package so definitions importing "vela/module"
-		// can be compiled for OpenAPI schema generation and definition validation.
-		moduleprovider.Package,
+		// component provider packages, so definitions importing "vela/addon" and
+		// "vela/module" can be compiled for OpenAPI schema generation and
+		// definition validation.
+		runtime.Must(cuexruntime.NewInternalPackage(addonprovider.ProviderName, addonprovider.GetTemplate(), addonprovider.GetProviders())),
+		runtime.Must(cuexruntime.NewInternalPackage(moduleprovider.ProviderName, moduleprovider.GetTemplate(), moduleprovider.GetProviders())),
 	), nil
 })
 

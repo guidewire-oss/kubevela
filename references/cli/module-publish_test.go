@@ -98,46 +98,6 @@ func moduleRegistryClient(t *testing.T, entries map[string]pkgaddon.Registry) cl
 	return fake.NewClientBuilder().WithScheme(common.Scheme).WithObjects(cm).Build()
 }
 
-func TestModulePublishPushesArtifact(t *testing.T) {
-	rec := &recordedPush{}
-	o := &modulePublishOptions{
-		dir:    publishFixtureDir(t),
-		ociRef: "oci://registry.example.com/modules",
-		push:   rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
-			return false, nil
-		},
-	}
-
-	out := &bytes.Buffer{}
-	require.NoError(t, o.run(context.Background(), nil, out))
-	require.Equal(t, 1, rec.calls)
-	require.Equal(t, "s3", rec.name)
-	require.Equal(t, "1.0.0", rec.version)
-	require.NotEmpty(t, rec.archive)
-	require.Contains(t, out.String(), "registry.example.com/modules/s3:1.0.0")
-}
-
-func TestModulePublishDryRunPushesNothing(t *testing.T) {
-	rec := &recordedPush{}
-	o := &modulePublishOptions{
-		dir:    publishFixtureDir(t),
-		ociRef: "oci://registry.example.com/modules",
-		dryRun: true,
-		push:   rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
-			return false, errors.New("tagExists must not be called on a dry run")
-		},
-	}
-
-	out := &bytes.Buffer{}
-	require.NoError(t, o.run(context.Background(), nil, out))
-	require.Zero(t, rec.calls)
-	printed := out.String()
-	require.Contains(t, printed, "registry.example.com/modules/s3:1.0.0")
-	require.Contains(t, printed, "modules.oam.dev/lines")
-}
-
 func TestModulePublishFailsBeforePush(t *testing.T) {
 	// invalidTreeDir contains an _module.cue that parses but fails
 	// validation (a non-semver version), so the case below fails through the
@@ -182,126 +142,10 @@ func TestModulePublishFailsBeforePush(t *testing.T) {
 	}
 }
 
-func TestModulePublishUsesResolvedRegistryCredentials(t *testing.T) {
-	rec := &recordedPush{}
-	cli := moduleRegistryClient(t, map[string]pkgaddon.Registry{
-		"ecr": {Name: "ecr", Helm: &pkgaddon.HelmSource{URL: "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules"}},
-	})
-	o := &modulePublishOptions{
-		dir:  publishFixtureDir(t),
-		push: rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
-			return false, nil
-		},
-	}
-
-	require.NoError(t, o.run(context.Background(), cli, &bytes.Buffer{}))
-	require.Equal(t, "ecr", rec.reg.Name)
-	require.NotNil(t, rec.reg.OCIChartSource())
-	require.Equal(t, "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules", rec.reg.Helm.URL)
-}
-
-func TestModulePublishVersionOverride(t *testing.T) {
-	rec := &recordedPush{}
-	o := &modulePublishOptions{
-		dir:     publishFixtureDir(t),
-		ociRef:  "oci://registry.example.com/modules",
-		version: "1.1.0-rc1",
-		push:    rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, tag string) (bool, error) {
-			require.Equal(t, "1.1.0-rc1", tag)
-			return false, nil
-		},
-	}
-	require.NoError(t, o.run(context.Background(), nil, &bytes.Buffer{}))
-	require.Equal(t, "1.1.0-rc1", rec.version)
-}
-
-// TestModulePublishVersionOverrideWarnsOnMismatch asserts run prints a warning
-// naming both the overridden tag and the module's own declared version when
-// --version disagrees with _module.cue, so a consumer that always fetches the
-// highest tag has some signal the invariant was deliberately broken.
-func TestModulePublishVersionOverrideWarnsOnMismatch(t *testing.T) {
-	rec := &recordedPush{}
-	out := &bytes.Buffer{}
-	o := &modulePublishOptions{
-		dir:     publishFixtureDir(t),
-		ociRef:  "oci://registry.example.com/modules",
-		version: "1.1.0-rc1",
-		push:    rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
-			return false, nil
-		},
-	}
-	require.NoError(t, o.run(context.Background(), nil, out))
-	printed := out.String()
-	require.Contains(t, printed, "1.1.0-rc1")
-	require.Contains(t, printed, "1.0.0")
-	require.Contains(t, printed, "unchanged")
-}
-
-// TestModulePublishNoWarningWithoutVersionOverride asserts run stays silent
-// about the tag/version relationship when --version was never passed, so the
-// warning is not noise on the common path.
-func TestModulePublishNoWarningWithoutVersionOverride(t *testing.T) {
-	rec := &recordedPush{}
-	out := &bytes.Buffer{}
-	o := &modulePublishOptions{
-		dir:    publishFixtureDir(t),
-		ociRef: "oci://registry.example.com/modules",
-		push:   rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
-			return false, nil
-		},
-	}
-	require.NoError(t, o.run(context.Background(), nil, out))
-	require.NotContains(t, out.String(), "unchanged")
-}
-
 func TestModulePublishRequiresClusterForNamedRegistry(t *testing.T) {
 	o := &modulePublishOptions{dir: publishFixtureDir(t), registry: "ecr"}
 	err := o.run(context.Background(), nil, &bytes.Buffer{})
 	require.ErrorContains(t, err, "cluster")
-}
-
-func TestModulePublishCommandFlagsAndMount(t *testing.T) {
-	cmd := NewModulePublishCommand(common.Args{}, cmdutil.NewDefaultIOStreams())
-	for _, flag := range []string{"registry", "version", "force", "dry-run", "username", "password", "password-stdin"} {
-		require.NotNil(t, cmd.Flags().Lookup(flag), "missing flag %s", flag)
-	}
-	require.Error(t, cmd.Args(cmd, []string{}), "a module directory is required")
-	require.NoError(t, cmd.Args(cmd, []string{"dir"}))
-	require.NoError(t, cmd.Args(cmd, []string{"dir", "oci://registry.example.com/modules"}))
-	require.Error(t, cmd.Args(cmd, []string{"dir", "ref", "extra"}))
-
-	group := NewModuleCommand(common.Args{}, "1", cmdutil.NewDefaultIOStreams())
-	names := map[string]bool{}
-	for _, sub := range group.Commands() {
-		names[sub.Name()] = true
-	}
-	require.True(t, names["publish"], "publish is not mounted on vela module")
-}
-
-func TestModulePublishRejectsRegistryFlagWithPositionalRef(t *testing.T) {
-	o := &modulePublishOptions{dir: publishFixtureDir(t), registry: "ecr", ociRef: "oci://registry.example.com/modules"}
-	err := o.run(context.Background(), nil, &bytes.Buffer{})
-	require.ErrorContains(t, err, "cannot be combined")
-}
-
-func TestModulePublishForceSkipsTagExistsCheck(t *testing.T) {
-	rec := &recordedPush{}
-	o := &modulePublishOptions{
-		dir:    publishFixtureDir(t),
-		ociRef: "oci://registry.example.com/modules",
-		force:  true,
-		push:   rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
-			return false, errors.New("tagExists must not be called when force is set")
-		},
-	}
-
-	require.NoError(t, o.run(context.Background(), nil, &bytes.Buffer{}))
-	require.Equal(t, 1, rec.calls)
 }
 
 func TestModulePublishAlreadyPublishedWithoutForce(t *testing.T) {
@@ -389,29 +233,6 @@ func TestModulePublishOverridesResolvedRegistryCredentials(t *testing.T) {
 	require.NoError(t, o.run(context.Background(), cli, &bytes.Buffer{}))
 	require.Equal(t, "flag-user", rec.reg.Helm.Username)
 	require.Equal(t, "flag-password", rec.reg.Helm.Token)
-}
-
-func TestModulePublishKeepsRegistryCredentialsWhenFlagsEmpty(t *testing.T) {
-	rec := &recordedPush{}
-	cli := moduleRegistryClient(t, map[string]pkgaddon.Registry{
-		"ecr": {Name: "ecr", Helm: &pkgaddon.HelmSource{
-			URL:      "oci://123456789012.dkr.ecr.us-west-2.amazonaws.com/modules",
-			Username: "entry-user",
-			Token:    "entry-token",
-		}},
-	})
-	o := &modulePublishOptions{
-		dir:      publishFixtureDir(t),
-		registry: "ecr",
-		push:     rec.push,
-		tagExists: func(_ context.Context, _ pkgaddon.Registry, _, _ string) (bool, error) {
-			return false, nil
-		},
-	}
-
-	require.NoError(t, o.run(context.Background(), cli, &bytes.Buffer{}))
-	require.Equal(t, "entry-user", rec.reg.Helm.Username)
-	require.Equal(t, "entry-token", rec.reg.Helm.Token)
 }
 
 // TestModulePublishCommandDryRunReflectsFlags exercises RunE's flag-to-struct

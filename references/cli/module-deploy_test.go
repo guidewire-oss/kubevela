@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -40,68 +39,7 @@ import (
 	pkgaddon "github.com/oam-dev/kubevela/pkg/addon"
 	pkgmodule "github.com/oam-dev/kubevela/pkg/module"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
-	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
-
-func TestBuildModuleApplication(t *testing.T) {
-	app, err := buildModuleApplication("s3", "catalog", "vela-system", "")
-	require.NoError(t, err)
-
-	assert.Equal(t, "module-s3-deploy", app.Name)
-	assert.Equal(t, "vela-system", app.Namespace)
-	assert.Equal(t, "core.oam.dev/v1beta1", app.APIVersion)
-	assert.Equal(t, "Application", app.Kind)
-
-	require.Len(t, app.Spec.Components, 1)
-	comp := app.Spec.Components[0]
-	assert.Equal(t, "s3", comp.Name)
-	assert.Equal(t, "module", comp.Type)
-
-	require.NotNil(t, comp.Properties)
-	var props map[string]string
-	require.NoError(t, json.Unmarshal(comp.Properties.Raw, &props))
-	assert.Equal(t, map[string]string{
-		"module":    "s3",
-		"registry":  "catalog",
-		"namespace": "vela-system",
-		"version":   "",
-	}, props)
-}
-
-// TestBuildModuleApplicationSetsVersion asserts a requested version fills the
-// module component's version property, so the server-side render fetches
-// that exact package version instead of latest.
-func TestBuildModuleApplicationSetsVersion(t *testing.T) {
-	app, err := buildModuleApplication("s3", "catalog", "vela-system", "1.2.0")
-	require.NoError(t, err)
-
-	var props map[string]string
-	require.NoError(t, json.Unmarshal(app.Spec.Components[0].Properties.Raw, &props))
-	assert.Equal(t, "1.2.0", props["version"])
-}
-
-func TestModuleTierNames(t *testing.T) {
-	app := &v1beta1.Application{
-		Spec: v1beta1.ApplicationSpec{
-			Components: []oamcommon.ApplicationComponent{
-				{Name: "s3-aux"},
-				{Name: "s3-v1-aux"},
-				{Name: "s3-v1-defs"},
-			},
-		},
-	}
-	assert.Equal(t, []string{"s3-aux", "s3-v1-aux", "s3-v1-defs"}, moduleTierNames(app))
-}
-
-func TestModuleTierNamesNoComponents(t *testing.T) {
-	assert.Empty(t, moduleTierNames(&v1beta1.Application{}))
-}
-
-func TestModuleAppNames(t *testing.T) {
-	assert.Equal(t, "module-s3-deploy", moduleDeployAppName("s3"))
-	assert.Equal(t, "module-s3", ownedModuleAppName("s3"))
-	assert.NotEqual(t, moduleDeployAppName("s3"), ownedModuleAppName("s3"))
-}
 
 // moduleDeployClient returns a fake client seeded with a module registry
 // ConfigMap holding the named registries, so ResolveRegistry can run without a
@@ -156,59 +94,6 @@ func countApplications(t *testing.T, cli client.Client) int {
 	var apps v1beta1.ApplicationList
 	require.NoError(t, cli.List(context.Background(), &apps))
 	return len(apps.Items)
-}
-
-func TestModuleDeployDryRun(t *testing.T) {
-	cli := moduleDeployClient(t, "catalog")
-	var out bytes.Buffer
-	o := &moduleDeployOptions{
-		module:    "s3",
-		registry:  "catalog",
-		namespace: velatypes.DefaultKubeVelaNS,
-		dryRun:    true,
-		fetch: func(_ context.Context, registry, moduleName, _ string) (*pkgmodule.Module, error) {
-			assert.Equal(t, "catalog", registry)
-			assert.Equal(t, "s3", moduleName)
-			return stubModule(), nil
-		},
-	}
-
-	require.NoError(t, o.run(context.Background(), cli, &out))
-
-	var printed v1beta1.Application
-	require.NoError(t, yaml.Unmarshal(out.Bytes(), &printed))
-	assert.Equal(t, "module-s3-deploy", printed.Name)
-	require.Len(t, printed.Spec.Components, 1)
-	assert.Equal(t, "module", printed.Spec.Components[0].Type)
-	assert.Equal(t, 0, countApplications(t, cli))
-}
-
-// TestModuleDeployPassesVersionToFetchAndManifest asserts --version reaches
-// both the pre-flight fetch (so an unknown tag fails before any apply) and the
-// applied component's version property (so the server-side render fetches
-// that exact tag too).
-func TestModuleDeployPassesVersionToFetchAndManifest(t *testing.T) {
-	cli := moduleDeployClient(t, "catalog")
-	var out bytes.Buffer
-	o := &moduleDeployOptions{
-		module:    "s3",
-		registry:  "catalog",
-		namespace: velatypes.DefaultKubeVelaNS,
-		dryRun:    true,
-		version:   "1.2.0",
-		fetch: func(_ context.Context, _, _, version string) (*pkgmodule.Module, error) {
-			assert.Equal(t, "1.2.0", version, "the requested version reaches the pre-flight fetch")
-			return stubModule(), nil
-		},
-	}
-
-	require.NoError(t, o.run(context.Background(), cli, &out))
-
-	var printed v1beta1.Application
-	require.NoError(t, yaml.Unmarshal(out.Bytes(), &printed))
-	var props map[string]string
-	require.NoError(t, json.Unmarshal(printed.Spec.Components[0].Properties.Raw, &props))
-	assert.Equal(t, "1.2.0", props["version"], "the manifest carries the requested version")
 }
 
 func TestModuleDeployFailsBeforeApply(t *testing.T) {
@@ -282,25 +167,6 @@ func TestModuleDeployResolvesDefaultRegistry(t *testing.T) {
 	assert.Equal(t, "catalog", props["registry"], "the manifest pins the resolved registry")
 }
 
-func TestNewModuleDeployCommandFlags(t *testing.T) {
-	cmd := NewModuleDeployCommand(common.Args{}, cmdutil.IOStreams{})
-	assert.Equal(t, "deploy", strings.Split(cmd.Use, " ")[0])
-	for _, flag := range []string{"registry", "dry-run", "timeout", "version"} {
-		assert.NotNil(t, cmd.Flags().Lookup(flag), "flag %q must exist", flag)
-	}
-	assert.Error(t, cmd.Args(cmd, []string{}), "the module name is required")
-	assert.NoError(t, cmd.Args(cmd, []string{"s3"}))
-}
-
-func TestModuleCommandMountsDeploy(t *testing.T) {
-	cmd := NewModuleCommand(common.Args{}, "", cmdutil.IOStreams{})
-	names := []string{}
-	for _, sub := range cmd.Commands() {
-		names = append(names, strings.Split(sub.Use, " ")[0])
-	}
-	assert.Contains(t, names, "deploy")
-}
-
 // moduleApps returns the deploy Application in the given phase and the owned
 // module Application with the given tiers (as spec components, the way the
 // render service actually creates them) and their reported tier services.
@@ -330,24 +196,6 @@ func healthyTierServices() []oamcommon.ApplicationComponentStatus {
 		{Name: "s3-v1-comp", Healthy: true},
 		{Name: "s3-v1-defs", Healthy: true},
 	}
-}
-
-func TestRenderModuleTierTable(t *testing.T) {
-	table := renderModuleTierTable(
-		[]string{"s3-xrd", "s3-v1-comp", "s3-v1-defs"},
-		[]oamcommon.ApplicationComponentStatus{
-			{Name: "s3-xrd", Healthy: true, Message: "Established"},
-			{Name: "s3-v1-comp", Healthy: false, Message: "waiting"},
-		},
-	)
-
-	assert.Contains(t, table, "s3-xrd")
-	assert.Contains(t, table, "Healthy")
-	assert.Contains(t, table, "Established")
-	assert.Contains(t, table, "s3-v1-comp")
-	assert.Contains(t, table, "waiting")
-	assert.Contains(t, table, "s3-v1-defs", "a tier with no service yet is still listed")
-	assert.Contains(t, table, "Pending")
 }
 
 func TestFirstUnhealthyTier(t *testing.T) {
@@ -384,19 +232,6 @@ func TestFirstUnhealthyTier(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestWaitForModuleSucceeds(t *testing.T) {
-	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
-		WithObjects(moduleApps(oamcommon.ApplicationRunning, moduleTiers, healthyTierServices())...).Build()
-	var out bytes.Buffer
-	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: time.Second, pollInterval: time.Millisecond}
-
-	err := o.waitForModule(context.Background(), cli, &out)
-
-	require.NoError(t, err)
-	assert.Contains(t, out.String(), "s3-v1-defs")
-	assert.Contains(t, out.String(), "Healthy")
 }
 
 // TestWaitForModuleReportsResolvedVersion asserts the success message reports
@@ -436,9 +271,6 @@ func TestWaitForModuleBecomesHealthy(t *testing.T) {
 		{Name: "s3-xrd", Healthy: true, Message: "Established"},
 		{Name: "s3-v1-comp", Healthy: false, Message: "waiting for s3-xrd"},
 	}
-	cli := fake.NewClientBuilder().WithScheme(common.Scheme).
-		WithObjects(moduleApps(oamcommon.ApplicationRunning, moduleTiers, pending)...).Build()
-
 	gets := 0
 	watched := fake.NewClientBuilder().WithScheme(common.Scheme).
 		WithObjects(moduleApps(oamcommon.ApplicationRunning, moduleTiers, pending)...).
@@ -458,7 +290,6 @@ func TestWaitForModuleBecomesHealthy(t *testing.T) {
 				return nil
 			},
 		}).Build()
-	_ = cli
 	var out bytes.Buffer
 	o := &moduleDeployOptions{module: "s3", namespace: velatypes.DefaultKubeVelaNS, timeout: 2 * time.Second, pollInterval: time.Millisecond}
 

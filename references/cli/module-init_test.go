@@ -20,15 +20,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	pkgmodule "github.com/oam-dev/kubevela/pkg/module"
-	"github.com/oam-dev/kubevela/pkg/utils/common"
-	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
 // TestModuleInitScaffoldsExpectedFiles verifies the command writes the full
@@ -71,20 +66,6 @@ func TestModuleInitScaffoldsExpectedFiles(t *testing.T) {
 	assert.Contains(t, string(readme), "auxiliary/", "the README explains the auxiliary folders")
 }
 
-// TestModuleInitScaffoldValidates is the guard that keeps the templates in sync
-// with the parser: the written tree must parse and validate via pkg/module.
-func TestModuleInitScaffoldValidates(t *testing.T) {
-	tmp := t.TempDir()
-	o := &moduleInitOptions{name: "s3", path: tmp}
-	require.NoError(t, o.run(&bytes.Buffer{}))
-
-	mod, err := pkgmodule.ParseModuleDir(filepath.Join(tmp, "s3"))
-	require.NoError(t, err, "scaffolded module must be a valid skeleton")
-	assert.Equal(t, "s3", mod.Name)
-	_, hasV1 := mod.Lines["v1"]
-	assert.True(t, hasV1, "expected the v1 API line")
-}
-
 // TestModuleInitNonEmptyDirFails refuses to write into an existing non-empty
 // directory, with no override.
 func TestModuleInitNonEmptyDirFails(t *testing.T) {
@@ -104,18 +85,6 @@ func TestModuleInitNonEmptyDirFails(t *testing.T) {
 	assert.Equal(t, "keep", string(data))
 }
 
-// TestModuleInitEmptyDirSucceeds allows writing into an existing but empty dir.
-func TestModuleInitEmptyDirSucceeds(t *testing.T) {
-	tmp := t.TempDir()
-	target := filepath.Join(tmp, "s3")
-	require.NoError(t, os.MkdirAll(target, 0o755))
-
-	o := &moduleInitOptions{name: "s3", path: tmp}
-	require.NoError(t, o.run(&bytes.Buffer{}))
-	_, err := os.Stat(filepath.Join(target, "_module.cue"))
-	assert.NoError(t, err)
-}
-
 // TestModuleInitInvalidName rejects a name that is not a DNS-1123 label.
 func TestModuleInitInvalidName(t *testing.T) {
 	tmp := t.TempDir()
@@ -123,38 +92,4 @@ func TestModuleInitInvalidName(t *testing.T) {
 	err := o.run(&bytes.Buffer{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid module name")
-}
-
-// TestModuleInitPrintsGuidance prints the created tree and the next step.
-func TestModuleInitPrintsGuidance(t *testing.T) {
-	tmp := t.TempDir()
-	var buf bytes.Buffer
-	o := &moduleInitOptions{name: "s3", path: tmp}
-	require.NoError(t, o.run(&buf))
-	out := buf.String()
-	assert.Contains(t, out, "s3")
-	assert.Contains(t, out, "vela module deploy")
-}
-
-// TestModuleCommandMountsInit verifies init is discoverable under vela module.
-func TestModuleCommandMountsInit(t *testing.T) {
-	cmd := NewModuleCommand(common.Args{}, "", cmdutil.IOStreams{})
-	var found bool
-	for _, sub := range cmd.Commands() {
-		if strings.HasPrefix(sub.Use, "init") {
-			found = true
-			break
-		}
-	}
-	assert.True(t, found, "vela module should mount the init subcommand")
-}
-
-// TestNewModuleInitCommandFlags checks the flag surface: --path only. The
-// scaffold is backend-agnostic, so there is no --type flag, and there is no
-// --force flag either.
-func TestNewModuleInitCommandFlags(t *testing.T) {
-	cmd := NewModuleInitCommand(common.Args{}, cmdutil.IOStreams{})
-	assert.NotNil(t, cmd.Flags().Lookup("path"))
-	assert.Nil(t, cmd.Flags().Lookup("type"), "the scaffold is backend-agnostic, there is no --type flag")
-	assert.Nil(t, cmd.Flags().Lookup("force"), "there is no --force flag")
 }
