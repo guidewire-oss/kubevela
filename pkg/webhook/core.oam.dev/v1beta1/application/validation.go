@@ -393,6 +393,9 @@ func (h *ValidatingHandler) ValidateDefinitionPermissions(ctx context.Context, a
 
 	var errs field.ErrorList
 	usage := collectDefinitionUsage(app)
+	// Extending a definition renders it, so the permission check covers what a
+	// named type extends as well as the type itself.
+	h.addInheritedTypes(ctx, app, usage)
 
 	// Validate ComponentDefinitions
 	errs = append(errs, h.validateDefinitions(ctx, req, app.Namespace,

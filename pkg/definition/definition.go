@@ -321,6 +321,17 @@ func (def *Definition) FromCUE(val *cue.Value, templateString string) error {
 				if err = def.SetType(_type); err != nil {
 					return err
 				}
+			case "extends":
+				// `extends` is a spec field, so `attributes: extends: "..."`
+				// already reaches it. Accepting it at the top level too is not
+				// only sugar: an unrecognised key here is dropped in silence, so
+				// without this the definition applies cleanly and inherits
+				// nothing, which is the hardest kind of mistake to notice.
+				extends, err := _value.String()
+				if err != nil {
+					return fmt.Errorf("extends must be the name of a definition, optionally with a revision as \"webservice@v3\": %w", err)
+				}
+				spec["extends"] = extends
 			case "alias":
 				alias, err := _value.String()
 				if err != nil {

@@ -37,6 +37,7 @@ e2e-setup-core-wo-auth:
 		--set featureGates.enableApplicationScopedPolicies=true \
 		--set featureGates.enableGlobalPolicies=true \
 		--set featureGates.enableAddonComponent=true \
+		--set featureGates.enableDefinitionInheritance=true \
 	    --wait kubevela ./charts/vela-core          \
 		--debug
 

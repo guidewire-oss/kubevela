@@ -31,7 +31,9 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/cue/upgrade"
+	"github.com/oam-dev/kubevela/pkg/definition/inherit"
 	"github.com/oam-dev/kubevela/pkg/logging"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
@@ -59,6 +61,10 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 	logger.WithStep("start").Info("Starting admission validation for ComponentDefinition resource", "operation", req.Operation, "resourceVersion", req.Kind.Version)
 
 	obj := &v1beta1.ComponentDefinition{}
+	// Advisory findings, returned with an accepted definition rather than
+	// refusing it. Inheritance produces these: a parameter passed to a parent
+	// that does not declare it is almost certainly a typo, but CUE accepts it.
+	var warnings []string
 	if req.Resource.String() != componentDefGVR.String() {
 		err := fmt.Errorf("expect resource to be %s", componentDefGVR)
 		logger.WithStep("resource-check").WithError(err).Error(err, "Admission request targets unexpected resource type - rejecting request",
@@ -107,7 +113,25 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 				}
 			}
 
-			if err := webhookutils.ValidateCuexTemplate(ctx, cueTemplate); err != nil {
+			// A definition that extends another is judged against what it
+			// extends. Compiling its template alone would always fail: `super` is
+			// declared nowhere in it, by design.
+			if obj.Spec.Extends != "" {
+				ancestors, err := appfile.ComponentAncestors(ctx, h.Client, obj)
+				if err != nil {
+					logger.WithStep("validate-extends").WithError(err).Error(err, "ComponentDefinition extends a definition that cannot be resolved")
+					return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
+				}
+				warns, err := webhookutils.ValidateInheritedTemplate(
+					ctx, obj.Name, cueTemplate, ancestors, inherit.ComponentSurface,
+					webhookutils.StatusSources(obj.Spec.Status)...)
+				if err != nil {
+					logger.WithStep("validate-extends").WithError(err).Error(err, "ComponentDefinition does not satisfy the contract of the definition it extends")
+					return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
+				}
+				warnings = append(warnings, warns...)
+				logger.WithStep("validate-extends").WithSuccess(true).Info("ComponentDefinition inheritance validated", "extends", obj.Spec.Extends, "chainLength", len(ancestors))
+			} else if err := webhookutils.ValidateCuexTemplate(ctx, cueTemplate); err != nil {
 				logger.WithStep("validate-cue").WithError(err).Error(err, "CUE template contains syntax errors or invalid constructs - template compilation failed")
 				return admission.Denied(fmt.Sprintf("%s (requestUID=%s)", err.Error(), req.UID))
 			}
@@ -153,7 +177,9 @@ func (h *ValidatingHandler) Handle(ctx context.Context, req admission.Request) a
 	} else {
 		logger.WithStep("skip-validation").Info("Skipping ComponentDefinition validation - operation does not require validation", "operation", req.Operation, "reason", "only CREATE and UPDATE operations are validated")
 	}
-	return admission.ValidationResponse(true, "")
+	resp := admission.ValidationResponse(true, "")
+	resp.Warnings = warnings
+	return resp
 }
 
 // RegisterValidatingHandler will register ComponentDefinition validation to webhook
@@ -168,8 +194,13 @@ func RegisterValidatingHandler(mgr manager.Manager) {
 // ValidateWorkload validates whether the Workload field is valid
 func ValidateWorkload(mapper meta.RESTMapper, cd *v1beta1.ComponentDefinition) error {
 
-	// If the Type and Definition are all empty, it will be rejected.
+	// If the Type and Definition are all empty, it will be rejected, unless this
+	// definition extends another: it then renders whatever its parent renders,
+	// and saying nothing about the workload means the parent's answer.
 	if cd.Spec.Workload.Type == "" && cd.Spec.Workload.Definition == (common.WorkloadGVK{}) {
+		if cd.Spec.Extends != "" {
+			return nil
+		}
 		return fmt.Errorf("neither the type nor the definition of the workload field in the ComponentDefinition %s can be empty", cd.Name)
 	}
 

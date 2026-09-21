@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 
+	cuelang "cuelang.org/go/cue"
 	"github.com/kubevela/pkg/cue/cuex"
 	"github.com/pkg/errors"
 	"golang.org/x/text/cases"
@@ -153,7 +154,15 @@ func (ref *MarkdownReference) GenerateMarkdownForCap(_ context.Context, c types.
 		// TODO: Use context from caller for proper cancellation/timeout support
 		// Currently using Background() to avoid breaking changes to function
 		ctx := context.Background()
-		cueValue, err := common.GetCUExParameterValue(ctx, c.CueTemplate, ref.Compiler)
+		var cueValue cuelang.Value
+		var err error
+		if c.Extends != "" && ref.Client != nil {
+			// An extending definition states its parameters in terms of its
+			// parent's, so its own template documents nothing on its own.
+			cueValue, err = inheritedParameterValue(ctx, ref.Client, &c, ref.Compiler)
+		} else {
+			cueValue, err = common.GetCUExParameterValue(ctx, c.CueTemplate, ref.Compiler)
+		}
 		if err != nil && !errors.Is(err, cue.ErrParameterNotExist) {
 			return "", fmt.Errorf("failed to retrieve `parameters` value from %s with err: %w", c.Name, err)
 		}

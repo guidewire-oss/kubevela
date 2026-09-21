@@ -547,7 +547,7 @@ func (p *Parser) convertTemplate2Component(name, typ string, props *runtime.RawE
 		CapabilityCategory: templ.CapabilityCategory,
 		FullTemplate:       templ,
 		Params:             settings,
-		engine:             definition.NewWorkloadAbstractEngine(name),
+		engine:             definition.NewWorkloadAbstractEngine(name, templ.Ancestors...),
 	}, nil
 }
 
@@ -579,6 +579,14 @@ func setComponentDefinitions(af *Appfile, comps []*Component) {
 			cd.Status = v1beta1.ComponentDefinitionStatus{}
 			af.RelatedComponentDefinitions[comp.FullTemplate.ComponentDefinition.Name] = cd
 		}
+		// Whatever the component extended goes in beside it. A render that went
+		// through a chain is only reproducible from the revision if every level it
+		// went through was written down, and this is the map the revision is built
+		// from. The key is the name the extending definition wrote, so a pinned
+		// `webservice@v3` and a sibling on plain `webservice` each keep their own.
+		for name, ancestor := range comp.FullTemplate.AncestorComponentDefinitions {
+			af.RelatedComponentDefinitions[name] = ancestor.DeepCopy()
+		}
 		for _, t := range comp.Traits {
 			if t == nil {
 				continue
@@ -587,6 +595,9 @@ func setComponentDefinitions(af *Appfile, comps []*Component) {
 				td := t.FullTemplate.TraitDefinition.DeepCopy()
 				td.Status = v1beta1.TraitDefinitionStatus{}
 				af.RelatedTraitDefinitions[t.FullTemplate.TraitDefinition.Name] = td
+			}
+			for name, ancestor := range t.FullTemplate.AncestorTraitDefinitions {
+				af.RelatedTraitDefinitions[name] = ancestor.DeepCopy()
 			}
 		}
 	}
@@ -741,7 +752,7 @@ func (p *Parser) convertTemplate2Trait(name string, properties map[string]interf
 		Template:           templ.TemplateStr,
 		CustomStatusFormat: templ.CustomStatus,
 		FullTemplate:       templ,
-		engine:             definition.NewTraitAbstractEngine(traitName),
+		engine:             definition.NewTraitAbstractEngine(traitName, templ.Ancestors...),
 	}, nil
 }
 

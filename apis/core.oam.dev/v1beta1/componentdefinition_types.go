@@ -30,6 +30,19 @@ type ComponentDefinitionSpec struct {
 	// +optional
 	Version string `json:"version,omitempty"`
 
+	// Extends names a ComponentDefinition this one builds on. The parent renders
+	// with the parameters this definition's template passes it in its `super`
+	// block, and its output, outputs and parameter schema are inherited unless
+	// the template says otherwise with `$inherit`.
+	//
+	// A DefinitionRevision may be named to pin the parent, as in
+	// "webservice@v3"; an unqualified name tracks whatever is current. The
+	// ancestors a render resolved are recorded in the ApplicationRevision, so an
+	// application keeps rendering the same way after a parent changes.
+	//
+	// +optional
+	Extends string `json:"extends,omitempty"`
+
 	// Workload is a workload type descriptor
 	Workload common.WorkloadTypeDescriptor `json:"workload"`
 

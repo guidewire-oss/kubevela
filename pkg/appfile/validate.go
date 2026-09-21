@@ -25,6 +25,7 @@ import (
 
 	"cuelang.org/go/cue"
 	"github.com/jeremywohl/flatten/v2"
+	"github.com/kubevela/pkg/cue/cuex"
 	"github.com/kubevela/workflow/pkg/cue/model/value"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
@@ -32,6 +33,8 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 
 	cueutils "github.com/oam-dev/kubevela/pkg/cue"
+	"github.com/oam-dev/kubevela/pkg/definition/inherit"
+
 	// Use WorkloadCompiler instead of the upstream cuex.DefaultCompiler.
 	// The upstream DefaultCompiler does not include provider packages like
 	// "vela/helm". Component templates (e.g., helmchart) import these packages,
@@ -176,16 +179,11 @@ func (p *Parser) ValidateComponentParams(ctxData velaprocess.ContextData, wl *Co
 	// 4. Reject undeclared parameters (feature-gated)
 	// ---------------------------------------------------------------------
 	if utilfeature.DefaultMutableFeatureGate.Enabled(features.ValidateUndeclaredParameters) {
-		// Compile the template WITHOUT user params to get the pure schema.
-		schemaSrc := strings.Join([]string{
-			renderTemplate(templateStr),
-			baseCtx,
-		}, "\n")
-		schemaRoot, schemaErr := velacuex.WorkloadCompiler.Get().CompileString(ctx.GetCtx(), schemaSrc)
+		// Read the schema WITHOUT user params, so it is the declaration alone.
+		paramSchema, schemaErr := componentParameterSchema(ctx.GetCtx(), wl, templateStr, baseCtx)
 		if schemaErr != nil {
 			klog.V(4).Infof("component %q: skipping undeclared parameter check: schema compilation failed: %v", wl.Name, schemaErr)
 		} else {
-			paramSchema := schemaRoot.LookupPath(value.FieldPath(velaprocess.ParameterFieldName))
 			undeclared := findUndeclaredFields(paramSchema, wl.Params, "")
 
 			// Second pass: resolve conditional parameter declarations by
@@ -202,14 +200,9 @@ func (p *Parser) ValidateComponentParams(ctxData velaprocess.ContextData, wl *Co
 					}
 					condSnippet, fErr := cueParamBlock(filteredParams)
 					if fErr == nil {
-						condSrc := strings.Join([]string{
-							renderTemplate(templateStr),
-							condSnippet,
-							baseCtx,
-						}, "\n")
-						condRoot, condErr := velacuex.WorkloadCompiler.Get().CompileString(ctx.GetCtx(), condSrc)
+						condSchema, condErr := componentParameterSchema(ctx.GetCtx(), wl,
+							strings.Join([]string{templateStr, condSnippet}, "\n"), baseCtx)
 						if condErr == nil {
-							condSchema := condRoot.LookupPath(value.FieldPath(velaprocess.ParameterFieldName))
 							undeclared = findUndeclaredFields(condSchema, wl.Params, "")
 						}
 					}
@@ -461,6 +454,39 @@ func filterMissing(keys []string, provided map[string]any) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// componentParameterSchema reads the parameter declaration a component is
+// judged against. One that extends another declares only part of its own
+// parameters, so the chain is what says which fields are valid.
+func componentParameterSchema(ctx context.Context, wl *Component, templateStr, baseCtx string) (cue.Value, error) {
+	if len(wl.FullTemplate.Ancestors) == 0 {
+		root, err := velacuex.WorkloadCompiler.Get().CompileString(ctx, strings.Join([]string{
+			renderTemplate(templateStr),
+			baseCtx,
+		}, "\n"))
+		if err != nil {
+			return cue.Value{}, err
+		}
+		return root.LookupPath(value.FieldPath(velaprocess.ParameterFieldName)), nil
+	}
+
+	chain := make([]inherit.Level, 0, len(wl.FullTemplate.Ancestors)+1)
+	chain = append(chain, inherit.Level{Name: wl.Name, Template: templateStr})
+	chain = append(chain, wl.FullTemplate.Ancestors...)
+
+	root, err := inherit.SchemaValue(ctx, chain, baseCtx, inherit.ComponentSurface, compileSchemaLevel)
+	if err != nil {
+		return cue.Value{}, err
+	}
+	return root.LookupPath(value.FieldPath(velaprocess.ParameterFieldName)), nil
+}
+
+// compileSchemaLevel compiles one level of a chain for its parameters alone, so
+// provider functions stay unresolved: nothing is supplied for them to run on.
+func compileSchemaLevel(ctx context.Context, src string) (cue.Value, error) {
+	return velacuex.WorkloadCompiler.Get().CompileStringWithOptions(
+		ctx, renderTemplate(src), cuex.DisableResolveProviderFunctions{})
 }
 
 // renderTemplate appends the placeholders expected by KubeVela’s template

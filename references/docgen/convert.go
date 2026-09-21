@@ -48,14 +48,18 @@ func ParseCapabilityFromUnstructured(mapper meta.RESTMapper, obj unstructured.Un
 			}
 			workloadDefinitionRef = ref.Name
 		}
-		return HandleDefinition(cd.Name, workloadDefinitionRef, cd.Annotations, cd.Labels, cd.Spec.Extension, types.TypeComponentDefinition, nil, cd.Spec.Schematic)
+		cap, err := HandleDefinition(cd.Name, workloadDefinitionRef, cd.Annotations, cd.Labels, cd.Spec.Extension, types.TypeComponentDefinition, nil, cd.Spec.Schematic)
+		cap.Extends = cd.Spec.Extends
+		return cap, err
 	case "TraitDefinition":
 		var td v1beta1.TraitDefinition
 		err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &td)
 		if err != nil {
 			return types.Capability{}, err
 		}
-		return HandleDefinition(td.Name, td.Spec.Reference.Name, td.Annotations, td.Labels, td.Spec.Extension, types.TypeTrait, td.Spec.AppliesToWorkloads, td.Spec.Schematic)
+		cap, err := HandleDefinition(td.Name, td.Spec.Reference.Name, td.Annotations, td.Labels, td.Spec.Extension, types.TypeTrait, td.Spec.AppliesToWorkloads, td.Spec.Schematic)
+		cap.Extends = td.Spec.Extends
+		return cap, err
 	case "PolicyDefinition":
 		var plcd v1beta1.PolicyDefinition
 		err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &plcd)

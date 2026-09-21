@@ -133,11 +133,17 @@ func (r *Reconciler) UpdateStatus(ctx context.Context, def *v1beta1.TraitDefinit
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.record = event.NewAPIRecorder(mgr.GetEventRecorderFor("TraitDefinition")).
 		WithAnnotations("controller", "TraitDefinition")
+	// A trait that extends another publishes a schema derived from it, so a
+	// parent edit has to wake its children.
+	if err := indexExtends(context.Background(), mgr); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: r.concurrentReconciles,
 		}).
 		For(&v1beta1.TraitDefinition{}).
+		Watches(&v1beta1.TraitDefinition{}, childrenOf(mgr.GetClient())).
 		Complete(r)
 }
 
