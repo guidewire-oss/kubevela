@@ -37,12 +37,12 @@ import (
 func TestResourceKeeperDispatchAndDelete(t *testing.T) {
 	r := require.New(t)
 	cli := fake.NewClientBuilder().WithScheme(common.Scheme).Build()
-	_rk, err := NewResourceKeeper(context.Background(), cli, &v1beta1.Application{
+	_rk, err := newAppKeeper(context.Background(), cli, &v1beta1.Application{
 		ObjectMeta: v12.ObjectMeta{Name: "app", Namespace: "default", Generation: 1},
-	})
+	}, Policies{})
 	r.NoError(err)
 	rk := _rk.(*resourceKeeper)
-	rk.garbageCollectPolicy = &v1alpha1.GarbageCollectPolicySpec{
+	rk.policies.GarbageCollect = &v1alpha1.GarbageCollectPolicySpec{
 		Rules: []v1alpha1.GarbageCollectPolicyRule{{
 			Selector: v1alpha1.ResourcePolicyRuleSelector{TraitTypes: []string{"versioned"}},
 			Strategy: v1alpha1.GarbageCollectStrategyOnAppUpdate,
@@ -54,7 +54,7 @@ func TestResourceKeeperDispatchAndDelete(t *testing.T) {
 			Strategy: v1alpha1.GarbageCollectStrategyNever,
 		},
 		}}
-	rk.applyOncePolicy = &v1alpha1.ApplyOncePolicySpec{Enable: true}
+	rk.policies.ApplyOnce = &v1alpha1.ApplyOncePolicySpec{Enable: true}
 	cm1 := &unstructured.Unstructured{}
 	cm1.SetGroupVersionKind(v1.SchemeGroupVersion.WithKind("ConfigMap"))
 	cm1.SetName("cm1")
@@ -81,9 +81,9 @@ func TestResourceKeeperDispatchAndDelete(t *testing.T) {
 func TestResourceKeeperAdmissionDispatchAndDelete(t *testing.T) {
 	r := require.New(t)
 	cli := fake.NewClientBuilder().WithScheme(common.Scheme).Build()
-	_rk, err := NewResourceKeeper(context.Background(), cli, &v1beta1.Application{
+	_rk, err := newAppKeeper(context.Background(), cli, &v1beta1.Application{
 		ObjectMeta: v12.ObjectMeta{Name: "app", Namespace: "default", Generation: 1},
-	})
+	}, Policies{})
 	r.NoError(err)
 	rk := _rk.(*resourceKeeper)
 	AllowCrossNamespaceResource = false
@@ -118,8 +118,8 @@ func TestApplyStrategiesNilReturnOnStateKeep(t *testing.T) {
 	app := &v1beta1.Application{ObjectMeta: v12.ObjectMeta{Name: "app", Namespace: "default"}}
 	rk := &resourceKeeper{
 		Client: cli,
-		app:    app,
-		applyOncePolicy: &v1alpha1.ApplyOncePolicySpec{
+		owner:  newAppOwner(app),
+		policies: Policies{ApplyOnce: &v1alpha1.ApplyOncePolicySpec{
 			Enable: true,
 			Rules: []v1alpha1.ApplyOncePolicyRule{{
 				Selector: v1alpha1.ResourcePolicyRuleSelector{
@@ -127,7 +127,7 @@ func TestApplyStrategiesNilReturnOnStateKeep(t *testing.T) {
 				},
 				Strategy: &v1alpha1.ApplyOnceStrategy{Path: []string{"*"}},
 			}},
-		},
+		}},
 	}
 
 	manifest := &unstructured.Unstructured{}
@@ -137,13 +137,13 @@ func TestApplyStrategiesNilReturnOnStateKeep(t *testing.T) {
 	manifest.SetLabels(map[string]string{oam.LabelAppComponent: "my-comp"})
 
 	// For ApplyOnceStrategyOnAppStateKeep, a missing resource returns nil.
-	result, err := ApplyStrategies(context.Background(), rk, manifest, v1alpha1.ApplyOnceStrategyOnAppStateKeep)
+	result, err := applyStrategies(context.Background(), rk, manifest, v1alpha1.ApplyOnceStrategyOnAppStateKeep)
 	r.NoError(err)
 	r.Nil(result)
 
 	// For ApplyOnceStrategyOnAppUpdate, a missing resource returns the original manifest (not nil).
 	// This means the nil-guard in dispatch.go is defensive and cannot be triggered today.
-	result, err = ApplyStrategies(context.Background(), rk, manifest, v1alpha1.ApplyOnceStrategyOnAppUpdate)
+	result, err = applyStrategies(context.Background(), rk, manifest, v1alpha1.ApplyOnceStrategyOnAppUpdate)
 	r.NoError(err)
 	r.NotNil(result)
 }
@@ -160,7 +160,7 @@ func TestCleanupStaleEntriesUpdateError(t *testing.T) {
 	app := &v1beta1.Application{ObjectMeta: v12.ObjectMeta{Name: "app", Namespace: "default"}}
 	rk := &resourceKeeper{
 		Client: cli,
-		app:    app,
+		owner:  newAppOwner(app),
 	}
 
 	rt := &v1beta1.ResourceTracker{
