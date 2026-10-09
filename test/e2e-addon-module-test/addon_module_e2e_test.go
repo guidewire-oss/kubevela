@@ -230,9 +230,11 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 	// uninstall deletes a user Application and waits for the whole chain below
 	// it to be garbage-collected: the addon Application, the module
 	// Applications named, and the widget CRD when widget-kit was among them.
-	uninstall := func(appName, addonAppName string, moduleApps ...string) {
-		deleteApp(ctx, testNS, appName)
-		waitAppGone(ctx, testNS, appName, shortWait)
+	// uninstallFrom deletes the installing Application appName from ns and waits
+	// for the owned addon and module Applications it rendered to go with it.
+	uninstallFrom := func(ns, appName, addonAppName string, moduleApps ...string) {
+		deleteApp(ctx, ns, appName)
+		waitAppGone(ctx, ns, appName, shortWait)
 		waitAppGone(ctx, systemNS, addonAppName, reconcileWait)
 		for _, m := range moduleApps {
 			waitAppGone(ctx, systemNS, m, reconcileWait)
@@ -243,6 +245,9 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				waitGone(ctx, crd(gadgetsCRD), shortWait)
 			}
 		}
+	}
+	uninstall := func(appName, addonAppName string, moduleApps ...string) {
+		uninstallFrom(testNS, appName, addonAppName, moduleApps...)
 	}
 
 	BeforeAll(func() {
@@ -496,7 +501,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				Expect(k8sClient.Get(ctx, k8stypes.NamespacedName{Name: "widgets." + v.crdGroup}, crd("widgets."+v.crdGroup))).Should(Succeed())
 				Expect(k8sClient.Get(ctx, k8stypes.NamespacedName{Name: "widgetclasses." + v.crdGroup}, crd("widgetclasses."+v.crdGroup))).Should(Succeed())
 				Expect(k8sClient.Get(ctx, k8stypes.NamespacedName{Name: v.moduleSlug + "-viewer"}, &rbacv1.ClusterRole{})).Should(Succeed())
-				info, err := getConfigMap(ctx, systemNS, v.moduleSlug+"-module-info")
+				info, err := getConfigMap(ctx, installNS, v.moduleSlug+"-module-info")
 				Expect(err).ShouldNot(HaveOccurred(), "an auxiliary object without a namespace lands in the definition namespace")
 				Expect(info.Data).Should(HaveKeyWithValue("moduleVersion", "1.0.0"))
 
@@ -507,13 +512,13 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 					class, err := getUnstructured(ctx, widgetClassGVK, "", className)
 					Expect(err).ShouldNot(HaveOccurred(), className)
 					Expect(class.GetLabels()).Should(HaveKeyWithValue(v.crdGroup+"/line", line))
-					_, err = getConfigMap(ctx, systemNS, v.moduleSlug+"-"+line+"-line-config")
+					_, err = getConfigMap(ctx, installNS, v.moduleSlug+"-"+line+"-line-config")
 					Expect(err).ShouldNot(HaveOccurred())
 				}
 
 				By("five stamped definitions with module labels")
-				Expect(moduleDefinitionNames(ctx, systemNS, v.moduleSlug)).Should(ConsistOf(v.definitions))
-				cd, err := getComponentDefinition(ctx, systemNS, v.moduleSlug+"-v1-widget")
+				Expect(moduleDefinitionNames(ctx, installNS, v.moduleSlug)).Should(ConsistOf(v.definitions))
+				cd, err := getComponentDefinition(ctx, installNS, v.moduleSlug+"-v1-widget")
 				Expect(err).ShouldNot(HaveOccurred())
 				Expect(cd.Labels).Should(HaveKeyWithValue(veltypes.LabelDefinitionModuleAPIVersion, "v1"))
 				Expect(cd.Labels).Should(HaveKeyWithValue(veltypes.LabelDefinitionName, "widget"))
@@ -532,13 +537,13 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				Expect(cd.Labels).Should(HaveKeyWithValue(oam.LabelAddonName, v.addonSlug))
 				Expect(cd.Labels).Should(HaveKeyWithValue(oam.LabelAddonVersion, "1.0.0"))
 				Expect(cd.Labels).Should(HaveKeyWithValue(oam.LabelAddonRegistry, addonRegistryName))
-				v2, err := getComponentDefinition(ctx, systemNS, v.moduleSlug+"-v2-widget")
+				v2, err := getComponentDefinition(ctx, installNS, v.moduleSlug+"-v2-widget")
 				Expect(err).ShouldNot(HaveOccurred(), "a YAML definition installs like a CUE one")
 				Expect(v2.Labels).Should(HaveKeyWithValue(veltypes.LabelDefinitionModuleAPIVersion, "v2"))
 
 				By("the disabled v1beta1 line leaving nothing behind")
-				Expect(isNotFound(ctx, componentDefinitionObj(systemNS, v.moduleSlug+"-v1beta1-widget"))).Should(BeTrue())
-				Expect(isNotFound(ctx, configMapObj(systemNS, v.moduleSlug+"-v1beta1-preview"))).Should(BeTrue())
+				Expect(isNotFound(ctx, componentDefinitionObj(installNS, v.moduleSlug+"-v1beta1-widget"))).Should(BeTrue())
+				Expect(isNotFound(ctx, configMapObj(installNS, v.moduleSlug+"-v1beta1-preview"))).Should(BeTrue())
 			})
 
 			It("a consumer uses Form 3, a module trait and the addon-level trait", func() {
@@ -586,9 +591,9 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 
 				uninstall(v.appName, v.addonAppName(), v.moduleAppName())
 				waitGone(ctx, crd("widgetclasses."+v.crdGroup), shortWait)
-				waitGone(ctx, componentDefinitionObj(systemNS, v.moduleSlug+"-v1-widget"), shortWait)
+				waitGone(ctx, componentDefinitionObj(installNS, v.moduleSlug+"-v1-widget"), shortWait)
 				waitGone(ctx, traitDefinitionObj(systemNS, v.ownerTraitName), shortWait)
-				waitGone(ctx, configMapObj(systemNS, v.moduleSlug+"-module-info"), shortWait)
+				waitGone(ctx, configMapObj(installNS, v.moduleSlug+"-module-info"), shortWait)
 				waitGone(ctx, configMapObj(systemNS, v.addonSlug+"-notes"), shortWait)
 				waitGone(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: v.addonSlug + "-system"}}, reconcileWait)
 			})
@@ -647,7 +652,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				Expect(k8sClient.Get(ctx, k8stypes.NamespacedName{Name: "gadgets." + v.crdGroup}, crd("gadgets."+v.crdGroup))).Should(Succeed())
 				Expect(k8sClient.Get(ctx, k8stypes.NamespacedName{Name: v.gadgetModule + "-editor"}, &rbacv1.ClusterRole{})).Should(Succeed())
 				for _, cm := range []string{v.gadgetModule + "-v1-defaults", v.gadgetModule + "-v1-profile"} {
-					_, err := getConfigMap(ctx, systemNS, cm)
+					_, err := getConfigMap(ctx, installNS, cm)
 					Expect(err).ShouldNot(HaveOccurred(), cm)
 				}
 
@@ -709,7 +714,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 			BeforeAll(func() {
 				Expect(k8sClient.Create(ctx, addonApplication(v.appName, v.addonSlug, "1.0.0", nil))).Should(Succeed())
 				waitAppRunning(ctx, testNS, v.appName, installWait)
-				Expect(moduleDefinitionNames(ctx, systemNS, v.moduleSlug)).Should(ConsistOf(v.definitions))
+				Expect(moduleDefinitionNames(ctx, installNS, v.moduleSlug)).Should(ConsistOf(v.definitions))
 				DeferCleanup(func() {
 					for _, name := range []string{"forms-accepted" + v.suffix, "v2-contract" + v.suffix, "trait-outputs-form3" + v.suffix} {
 						deleteApp(ctx, testNS, name)
@@ -816,7 +821,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 
 		It("does not enforce the versions filter: every enabled line installs", func() {
 			Expect(componentNames(mustGetApp(ctx, systemNS, moduleWidgetKit))).Should(Equal(widgetKitTiers))
-			_, err := getComponentDefinition(ctx, systemNS, "widget-kit-v2-widget")
+			_, err := getComponentDefinition(ctx, installNS, "widget-kit-v2-widget")
 			Expect(err).ShouldNot(HaveOccurred(), "versions: [v1] was requested, v2 installs anyway")
 		})
 
@@ -835,7 +840,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				g.Expect(svc.Message).Should(ContainSubstring(`several module registries are configured and none is named "catalog"`))
 			}, reconcileWait, pollInterval).Should(Succeed())
 			waitAppStatusContains(ctx, testNS, "import-options", "widget-kit-2 unhealthy", reconcileWait)
-			_, err := getComponentDefinition(ctx, systemNS, "widget-kit-v1-widget")
+			_, err := getComponentDefinition(ctx, installNS, "widget-kit-v1-widget")
 			Expect(err).ShouldNot(HaveOccurred(), "a failed render does not garbage-collect")
 
 			By("a registry named catalog makes the empty registry resolve again")
@@ -850,37 +855,48 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 	})
 
 	// --- Scenario 06 ---
-	Context("a type: module component declared in template.cue with a tenant namespace (scenario 06)", func() {
+	// The installing Application, not the module component, decides where the
+	// definitions go: tenant-widgets is applied into kit-tenant, and its
+	// hand-written type: module component sets no namespace.
+	Context("a type: module component declared in template.cue, installed from a tenant namespace (scenario 06)", func() {
+		const tenantNS = "kit-tenant"
 		BeforeAll(func() {
-			Expect(k8sClient.Create(ctx, addonApplication("tenant-widgets", "tenant-widgets", "1.0.0", nil))).Should(Succeed())
-			waitAppRunning(ctx, testNS, "tenant-widgets", installWait)
-			waitAppRunning(ctx, systemNS, moduleWidgetKit, shortWait)
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: tenantNS}})).Should(Succeed())
+			// Registered before anything can fail: the suite's AfterAll only
+			// sweeps testNS, so nothing else would remove the tenant install.
 			DeferCleanup(func() {
-				deleteApp(ctx, "kit-tenant", "tenant-consumer")
-				waitGone(ctx, unstructuredObj(widgetGVK, "kit-tenant", "tenant-widget"), shortWait)
-				uninstall("tenant-widgets", "addon-tenant-widgets", moduleWidgetKit)
-				waitGone(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kit-tenant"}}, reconcileWait)
+				deleteApp(ctx, tenantNS, "tenant-consumer")
+				waitGone(ctx, unstructuredObj(widgetGVK, tenantNS, "tenant-widget"), shortWait)
+				uninstallFrom(tenantNS, "tenant-widgets", "addon-tenant-widgets", moduleWidgetKit)
+				Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: tenantNS}})).Should(Succeed())
+				waitGone(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: tenantNS}}, reconcileWait)
 			})
+			installer := addonApplication("tenant-widgets", "tenant-widgets", "1.0.0", nil)
+			installer.Namespace = tenantNS
+			Expect(k8sClient.Create(ctx, installer)).Should(Succeed())
+			waitAppRunning(ctx, tenantNS, "tenant-widgets", installWait)
+			waitAppRunning(ctx, systemNS, moduleWidgetKit, shortWait)
 		})
 
-		It("lets the template's module component win over the matching _imports.cue entry", func() {
+		It("renders the template's module component with no namespace property and records the installing namespace", func() {
 			app := mustGetApp(ctx, systemNS, "addon-tenant-widgets")
-			Expect(componentNames(app)).Should(ConsistOf("tenant-kit", "tenant-widgets-resources"))
-			Expect(componentNames(app)).ShouldNot(ContainElement("widget-kit"))
+			Expect(componentNames(app)).Should(ConsistOf("tenant-kit"))
 			mod := findComponent(app, "tenant-kit")
 			Expect(mod.Type).Should(Equal("module"))
-			Expect(mod.DependsOn).Should(Equal([]string{"tenant-widgets-resources"}), "a hand-written module component gets no automatic dependsOn")
 			Expect(propertiesOf(mod.Properties)).Should(Equal(map[string]interface{}{
-				"module": "widget-kit", "namespace": "kit-tenant", "registry": moduleRegistryName, "version": "1.0.0",
-			}))
+				"module": "widget-kit", "registry": moduleRegistryName, "version": "1.0.0",
+			}), "the component carries no namespace property")
+			Expect(app.Annotations).Should(HaveKeyWithValue(oam.AnnotationModuleInstallNamespace, tenantNS),
+				"the owned addon Application records where the installing Application lives")
 			Expect(mustGetApp(ctx, systemNS, moduleWidgetKit).Labels).Should(HaveKeyWithValue(oam.LabelAppComponent, "tenant-kit"))
 		})
 
-		It("installs definitions and namespaced auxiliary objects into the tenant namespace only", func() {
-			Expect(moduleDefinitionNames(ctx, "kit-tenant", "widget-kit")).Should(ConsistOf(widgetKitDefinitions))
+		It("installs definitions and namespaced auxiliary objects into the installing namespace only", func() {
+			Expect(moduleDefinitionNames(ctx, tenantNS, "widget-kit")).Should(ConsistOf(widgetKitDefinitions))
 			Expect(moduleDefinitionNames(ctx, systemNS, "widget-kit")).Should(BeEmpty())
+			Expect(moduleDefinitionNames(ctx, testNS, "widget-kit")).Should(BeEmpty())
 			for _, cm := range []string{"widget-kit-module-info", "widget-kit-v1-line-config", "widget-kit-v2-line-config"} {
-				_, err := getConfigMap(ctx, "kit-tenant", cm)
+				_, err := getConfigMap(ctx, tenantNS, cm)
 				Expect(err).ShouldNot(HaveOccurred(), cm)
 				Expect(isNotFound(ctx, configMapObj(systemNS, cm))).Should(BeTrue(), cm)
 			}
@@ -892,8 +908,8 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 
 		It("is usable from the tenant namespace and refused from another", func() {
 			Expect(applyManifestFile(ctx, testdataPath("apps", "consumer-tenant.yaml"))).Should(Succeed())
-			waitAppRunning(ctx, "kit-tenant", "tenant-consumer", shortWait)
-			w, err := getUnstructured(ctx, widgetGVK, "kit-tenant", "tenant-widget")
+			waitAppRunning(ctx, tenantNS, "tenant-consumer", shortWait)
+			w, err := getUnstructured(ctx, widgetGVK, tenantNS, "tenant-widget")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(nestedString(w, "spec", "classRef")).Should(Equal("widget-kit-v1-standard"))
 			Expect(w.GetLabels()).Should(HaveKeyWithValue("kit.example.com/labeled-by", "widget-kit-v1-labeler"))
@@ -956,7 +972,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 			Expect(ociTags(moduleRegistry.hostBase, "modules/widget-kit")).Should(ConsistOf("1.0.0", "1.1.0"))
 			Consistently(func(g Gomega) {
 				g.Expect(moduleVersion()).Should(Equal("1.0.0"))
-				g.Expect(isNotFound(ctx, componentDefinitionObj(systemNS, "widget-kit-v1-gauge"))).Should(BeTrue())
+				g.Expect(isNotFound(ctx, componentDefinitionObj(installNS, "widget-kit-v1-gauge"))).Should(BeTrue())
 				for _, svc := range mustGetApp(ctx, systemNS, "addon-widget-latest").Status.Services {
 					g.Expect(svc.Healthy).Should(BeTrue(), "%s: %s", svc.Name, svc.Message)
 				}
@@ -977,7 +993,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 			Eventually(moduleVersion, reconcileWait, pollInterval).Should(Equal("1.1.0"))
 			waitAppRunning(ctx, systemNS, moduleWidgetKit, shortWait)
 			Eventually(func() error {
-				_, err := getComponentDefinition(ctx, systemNS, "widget-kit-v1-gauge")
+				_, err := getComponentDefinition(ctx, installNS, "widget-kit-v1-gauge")
 				return err
 			}, shortWait, pollInterval).Should(Succeed())
 			Expect(mustGetApp(ctx, systemNS, "addon-widget-latest").Annotations).ShouldNot(HaveKey(oam.AnnotationWorkflowRestart))
@@ -990,7 +1006,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 			Eventually(func(g Gomega) []string {
 				return componentNames(getAppG(g, ctx, systemNS, moduleWidgetKit))
 			}, shortWait, pollInterval).Should(Equal([]string{"widget-kit-aux", "widget-kit-v1-aux", "widget-kit-v1-defs"}))
-			waitGone(ctx, componentDefinitionObj(systemNS, "widget-kit-v2-widget"), reconcileWait)
+			waitGone(ctx, componentDefinitionObj(installNS, "widget-kit-v2-widget"), reconcileWait)
 			Expect(mustGetApp(ctx, systemNS, "addon-widget-latest").Annotations).Should(HaveKeyWithValue(oam.AnnotationWorkflowRestart, "2m"), "a duration is recurring and stays")
 		})
 	})
@@ -1036,7 +1052,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 
 			It("starts from 1.0.0 with both lines", func() {
 				Eventually(func(g Gomega) { moduleState(g, "1.0.0", v.tiers) }, shortWait, pollInterval).Should(Succeed())
-				Expect(moduleDefinitionNames(ctx, systemNS, v.moduleSlug)).Should(ConsistOf(v.definitions))
+				Expect(moduleDefinitionNames(ctx, installNS, v.moduleSlug)).Should(ConsistOf(v.definitions))
 			})
 
 			It("1.1.0 adds a definition and updates auxiliary objects in place", func() {
@@ -1044,11 +1060,11 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				Eventually(func(g Gomega) { moduleState(g, "1.1.0", v.tiers) }, installWait, pollInterval).Should(Succeed())
 				waitAppRunning(ctx, testNS, v.appName, installWait)
 				Expect(mustGetApp(ctx, systemNS, v.addonAppName()).Labels).Should(HaveKeyWithValue(oam.LabelAddonVersion, "1.1.0"))
-				Expect(moduleDefinitionNames(ctx, systemNS, v.moduleSlug)).Should(ConsistOf(append([]string{gaugeDef}, v.definitions...)))
-				info, err := getConfigMap(ctx, systemNS, moduleInfo)
+				Expect(moduleDefinitionNames(ctx, installNS, v.moduleSlug)).Should(ConsistOf(append([]string{gaugeDef}, v.definitions...)))
+				info, err := getConfigMap(ctx, installNS, moduleInfo)
 				Expect(err).ShouldNot(HaveOccurred())
 				Expect(info.Data).Should(HaveKeyWithValue("moduleVersion", "1.1.0"))
-				line, err := getConfigMap(ctx, systemNS, v1LineConfig)
+				line, err := getConfigMap(ctx, installNS, v1LineConfig)
 				Expect(err).ShouldNot(HaveOccurred())
 				Expect(line.Data).Should(HaveKeyWithValue("configRevision", "2"))
 
@@ -1065,11 +1081,11 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 					moduleState(g, "1.2.0", v1OnlyTiers)
 				}, installWait, pollInterval).Should(Succeed())
 				waitAppRunning(ctx, testNS, v.appName, installWait)
-				waitGone(ctx, componentDefinitionObj(systemNS, v2WidgetDef), reconcileWait)
-				waitGone(ctx, traitDefinitionObj(systemNS, v2LabelerDef), shortWait)
+				waitGone(ctx, componentDefinitionObj(installNS, v2WidgetDef), reconcileWait)
+				waitGone(ctx, traitDefinitionObj(installNS, v2LabelerDef), shortWait)
 				waitGone(ctx, unstructuredObj(widgetClassGVK, "", v2PremiumCR), shortWait)
-				waitGone(ctx, configMapObj(systemNS, v2LineConfig), shortWait)
-				info, err := getConfigMap(ctx, systemNS, moduleInfo)
+				waitGone(ctx, configMapObj(installNS, v2LineConfig), shortWait)
+				info, err := getConfigMap(ctx, installNS, moduleInfo)
 				Expect(err).ShouldNot(HaveOccurred())
 				Expect(info.Data).Should(HaveKeyWithValue("servedLines", "v1"))
 				Expect(info.Data).Should(HaveKeyWithValue("disabledLines", "v1beta1,v2"))
@@ -1085,7 +1101,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				setAddonVersion(ctx, v.appName, "1.0.0")
 				Eventually(func(g Gomega) { moduleState(g, "1.0.0", v.tiers) }, installWait, pollInterval).Should(Succeed())
 				waitAppRunning(ctx, testNS, v.appName, installWait)
-				Eventually(func() []string { return moduleDefinitionNames(ctx, systemNS, v.moduleSlug) }, reconcileWait, pollInterval).Should(ConsistOf(v.definitions))
+				Eventually(func() []string { return moduleDefinitionNames(ctx, installNS, v.moduleSlug) }, reconcileWait, pollInterval).Should(ConsistOf(v.definitions))
 
 				bumpPublishVersion(ctx, testNS, v.v2ConsumerApp, "after-rollback")
 				waitAppRunning(ctx, testNS, v.v2ConsumerApp, reconcileWait)
@@ -1107,13 +1123,13 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 			if cm, err := getConfigMap(ctx, systemNS, "cache-probe-build"); err == nil {
 				b.addon = cm.Data["build"]
 			}
-			if cm, err := getConfigMap(ctx, systemNS, "probe-kit-build"); err == nil {
+			if cm, err := getConfigMap(ctx, installNS, "probe-kit-build"); err == nil {
 				b.module = cm.Data["build"]
 			}
-			if cm, err := getConfigMap(ctx, systemNS, "probe-kit-v1-line"); err == nil {
+			if cm, err := getConfigMap(ctx, installNS, "probe-kit-v1-line"); err == nil {
 				b.line = cm.Data["build"]
 			}
-			if cd, err := getComponentDefinition(ctx, systemNS, "probe-kit-v1-probe"); err == nil {
+			if cd, err := getComponentDefinition(ctx, installNS, "probe-kit-v1-probe"); err == nil {
 				b.def = cd.Annotations[veltypes.AnnoDefinitionDescription]
 			}
 			return b
@@ -1129,7 +1145,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 			DeferCleanup(func() {
 				uninstall("cache-probe", "addon-cache-probe", moduleProbeKit)
 				Expect(isNotFound(ctx, configMapObj(systemNS, "cache-probe-build"))).Should(BeTrue())
-				Expect(isNotFound(ctx, configMapObj(systemNS, "probe-kit-build"))).Should(BeTrue())
+				Expect(isNotFound(ctx, configMapObj(installNS, "probe-kit-build"))).Should(BeTrue())
 			})
 		})
 
@@ -1210,9 +1226,9 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				waitAppRunning(ctx, testNS, v.appName, installWait)
 				Expect(componentNames(mustGetApp(ctx, systemNS, addonAppName))).Should(Equal([]string{v.addonSlug + "-resources", v.widgetModule}))
 				waitGone(ctx, crd(gadgetsCRD), shortWait)
-				Expect(isNotFound(ctx, componentDefinitionObj(systemNS, gadgetDef))).Should(BeTrue())
+				Expect(isNotFound(ctx, componentDefinitionObj(installNS, gadgetDef))).Should(BeTrue())
 				Expect(isNotFound(ctx, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: gadgetEditorRole}})).Should(BeTrue())
-				Expect(isNotFound(ctx, configMapObj(systemNS, gadgetDefaults))).Should(BeTrue())
+				Expect(isNotFound(ctx, configMapObj(installNS, gadgetDefaults))).Should(BeTrue())
 				_, err := getUnstructured(ctx, widgetGVK, testNS, "keep-widget")
 				Expect(err).ShouldNot(HaveOccurred())
 				Expect(mustGetApp(ctx, systemNS, moduleWidgetApp).Status.Phase).Should(Equal(common.ApplicationRunning))
@@ -1281,20 +1297,20 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				Expect(mod.Labels).Should(HaveKey(oam.LabelAddonName))
 				Expect(policyNames(mod)).Should(ContainElement("module-state-keep"))
 
-				td := traitDefinitionObj(systemNS, labelerDef)
+				td := traitDefinitionObj(installNS, labelerDef)
 				before := uidOf(td)
 				Expect(k8sClient.Delete(ctx, td)).Should(Succeed())
-				waitBack(traitDefinitionObj(systemNS, labelerDef), reconcileWait)
-				Expect(uidOf(traitDefinitionObj(systemNS, labelerDef))).ShouldNot(Equal(before))
+				waitBack(traitDefinitionObj(installNS, labelerDef), reconcileWait)
+				Expect(uidOf(traitDefinitionObj(installNS, labelerDef))).ShouldNot(Equal(before))
 			})
 
 			It("reverts an edited line auxiliary ConfigMap", func() {
-				cm, err := getConfigMap(ctx, systemNS, lineConfig)
+				cm, err := getConfigMap(ctx, installNS, lineConfig)
 				Expect(err).ShouldNot(HaveOccurred())
 				cm.Data["configRevision"] = "tampered"
 				Expect(k8sClient.Update(ctx, cm)).Should(Succeed())
 				Eventually(func() string {
-					got, err := getConfigMap(ctx, systemNS, lineConfig)
+					got, err := getConfigMap(ctx, installNS, lineConfig)
 					if err != nil {
 						return ""
 					}
@@ -1324,7 +1340,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 				deleteApp(ctx, systemNS, v.moduleAppName())
 				waitAppGone(ctx, systemNS, v.moduleAppName(), reconcileWait)
 				Expect(isNotFound(ctx, crd(widgetsCRD))).Should(BeTrue(), "the finalizer removed the CRD")
-				Expect(isNotFound(ctx, componentDefinitionObj(systemNS, widgetDef))).Should(BeTrue())
+				Expect(isNotFound(ctx, componentDefinitionObj(installNS, widgetDef))).Should(BeTrue())
 				waitBack(&v1beta1.Application{ObjectMeta: metav1.ObjectMeta{Name: v.moduleAppName(), Namespace: systemNS}}, reconcileWait)
 				waitAppRunning(ctx, systemNS, v.moduleAppName(), installWait)
 				Expect(uidOf(&v1beta1.Application{ObjectMeta: metav1.ObjectMeta{Name: v.moduleAppName(), Namespace: systemNS}})).ShouldNot(Equal(before))
@@ -1683,7 +1699,7 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 		}
 		installed := func() {
 			Expect(mustGetApp(ctx, systemNS, moduleWidgetKit).Name).Should(Equal(moduleWidgetKit))
-			_, err := getComponentDefinition(ctx, systemNS, "widget-kit-v1-widget")
+			_, err := getComponentDefinition(ctx, installNS, "widget-kit-v1-widget")
 			Expect(err).ShouldNot(HaveOccurred())
 			Expect(k8sClient.Get(ctx, k8stypes.NamespacedName{Name: widgetsCRD}, crd(widgetsCRD))).Should(Succeed())
 		}
@@ -1862,6 +1878,12 @@ var _ = Describe("Addons that import modules", Ordered, func() {
 			waitAppRunning(ctx, testNS, widgetPlatformApp, installWait)
 			waitAppRunning(ctx, testNS, inlineWidgetVariant.appName, installWait)
 			waitAppRunning(ctx, testNS, "module-direct", installWait)
+		})
+
+		It("a type: module component authored directly installs into its own Application's namespace", func() {
+			Expect(moduleDefinitionNames(ctx, testNS, "gadget-kit")).ShouldNot(BeEmpty())
+			Expect(moduleDefinitionNames(ctx, systemNS, "gadget-kit")).Should(BeEmpty())
+			Expect(mustGetApp(ctx, systemNS, moduleGadgetKit).Namespace).Should(Equal(systemNS), "the owned module Application stays in vela-system")
 		})
 
 		It("with the module gate off, every type: module render fails and nothing is garbage-collected", func() {
