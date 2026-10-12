@@ -134,12 +134,6 @@ jobs:
           path: _artifacts/e2e/
           if-no-files-found: warn
 
-      - name: Cleanup image
-        if: ${{ always() }}
-        run: |
-          make image-cleanup
-          docker image prune -f --filter "until=24h"
-
   e2e-api:
     name: e2e/ + test/e2e-addon-component-test / Kubernetes v1.37.0
     runs-on: ubuntu-22.04
@@ -168,8 +162,3 @@ jobs:
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           image-artifact: ${{ env.E2E_IMAGE_ARTIFACT }}
           image-job: ${{ env.E2E_IMAGE_JOB }}
-      - name: Cleanup image
-        if: ${{ always() }}
-        run: |
-          make image-cleanup
-          docker image prune -f --filter "until=24h"

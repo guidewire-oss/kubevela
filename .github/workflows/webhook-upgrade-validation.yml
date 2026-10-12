@@ -181,7 +181,3 @@ jobs:
 
       - name: Verify webhook validation remains active
         run: ginkgo -v --focus-file requiredparam_validation_test.go ./test/e2e-definition-test
-
-      - name: Cleanup kind cluster
-        if: ${{ always() }}
-        run: kind delete cluster --name kind
