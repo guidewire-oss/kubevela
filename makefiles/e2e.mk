@@ -1,5 +1,5 @@
 .PHONY: e2e-addon-test
-E2E_PROCS ?= auto
+E2E_PROCS ?= 10
 E2E_TIMEOUT ?= 1h
 E2E_REPORT_DIR ?= _artifacts/e2e
 E2E_CORE_LABEL_FILTER ?=

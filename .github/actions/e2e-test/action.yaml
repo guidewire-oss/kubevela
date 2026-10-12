@@ -11,17 +11,17 @@ inputs:
     required: false
     default: 'false'
   addon-procs:
-    description: 'Addon Ginkgo workers: auto uses all available CPUs; or a positive integer'
+    description: 'Addon Ginkgo workers: defaults to 10; auto uses all available CPUs; or a positive integer'
     required: false
-    default: 'auto'
+    default: '10'
   suite:
     description: 'Suite: all, api, addon, core (all core tests), core-application, core-definitions, core-config, core-helm, core-helm-auth, module, source, or addon-module'
     required: false
     default: 'all'
   procs:
-    description: 'Ginkgo workers: auto uses all available CPUs; or a positive integer'
+    description: 'Ginkgo workers: defaults to 10; auto uses all available CPUs; or a positive integer'
     required: false
-    default: 'auto'
+    default: '10'
   image-artifact:
     description: 'Artifact of this run holding a prebuilt vela-core e2e image archive; empty when setup-kind-cluster loaded the image'
     required: false
