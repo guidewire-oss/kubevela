@@ -62,6 +62,15 @@ const (
 	// whose output can change while the component's properties stay the same,
 	// such as addon and module, which fetch from a registry when they render.
 	AnnoDefinitionRedispatchOnWorkflowRun = "definition.oam.dev/redispatch-on-workflow-run"
+	// AnnoModulePlacement, set on an auxiliary object in a module, says which
+	// clusters it installs to: ModulePlacementHub (the default) or
+	// ModulePlacementRuntime. Definitions ignore it and always install on the hub.
+	AnnoModulePlacement = "modules.oam.dev/placement"
+	// ModulePlacementHub places an object on the hub cluster only.
+	ModulePlacementHub = "hub"
+	// ModulePlacementRuntime places an object on each runtime cluster the
+	// installing Application names.
+	ModulePlacementRuntime = "runtime"
 	// LabelDefinition is the label for definition
 	LabelDefinition = "definition.oam.dev"
 	// LabelDefinitionName is the label for definition name

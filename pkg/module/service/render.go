@@ -66,7 +66,7 @@ func (r *rendererImpl) RenderModule(ctx context.Context, req api.ModuleRequest) 
 	if err != nil {
 		return nil, err
 	}
-	app, err := RenderApplication(mod, req.Namespace)
+	app, err := RenderApplication(mod, req.Namespace, WithRuntimeClusters(req.Clusters...))
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +87,17 @@ func (r *rendererImpl) RenderModule(ctx context.Context, req api.ModuleRequest) 
 // meant to fail, and it does: the owned Application is already controlled by
 // the first install's deploy Application, so MustBeControlledByApp rejects the
 // second (pkg/utils/apply/apply.go).
-func RenderApplication(mod *module.Module, definitionNamespace string) (map[string]interface{}, error) {
+//
+// An auxiliary object may carry types.AnnoModulePlacement. Objects marked
+// runtime move to a tier of their own, "<tier>-runtime", and the Application
+// gains a deploy-module step that installs that tier on each cluster named by
+// WithRuntimeClusters. A module with no runtime objects renders exactly as it
+// does without placement.
+func RenderApplication(mod *module.Module, definitionNamespace string, opts ...RenderOption) (map[string]interface{}, error) {
+	cfg := renderConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	if mod == nil || mod.Name == "" {
 		return nil, fmt.Errorf("render module: module has no name")
 	}
@@ -99,15 +109,21 @@ func RenderApplication(mod *module.Module, definitionNamespace string) (map[stri
 	}
 
 	comps := []interface{}{}
+	hasRuntime := false
 
 	// The module-level auxiliary tier is module-wide and precedes every line
 	// beneath it. Its objects install in source order whatever their kind, and
 	// the tier reports healthy as soon as they are applied: the next tier never
 	// waits for an object to become ready.
-	moduleDep := ""
+	var moduleDeps []string
 	if len(mod.Auxiliary) > 0 {
-		moduleDep = mod.Name + "-aux"
-		comps = append(comps, objectsTier(moduleDep, toObjects(mod.Auxiliary, definitionNamespace), ""))
+		tiers, names, runtime, err := auxiliaryTiers(mod.Name+"-aux", mod.Auxiliary, definitionNamespace, nil)
+		if err != nil {
+			return nil, err
+		}
+		comps = append(comps, tiers...)
+		moduleDeps = names
+		hasRuntime = hasRuntime || runtime
 	}
 
 	for _, apiVersion := range enabledLines(mod) {
@@ -115,11 +131,15 @@ func RenderApplication(mod *module.Module, definitionNamespace string) (map[stri
 
 		// Each line hangs off the module-level auxiliary, not off the previous
 		// line: lines are siblings, so v2 must not wait on v1.
-		dep := moduleDep
+		deps := moduleDeps
 		if len(line.Auxiliary) > 0 {
-			tier := fmt.Sprintf("%s-%s-aux", mod.Name, apiVersion)
-			comps = append(comps, objectsTier(tier, toObjects(line.Auxiliary, definitionNamespace), dep))
-			dep = tier
+			tiers, names, runtime, err := auxiliaryTiers(fmt.Sprintf("%s-%s-aux", mod.Name, apiVersion), line.Auxiliary, definitionNamespace, deps)
+			if err != nil {
+				return nil, err
+			}
+			comps = append(comps, tiers...)
+			deps = names
+			hasRuntime = hasRuntime || runtime
 		}
 
 		if len(line.Definitions) == 0 {
@@ -129,7 +149,18 @@ func RenderApplication(mod *module.Module, definitionNamespace string) (map[stri
 		for _, def := range line.Definitions {
 			defs = append(defs, stampIdentity(def, mod.Name, apiVersion, definitionNamespace))
 		}
-		comps = append(comps, objectsTier(fmt.Sprintf("%s-%s-defs", mod.Name, apiVersion), defs, dep))
+		comps = append(comps, objectsTier(fmt.Sprintf("%s-%s-defs", mod.Name, apiVersion), defs, deps))
+	}
+
+	spec := map[string]interface{}{
+		"components": comps,
+		"policies":   []interface{}{moduleStateKeepPolicy()},
+	}
+	if hasRuntime {
+		if len(cfg.runtimeClusters) == 0 {
+			return nil, fmt.Errorf("render module %q: it places objects on runtime clusters but no clusters were given; set the module component's clusters parameter", mod.Name)
+		}
+		spec["workflow"] = deployModuleWorkflow(cfg.runtimeClusters)
 	}
 
 	return map[string]interface{}{
@@ -148,10 +179,7 @@ func RenderApplication(mod *module.Module, definitionNamespace string) (map[stri
 				types.AnnoDefinitionModuleVersion: mod.Version,
 			},
 		},
-		"spec": map[string]interface{}{
-			"components": comps,
-			"policies":   []interface{}{moduleStateKeepPolicy()},
-		},
+		"spec": spec,
 	}, nil
 }
 
@@ -224,14 +252,18 @@ func toObjects(aux []map[string]interface{}, namespace string) []interface{} {
 // Every tier the renderer emits is one of these, so a tier's dependents wait
 // only for its objects to be accepted by the API server, never for them to
 // report ready.
-func objectsTier(name string, objects []interface{}, dependsOn string) map[string]interface{} {
+func objectsTier(name string, objects []interface{}, dependsOn []string) map[string]interface{} {
 	c := map[string]interface{}{
 		"name":       name,
 		"type":       "k8s-objects",
 		"properties": map[string]interface{}{"objects": objects},
 	}
-	if dependsOn != "" {
-		c["dependsOn"] = []interface{}{dependsOn}
+	if len(dependsOn) > 0 {
+		deps := make([]interface{}, 0, len(dependsOn))
+		for _, d := range dependsOn {
+			deps = append(deps, d)
+		}
+		c["dependsOn"] = deps
 	}
 	return c
 }
@@ -276,6 +308,9 @@ func stampIdentity(def map[string]interface{}, moduleName, apiVersion, namespace
 		meta["annotations"] = annos
 	}
 	annos[types.AnnoDefinitionModuleFullName] = fullName
+	// Definitions always install on the hub, so a placement the author put on
+	// one is dropped rather than left to look as if it were honored.
+	delete(annos, types.AnnoModulePlacement)
 
 	spec, _ := out["spec"].(map[string]interface{})
 	if spec == nil {
@@ -317,4 +352,86 @@ func deepCopyValue(v interface{}) interface{} {
 	default:
 		return v
 	}
+}
+
+// RenderOption adjusts how RenderApplication renders a module.
+type RenderOption func(*renderConfig)
+
+type renderConfig struct {
+	runtimeClusters []string
+}
+
+// WithRuntimeClusters names the clusters that objects placed on the runtime
+// install to. They are required only when the module has such objects.
+func WithRuntimeClusters(clusters ...string) RenderOption {
+	return func(c *renderConfig) { c.runtimeClusters = clusters }
+}
+
+// deployModuleStepType is the workflow step that installs a module's tiers
+// according to their placement.
+const deployModuleStepType = "deploy-module"
+
+// deployModuleWorkflow is the owned Application's workflow when it has runtime
+// tiers: the one step that places every component, which replaces the default
+// workflow's deploy-everything-to-the-hub.
+func deployModuleWorkflow(clusters []string) map[string]interface{} {
+	names := make([]interface{}, 0, len(clusters))
+	for _, c := range clusters {
+		names = append(names, c)
+	}
+	return map[string]interface{}{
+		"steps": []interface{}{map[string]interface{}{
+			"name":       deployModuleStepType,
+			"type":       deployModuleStepType,
+			"properties": map[string]interface{}{"clusters": names},
+		}},
+	}
+}
+
+// auxiliaryTiers builds the tier for a scope's auxiliary objects: a hub tier
+// named name, plus "<name>-runtime" when any object is placed on the runtime.
+// Both wait on dependsOn, and it returns the names the next tier must wait on,
+// the hub tier first. Its last result reports whether a runtime tier exists.
+func auxiliaryTiers(name string, aux []map[string]interface{}, namespace string, dependsOn []string) ([]interface{}, []string, bool, error) {
+	var hub, runtime []map[string]interface{}
+	for _, obj := range aux {
+		placement, err := placementOf(obj)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if placement == types.ModulePlacementRuntime {
+			runtime = append(runtime, obj)
+		} else {
+			hub = append(hub, obj)
+		}
+	}
+
+	var tiers []interface{}
+	var names []string
+	if len(hub) > 0 {
+		tiers = append(tiers, objectsTier(name, toObjects(hub, namespace), dependsOn))
+		names = append(names, name)
+	}
+	if len(runtime) > 0 {
+		runtimeName := name + "-runtime"
+		tiers = append(tiers, objectsTier(runtimeName, toObjects(runtime, namespace), dependsOn))
+		names = append(names, runtimeName)
+	}
+	return tiers, names, len(runtime) > 0, nil
+}
+
+// placementOf reads an object's placement, defaulting to the hub, and rejects
+// a value that is neither: a typo must not silently land an object on the hub.
+func placementOf(obj map[string]interface{}) (string, error) {
+	meta, _ := obj["metadata"].(map[string]interface{})
+	annos, _ := meta["annotations"].(map[string]interface{})
+	value, _ := annos[types.AnnoModulePlacement].(string)
+	switch value {
+	case "", types.ModulePlacementHub:
+		return types.ModulePlacementHub, nil
+	case types.ModulePlacementRuntime:
+		return types.ModulePlacementRuntime, nil
+	}
+	name, _ := meta["name"].(string)
+	return "", fmt.Errorf("object %q has %s=%q; it must be %q or %q", name, types.AnnoModulePlacement, value, types.ModulePlacementHub, types.ModulePlacementRuntime)
 }

@@ -14,6 +14,8 @@ spec:
     cue:
       template: |
         import (
+        	"list"
+        	"strings"
         	"vela/module"
         )
         // The definitions install into the namespace of the Application that
@@ -38,12 +40,30 @@ spec:
         	_namespace: "namespace is no longer accepted: a module's definitions install into the namespace of the Application that installs it"
         }
 
+        // The runtime clusters come from the clusters parameter and from any topology
+        // policies the parameter names. Only a policy that lists its clusters can be
+        // read here: a clusterLabelSelector needs the cluster list, which a component
+        // cannot see, so it is refused rather than silently resolving to nothing.
+        _policies: *[] | [...{...}]
+        if context.appPolicies != _|_ {
+        	_policies: context.appPolicies
+        }
+        _topologies: {for p in _policies if p.type == "topology" {"\(p.name)": p}}
+        _resolvable: [for n in parameter.policies if _topologies[n] != _|_ if _topologies[n].properties != _|_ if _topologies[n].properties.clusters != _|_ {n}]
+        _unresolved: [for n in parameter.policies if !list.Contains(_resolvable, n) {n}]
+        _policyCheck: "ok"
+        if len(_unresolved) > 0 {
+        	_policyCheck: "policies must name topology policies of this Application that list their clusters; not usable: \(strings.Join(_unresolved, ", "))"
+        }
+        _policyClusters: [for n in _resolvable for c in _topologies[n].properties.clusters {c}]
+
         _render: module.#Render & {
         	$params: {
         		module:    parameter.module
         		registry:  parameter.registry
         		namespace: _namespace
         		version:   parameter.version
+        		clusters: list.Concat([parameter.clusters, _policyClusters])
         	}
         }
 
@@ -58,6 +78,14 @@ spec:
         	// _module.cue's version field). Empty means the latest published version.
         	// This is not the API line (apiVersion v1/v2), which is unaffected.
         	version: *"" | string
+        	// Names of the runtime clusters the module's runtime-placed objects install
+        	// to. The hub is always included for hub-placed objects and definitions.
+        	// Required only when the module places objects on the runtime.
+        	clusters: *[] | [...string]
+        	// Names of topology policies of this Application whose clusters are the
+        	// runtime clusters. Joined with clusters. A policy must list its clusters by
+        	// name; one that selects them by label is refused.
+        	policies: *[] | [...string]
         }
   status:
     customStatus: |-

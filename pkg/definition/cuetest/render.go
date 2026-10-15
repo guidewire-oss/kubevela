@@ -24,6 +24,7 @@ import (
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
+	wfTypesv1alpha1 "github.com/kubevela/pkg/apis/oam/v1alpha1"
 	wfprocess "github.com/kubevela/workflow/pkg/cue/process"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -88,14 +89,16 @@ type Context struct {
 	AppRevision    string            `json:"appRevision,omitempty"`
 	AppLabels      map[string]string `json:"appLabels,omitempty"`
 	AppAnnotations map[string]string `json:"appAnnotations,omitempty"`
-	Cluster        string            `json:"cluster,omitempty"`
-	ClusterVersion *ClusterVersion   `json:"clusterVersion,omitempty"`
-	PublishVersion string            `json:"publishVersion,omitempty"`
-	WorkflowName   string            `json:"workflowName,omitempty"`
-	Revision       string            `json:"revision,omitempty"`
-	ReplicaKey     string            `json:"replicaKey,omitempty"`
-	Custom         map[string]any    `json:"custom,omitempty"`
-	StepName       string            `json:"stepName,omitempty"`
+	// AppPolicies are the Application's policies, read as context.appPolicies.
+	AppPolicies    []AppPolicy     `json:"appPolicies,omitempty"`
+	Cluster        string          `json:"cluster,omitempty"`
+	ClusterVersion *ClusterVersion `json:"clusterVersion,omitempty"`
+	PublishVersion string          `json:"publishVersion,omitempty"`
+	WorkflowName   string          `json:"workflowName,omitempty"`
+	Revision       string          `json:"revision,omitempty"`
+	ReplicaKey     string          `json:"replicaKey,omitempty"`
+	Custom         map[string]any  `json:"custom,omitempty"`
+	StepName       string          `json:"stepName,omitempty"`
 	// ComponentType is the type of the workload a trait under test patches.
 	ComponentType string `json:"componentType,omitempty"`
 	// PolicyName and the revision fields are an Application-scoped policy's.
@@ -103,6 +106,13 @@ type Context struct {
 	PolicyRevisionName string `json:"policyRevisionName,omitempty"`
 	PolicyRevisionHash string `json:"policyRevisionHash,omitempty"`
 	PolicyRevision     int64  `json:"policyRevision,omitempty"`
+}
+
+// AppPolicy is one of the Application's policies as a test declares it.
+type AppPolicy struct {
+	Name       string         `json:"name"`
+	Type       string         `json:"type"`
+	Properties map[string]any `json:"properties,omitempty"`
 }
 
 // ClusterVersion is the `context.clusterVersion` a template sees.
@@ -440,8 +450,37 @@ func application(c Context) *v1beta1.Application {
 			Name: or(c.AppName, "test-app"), Namespace: or(c.Namespace, "default"),
 			Labels: c.AppLabels, Annotations: annotations,
 		},
-		Spec: v1beta1.ApplicationSpec{Components: []common.ApplicationComponent{}},
+		Spec: applicationSpec(c),
 	}
+}
+
+// applicationSpec is the Application's spec. An Application with policies and no
+// workflow gets a default deploy step, whose definition a test cluster does not
+// have. The render under test is a component's, so a policy-bearing Application
+// is given a workflow of one built-in step, which needs no definition.
+func applicationSpec(c Context) v1beta1.ApplicationSpec {
+	spec := v1beta1.ApplicationSpec{Components: []common.ApplicationComponent{}, Policies: appPolicies(c.AppPolicies)}
+	if len(spec.Policies) > 0 {
+		spec.Workflow = &v1beta1.Workflow{Steps: []wfTypesv1alpha1.WorkflowStep{{
+			WorkflowStepBase: wfTypesv1alpha1.WorkflowStepBase{Name: "noop", Type: "suspend"},
+		}}}
+	}
+	return spec
+}
+
+// appPolicies is the Application's policies as the controller reads them.
+func appPolicies(in []AppPolicy) []v1beta1.AppPolicy {
+	var out []v1beta1.AppPolicy
+	for _, p := range in {
+		policy := v1beta1.AppPolicy{Name: p.Name, Type: p.Type}
+		if len(p.Properties) > 0 {
+			if raw, err := json.Marshal(p.Properties); err == nil {
+				policy.Properties = &runtime.RawExtension{Raw: raw}
+			}
+		}
+		out = append(out, policy)
+	}
+	return out
 }
 
 // clusterVersion is v as the controller reports a cluster's version, or the

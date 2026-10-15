@@ -1065,6 +1065,7 @@ func GenerateContextDataFromAppFile(appfile *Appfile, wlName string) velaprocess
 	if appfile.AppLabels != nil {
 		data.AppLabels = appfile.AppLabels
 	}
+	data.AppPolicies = appfile.Policies
 	return data
 }
 

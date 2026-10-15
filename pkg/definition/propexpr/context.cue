@@ -29,6 +29,19 @@
 	appAnnotations: [string]: string
 }
 
+// #AppPolicies is the Application's own policies as declared, so a template can
+// resolve what one names, for example the clusters of a topology policy. A
+// policy's properties are whatever its type defines, so they stay open.
+#AppPolicies: {
+	// +usage=The Application's policies as declared: name, type and properties
+	appPolicies: *[] | [...{
+		name: string
+		type: string
+		properties?: {...}
+		...
+	}]
+}
+
 // #ClusterIdentity is the cluster a render is dispatched to.
 //
 // Kept separate from #DeliveryIdentity because the two are supplied by different
@@ -173,6 +186,7 @@ surfaces: {
 		#ClusterIdentity
 		#ComponentIdentity
 		#PublishedContext
+		#AppPolicies
 
 		// +usage=The component being rendered
 		name: string
@@ -282,8 +296,6 @@ excluded: {
 	components: _
 	// +reason=an app-wide list; readable in principle but not yet typed here
 	appComponents: _
-	// +reason=an app-wide list; readable in principle but not yet typed here
-	appPolicies: _
 	// +reason=an app-wide object; readable in principle but not yet typed here
 	appWorkflow: _
 	// +reason=produced by the render, so it does not exist when properties are substituted

@@ -49,6 +49,8 @@ type RenderVars struct {
 	// Version selects the module package version (the OCI/ECR tag); empty means
 	// latest. Not the API line.
 	Version string `json:"version"`
+	// Clusters are the runtime clusters for objects the module places there.
+	Clusters []string `json:"clusters"`
 }
 
 // ResultVars is the $returns shape.
@@ -86,6 +88,7 @@ func Render(ctx context.Context, params *RenderParams) (*RenderReturns, error) {
 		Registry:  p.Registry,
 		Namespace: p.Namespace,
 		Version:   p.Version,
+		Clusters:  p.Clusters,
 	})
 	if err != nil {
 		return nil, err

@@ -40,6 +40,9 @@ type ModuleRequest struct {
 	// publish writes from _module.cue's version field). Empty resolves the
 	// highest published semver tag.
 	Version string
+	// Clusters names the runtime clusters for objects the module places on the
+	// runtime. Empty is fine for a module that places everything on the hub.
+	Clusters []string
 }
 
 // ModuleResult is the rendered output: the module's owned Application as a

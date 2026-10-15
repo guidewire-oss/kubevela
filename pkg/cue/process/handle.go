@@ -25,6 +25,7 @@ import (
 	"github.com/kubevela/workflow/pkg/cue/process"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
@@ -57,6 +58,10 @@ type ContextData struct {
 
 	AppLabels      map[string]string
 	AppAnnotations map[string]string
+	// AppPolicies are the Application's own policies, as declared. A component
+	// reads them as context.appPolicies, for example to resolve the clusters a
+	// topology policy names.
+	AppPolicies []v1beta1.AppPolicy
 
 	ClusterVersion types.ClusterVersion
 	Output         interface{}
@@ -170,6 +175,13 @@ func NewContext(data ContextData) process.Context {
 	}
 	ctx.PushData(ContextAppLabels, appLabels)
 	ctx.PushData(ContextAppAnnotations, appAnnotations)
+	// Always carried, empty when the Application declares none, as the registry
+	// types it: a template can read it without guarding for absence.
+	appPolicies := data.AppPolicies
+	if appPolicies == nil {
+		appPolicies = []v1beta1.AppPolicy{}
+	}
+	ctx.PushData(ContextAppPolicies, appPolicies)
 	ctx.PushData(ContextReplicaKey, data.ReplicaKey)
 	revNum, _ := util.ExtractRevisionNum(data.AppRevisionName, "-")
 	ctx.PushData(ContextAppRevisionNum, revNum)

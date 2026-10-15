@@ -9,6 +9,7 @@ package module
 		registry:  *"" | string
 		namespace: *"" | string
 		version:   *"" | string
+		clusters:  *[] | [...string]
 	}
 	$returns?: {
 		application: {...}

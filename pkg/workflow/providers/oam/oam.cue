@@ -88,7 +88,7 @@
 
 	$returns: {
 		// +usage=The value of the components will be filled in this field after the action is executed, you can use value[componentName] to refer a specified component
-		value?: [{...}]
+		value?: [...{...}]
 	}
 	...
 }
