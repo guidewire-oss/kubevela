@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/oam-dev/kubevela/pkg/module/naming"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 // validateModuleName rejects an empty module name, naming the file it was
@@ -77,6 +78,34 @@ func validateDefinitionName(def map[string]interface{}, path string) error {
 		}
 	}
 	return fmt.Errorf("definition rendered from %s has an empty metadata.name", path)
+}
+
+// validatePlacement rejects a placement value that is neither oam.PlacementHub
+// nor oam.PlacementRuntime, naming the file it was read from. It is the one
+// value check shared by the module and line defaults and every object's own
+// annotation.
+func validatePlacement(value, path string) error {
+	if value != oam.PlacementHub && value != oam.PlacementRuntime {
+		return fmt.Errorf("placement %q in %s is invalid, must be %q or %q", value, path, oam.PlacementHub, oam.PlacementRuntime)
+	}
+	return nil
+}
+
+// validateObjectPlacement checks the placement annotation on obj, if it has
+// one, naming the file the object was read from. An object without the
+// annotation is valid.
+func validateObjectPlacement(obj map[string]interface{}, path string) error {
+	metadata, _ := obj["metadata"].(map[string]interface{})
+	annotations, _ := metadata["annotations"].(map[string]interface{})
+	raw, ok := annotations[oam.AnnotationPlacement]
+	if !ok {
+		return nil
+	}
+	value, isString := raw.(string)
+	if !isString {
+		return fmt.Errorf("annotation %s in %s must be a string, got %v", oam.AnnotationPlacement, path, raw)
+	}
+	return validatePlacement(value, path)
 }
 
 // validateDefinitionsNotEmpty rejects a line whose definitions/ directory

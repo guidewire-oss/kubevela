@@ -253,6 +253,54 @@ func TestModulePublishCommandDryRunReflectsFlags(t *testing.T) {
 	require.Contains(t, out.String(), "registry.example.com/modules/s3:9.9.9")
 }
 
+// runDryRunPublish publishes the fixture module, with extra files added to its
+// tree, through the real command in --dry-run mode and returns the printed
+// output and the command's error.
+func runDryRunPublish(t *testing.T, extra map[string]string) (string, error) {
+	t.Helper()
+	dir := publishFixtureDir(t)
+	for rel, content := range extra {
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+	}
+	cmd := NewModulePublishCommand(common.Args{}, cmdutil.NewDefaultIOStreams())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{dir, "oci://registry.example.com/modules", "--dry-run"})
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+const placementConfigMap = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\n"
+
+func TestModulePublishDryRunWarnsOnUnrecognizedAuxiliaryFolder(t *testing.T) {
+	out, err := runDryRunPublish(t, map[string]string{"v1/auxiliary/spoke/cm.yaml": placementConfigMap})
+
+	require.NoError(t, err)
+	require.Contains(t, out, "Warning:")
+	require.Contains(t, out, "v1/auxiliary/spoke")
+}
+
+func TestModulePublishDryRunRejectsInvalidPlacement(t *testing.T) {
+	_, err := runDryRunPublish(t, map[string]string{
+		"v1/auxiliary/cm.yaml": placementConfigMap + "  annotations:\n    resource.oam.dev/placement: edge\n",
+	})
+
+	require.ErrorContains(t, err, "v1/auxiliary/cm.yaml")
+	require.ErrorContains(t, err, "edge")
+}
+
+func TestModulePublishDryRunAcceptsPlacementMarkerOnDefinition(t *testing.T) {
+	marked := "apiVersion: core.oam.dev/v1beta1\nkind: ComponentDefinition\nmetadata:\n  name: bucket\n  namespace: vela-system\n" +
+		"  annotations:\n    resource.oam.dev/placement: runtime\n" +
+		"spec:\n  workload:\n    definition:\n      apiVersion: v1\n      kind: ConfigMap\n"
+	out, err := runDryRunPublish(t, map[string]string{"v1/definitions/bucket.yaml": marked})
+
+	require.NoError(t, err)
+	require.NotContains(t, out, "Warning:")
+}
+
 // TestModulePublishCommandRejectsRegistryFlagWithPositionalRef exercises the
 // mutual-exclusion rejection through RunE rather than a direct
 // modulePublishOptions construction, proving --registry is read from the

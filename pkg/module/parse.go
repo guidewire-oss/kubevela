@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/pkg/definition"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 // ParseModule reads the module source tree from fsys (rooted at the module
@@ -56,7 +57,13 @@ func ParseModule(fsys fs.FS) (*Module, error) {
 		return nil, fmt.Errorf("parse module: %w", err)
 	}
 
-	auxiliary, err := readAuxiliaryDir(fsys, "auxiliary")
+	placement, err := readPlacementField(fsys, "_module.cue")
+	if err != nil {
+		return nil, fmt.Errorf("parse module: read placement: %w", err)
+	}
+
+	var warnings []string
+	auxiliary, err := readAuxiliaryDir(fsys, "auxiliary", &warnings)
 	if err != nil {
 		return nil, fmt.Errorf("parse module: read auxiliary: %w", err)
 	}
@@ -71,7 +78,7 @@ func ParseModule(fsys fs.FS) (*Module, error) {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "v") {
 			continue
 		}
-		line, err := parseLine(fsys, entry.Name())
+		line, err := parseLine(fsys, entry.Name(), &warnings)
 		if err != nil {
 			return nil, fmt.Errorf("parse line %s: %w", entry.Name(), err)
 		}
@@ -85,7 +92,7 @@ func ParseModule(fsys fs.FS) (*Module, error) {
 		return nil, fmt.Errorf("parse module: %w", err)
 	}
 
-	return &Module{Name: name, Version: version, Auxiliary: auxiliary, Lines: lines}, nil
+	return &Module{Name: name, Version: version, Placement: placement, Warnings: warnings, Auxiliary: auxiliary, Lines: lines}, nil
 }
 
 // ParseModuleDir reads a module from a local directory. It is the
@@ -96,8 +103,9 @@ func ParseModuleDir(dir string) (*Module, error) {
 }
 
 // parseLine reads one v<N> line directory from fsys: its apiVersion,
-// Composition, and every file under definitions/ in sorted filename order.
-func parseLine(fsys fs.FS, dir string) (*Line, error) {
+// placement default, auxiliary objects, and every file under definitions/ in
+// sorted filename order. Non-fatal findings are appended to warnings.
+func parseLine(fsys fs.FS, dir string, warnings *[]string) (*Line, error) {
 	versionPath := path.Join(dir, "_version.cue")
 	apiVersion, err := readCUEStringField(fsys, versionPath, "apiVersion")
 	if err != nil {
@@ -112,7 +120,12 @@ func parseLine(fsys fs.FS, dir string) (*Line, error) {
 		return nil, fmt.Errorf("read enabled: %w", err)
 	}
 
-	auxiliary, err := readAuxiliaryDir(fsys, path.Join(dir, "auxiliary"))
+	placement, err := readPlacementField(fsys, versionPath)
+	if err != nil {
+		return nil, fmt.Errorf("read placement: %w", err)
+	}
+
+	auxiliary, err := readAuxiliaryDir(fsys, path.Join(dir, "auxiliary"), warnings)
 	if err != nil {
 		return nil, fmt.Errorf("read auxiliary: %w", err)
 	}
@@ -147,10 +160,13 @@ func parseLine(fsys fs.FS, dir string) (*Line, error) {
 		if err := validateDefinitionName(rendered, defPath); err != nil {
 			return nil, err
 		}
+		if err := validateObjectPlacement(rendered, defPath); err != nil {
+			return nil, err
+		}
 		defs = append(defs, rendered)
 	}
 
-	return &Line{APIVersion: apiVersion, Enabled: enabled, Auxiliary: auxiliary, Definitions: defs}, nil
+	return &Line{APIVersion: apiVersion, Enabled: enabled, Placement: placement, Auxiliary: auxiliary, Definitions: defs}, nil
 }
 
 // renderDefinition compiles a single definition file into its unstructured
@@ -171,10 +187,16 @@ func renderDefinition(name string, data []byte) (map[string]interface{}, error) 
 	}
 }
 
+// auxiliaryHubDir is the auxiliary/ sub-folder whose objects are stamped as
+// hub-only, a shortcut for annotating each file by hand.
+const auxiliaryHubDir = "hub"
+
 // readAuxiliaryDir reads every file under dir (an auxiliary/ folder) and
-// returns the objects they contain, in filename order. A missing dir is not
-// an error: it means "no auxiliary objects" for that scope.
-func readAuxiliaryDir(fsys fs.FS, dir string) ([]map[string]interface{}, error) {
+// returns the objects they contain, in filename order, followed by the objects
+// from its hub/ sub-folder, stamped with the hub placement annotation unless an
+// object carries its own. Any other sub-folder is not read and adds a warning.
+// A missing dir is not an error: it means "no auxiliary objects" for that scope.
+func readAuxiliaryDir(fsys fs.FS, dir string, warnings *[]string) ([]map[string]interface{}, error) {
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -183,6 +205,48 @@ func readAuxiliaryDir(fsys fs.FS, dir string) ([]map[string]interface{}, error) 
 		return nil, err
 	}
 
+	hasHub := false
+	for _, entry := range entries {
+		switch {
+		case !entry.IsDir():
+		case entry.Name() == auxiliaryHubDir:
+			hasHub = true
+		default:
+			*warnings = append(*warnings, fmt.Sprintf("%s is not a recognized folder and is ignored; only %s/ is recognized under auxiliary/", path.Join(dir, entry.Name()), auxiliaryHubDir))
+		}
+	}
+
+	objects, err := readAuxiliaryFiles(fsys, dir, entries, false, warnings)
+	if err != nil {
+		return nil, err
+	}
+	if !hasHub {
+		return objects, nil
+	}
+
+	hubDir := path.Join(dir, auxiliaryHubDir)
+	hubEntries, err := fs.ReadDir(fsys, hubDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range hubEntries {
+		if entry.IsDir() {
+			*warnings = append(*warnings, fmt.Sprintf("%s is not read; %s/ does not recurse into sub-folders", path.Join(hubDir, entry.Name()), auxiliaryHubDir))
+		}
+	}
+	hubObjects, err := readAuxiliaryFiles(fsys, hubDir, hubEntries, true, warnings)
+	if err != nil {
+		return nil, err
+	}
+	return append(objects, hubObjects...), nil
+}
+
+// readAuxiliaryFiles decodes the files among entries (sub-folders are skipped)
+// in filename order and checks each object's placement annotation. With
+// stampHub set, every object without its own placement annotation is stamped as
+// hub-only. An object's own annotation outranks the folder it sits in, so one
+// that says runtime stays runtime and adds a warning.
+func readAuxiliaryFiles(fsys fs.FS, dir string, entries []fs.DirEntry, stampHub bool, warnings *[]string) ([]map[string]interface{}, error) {
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -202,9 +266,84 @@ func readAuxiliaryDir(fsys fs.FS, dir string) ([]map[string]interface{}, error) 
 		if err != nil {
 			return nil, fmt.Errorf("decode %s: %w", p, err)
 		}
+		for _, obj := range decoded {
+			if err := validateObjectPlacement(obj, p); err != nil {
+				return nil, err
+			}
+			if !stampHub {
+				continue
+			}
+			own, err := stampHubPlacement(obj)
+			if err != nil {
+				return nil, fmt.Errorf("stamp placement on object in %s: %w", p, err)
+			}
+			if own == oam.PlacementRuntime {
+				*warnings = append(*warnings, fmt.Sprintf("%s is in %s/ but its own placement annotation is %q; the annotation wins, so it is not hub-only", p, auxiliaryHubDir, own))
+			}
+		}
 		objects = append(objects, decoded...)
 	}
 	return objects, nil
+}
+
+// stampHubPlacement sets the hub placement annotation on obj's metadata,
+// creating metadata and annotations when absent and keeping every other
+// annotation the author wrote. An object that already carries its own placement
+// annotation is left as it is, and that value is returned. The caller has
+// already checked that value is hub or runtime.
+func stampHubPlacement(obj map[string]interface{}) (string, error) {
+	if obj == nil {
+		return "", errors.New("object is empty")
+	}
+	metadata, err := childMap(obj, "metadata")
+	if err != nil {
+		return "", err
+	}
+	annotations, err := childMap(metadata, "annotations")
+	if err != nil {
+		return "", err
+	}
+	if own, ok := annotations[oam.AnnotationPlacement].(string); ok {
+		return own, nil
+	}
+	annotations[oam.AnnotationPlacement] = oam.PlacementHub
+	return "", nil
+}
+
+// childMap returns parent[key] as a map, creating and storing an empty one when
+// the key is absent or null. A value of any other type is an error.
+func childMap(parent map[string]interface{}, key string) (map[string]interface{}, error) {
+	switch v := parent[key].(type) {
+	case nil:
+		child := map[string]interface{}{}
+		parent[key] = child
+		return child, nil
+	case map[string]interface{}:
+		return v, nil
+	default:
+		return nil, fmt.Errorf("%s must be a map, got %T", key, v)
+	}
+}
+
+// readPlacementField returns the optional top-level placement field of the CUE
+// file at p, or nil when the file does not set one. A value that is not hub or
+// runtime is an error naming p.
+func readPlacementField(fsys fs.FS, p string) (*string, error) {
+	field, exists, err := lookupCUEField(fsys, p, "placement")
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+	value, err := field.String()
+	if err != nil {
+		return nil, fmt.Errorf("placement in %s must be a string: %w", p, err)
+	}
+	if err := validatePlacement(value, p); err != nil {
+		return nil, err
+	}
+	return &value, nil
 }
 
 // decodeAuxiliaryFile decodes one auxiliary file into the objects it

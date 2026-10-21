@@ -29,6 +29,11 @@ type Line struct {
 	// ships installable unless its author opts out. The render service
 	// installs every enabled line and skips the rest.
 	Enabled bool
+	// Placement is this line's default placement class (oam.PlacementHub or
+	// oam.PlacementRuntime) for unmarked objects in v<N>/auxiliary/, read from
+	// v<N>/_version.cue's optional placement field. Nil means the line sets no
+	// default.
+	Placement *string
 	// Auxiliary holds the objects read from v<N>/auxiliary/, in filename order
 	// (and document order within a multi-document file).
 	// Empty for a line that ships no auxiliary/.
@@ -47,6 +52,15 @@ type Module struct {
 	// Version is the module's own semver, read from _module.cue's top-level
 	// version field. It is the tag vela module publish uses for the artifact.
 	Version string
+	// Placement is the module-wide default placement class (oam.PlacementHub or
+	// oam.PlacementRuntime) for unmarked objects in the module-level auxiliary/,
+	// read from _module.cue's optional placement field. Nil means no module
+	// default is set; an object then falls through to its line's default and
+	// finally to oam.PlacementRuntime.
+	Placement *string
+	// Warnings are non-fatal problems found while parsing, such as an
+	// unrecognized folder under auxiliary/. vela module publish prints them.
+	Warnings []string
 	// Auxiliary holds the objects read from the module-level auxiliary/, in
 	// filename order (and document order within a multi-document file). Empty
 	// for infra-less module that ships no module-level auxiliary/.
