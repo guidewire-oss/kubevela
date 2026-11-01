@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,6 +72,14 @@ func nacosContent() string {
 		return ""
 	}
 	return string(body)
+}
+
+// publishedProperties is the content the 1.11 CLI published, as sorted lines: it writes properties
+// keys in random order, and the controller compares them as pairs, not as text.
+func publishedProperties() []string {
+	lines := strings.Split(strings.TrimSpace(nacosContent()), "\n")
+	sort.Strings(lines)
+	return lines
 }
 
 func stateOf(secret *corev1.Secret) string {
@@ -130,7 +139,7 @@ var _ = Describe("Upgrading config storage from 1.11", func() {
 			"servers[0].ipAddr="+os.Getenv("NACOS_CLI_HOST"), "servers[0].port=8848")
 		oldCLI("config", "create", "up-nacos-cfg", "-t", seedNS+"/up-nacos-db", "-n", seedNS,
 			"dataId="+nacosDataID, "content.mysqlHost=db", "content.mysqlPort=3306")
-		Eventually(nacosContent, waitTimeout, waitPoll).Should(Equal("mysqlHost = db\nmysqlPort = 3306\n"))
+		Eventually(publishedProperties, waitTimeout, waitPoll).Should(Equal([]string{"mysqlHost = db", "mysqlPort = 3306"}))
 
 		By("the workflow step's config and the Application consuming the plain one")
 		raw, err := os.ReadFile(testdata("applications.yaml"))
@@ -276,7 +285,7 @@ var _ = Describe("Upgrading config storage from 1.11", func() {
 	})
 
 	It("keeps Nacos content, and an edit through the Config reaches it (check 5)", Label("nacos"), func() {
-		Expect(nacosContent()).Should(Equal("mysqlHost = db\nmysqlPort = 3306\n"))
+		Expect(publishedProperties()).Should(Equal([]string{"mysqlHost = db", "mysqlPort = 3306"}))
 		var cfg configv1alpha1.Config
 		key := client.ObjectKey{Namespace: seedNS, Name: "up-nacos-cfg"}
 		Expect(k8sClient.Get(ctx, key, &cfg)).Should(Succeed())
