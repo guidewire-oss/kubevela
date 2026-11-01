@@ -70,8 +70,8 @@ template: {
 `, endpoint, namespace)
 }
 
-// nacosE2EContent is what the server at addr holds for dataId and group: "" when it holds nothing,
-// the error's text when it cannot say, so a poll retries and a one-shot check fails.
+// nacosE2EContent is what the server at addr holds for dataId and group: "" when it answers that
+// it holds nothing, the error's text when it cannot say, so a poll retries and a one-shot check fails.
 func nacosE2EContent(addr, dataID, group string) string {
 	query := url.Values{"dataId": {dataID}, "group": {group}}
 	httpClient := http.Client{Timeout: 10 * time.Second}
@@ -84,10 +84,13 @@ func nacosE2EContent(addr, dataID, group string) string {
 	if err != nil {
 		return err.Error()
 	}
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return string(body)
+	case http.StatusNotFound:
 		return ""
 	}
-	return string(body)
+	return fmt.Sprintf("nacos answered %d: %s", resp.StatusCode, body)
 }
 
 // A Config applied with the client alone, nothing of the CLI, against a real Nacos server. The

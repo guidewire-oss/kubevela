@@ -196,7 +196,10 @@ jobs:
       # lets the second rollback recreate it as 1.11.0 has it.
       - name: Roll back to ${{ env.OLD_VERSION }}
         run: |
-          helm rollback kubevela 1 -n vela-system --wait --timeout 6m || echo "the first rollback fails on the definitions"
+          if ! out=$(helm rollback kubevela 1 -n vela-system --wait --timeout 6m 2>&1); then
+            echo "$out"
+            echo "$out" | grep -q "no ComponentDefinition with the name"
+          fi
           kubectl delete validatingwebhookconfiguration kubevela-vela-core-admission
           helm rollback kubevela 1 -n vela-system --wait --timeout 6m
           kubectl -n vela-system rollout status deploy/kubevela-vela-core --timeout=240s
